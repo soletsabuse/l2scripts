@@ -6,7 +6,7 @@ unit SpotFarm;
 //   begin
 //     SetZone('xxx.zmap');                 // file in Library\Zones
 //     SetConfig('xxx.xml');                // file in Library\Configurations ('' = do not load)
-//     SetTeleport('_bbs_teleport?...');    // Aden gatekeeper -> spot bypass
+//     SetTeleport('_bbs_teleport?...');    // Aden gatekeeper -> spot bypass (no line = no teleport, path starts in Aden)
 //     SetBuff(1204, ['_bbs_buffer_show', 'book_use?...']);  // watched buff ID + buff bypasses in order
 //     SetPath([x1, y1, z1,  x2, y2, z2]);  // teleport landing -> inside the zone
 //     SetSafePoint(x, y, z);               // optional: where to stand while rebuffing on the spot
@@ -841,12 +841,16 @@ begin
   BuySupplies();
   if User.Dead then begin IsRecovering := false; exit; end;
 
-  GoToGatekeeper();
-  if not TeleportToSpot() then begin
-    Engine.Msg('[GoToSpot]', 'Teleport failed, farm is OFF', 128);
-    IsRecovering := false;
-    exit;
-  end;
+  // no SetTeleport: no gatekeeper, the path starts right in Aden
+  if TeleportBypass <> '' then begin
+    GoToGatekeeper();
+    if not TeleportToSpot() then begin
+      Engine.Msg('[GoToSpot]', 'Teleport failed, farm is OFF', 128);
+      IsRecovering := false;
+      exit;
+    end;
+  end else
+    Engine.Msg('[GoToSpot]', 'No SetTeleport, walking from Aden', 0);
 
   result := WalkToSpot();
   if not result then
