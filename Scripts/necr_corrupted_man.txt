@@ -1,0 +1,81 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// Necromancer with a summon. Stand on the spot and start the script:
+// no SetPath / SetTeleport = stay mode (never travels, comes back to the start point).
+// No interface: the script attacks the mob with the lowest HP, switching target all the time.
+// Only data here, all logic is in spot_farm.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  // SetLogin('login', 'password');
+
+  // '' = farm in the zone you drew in the bot; no zone there -> mobs within 900 of where you started
+  SetZone('');
+  SetConfig('');             // no interface config
+
+  // main character buff: watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // the summon is buffed together with us: before every buff the script summons it if it is missing
+
+  // mobs to attack; [0] = any mob in the zone (+ anything that attacks us)
+  SetCasterFarm([0]);
+  // pick targets only this close to us (mobs that attack us - always)
+  SetTargetRange(700);
+  SetSafePoint(-10861, -43541, -10914);
+  // ===== necro skills, in PRIORITY order (the first one that may be used now is used) =====
+  // AddCasterSkill(skill ID, kind, interval ms, param)
+  //   SKILL_DRAIN  - only when necro HP % < param, not more often than interval
+  //   SKILL_DEBUFF - once per mob, again on the same mob after interval
+  //   SKILL_NUKE   - damage, every interval (its reuse)
+  // No AddCasterSkill lines = plain attack.
+  // TODO: necro skill IDs (cast them with action_sniffer running -> [Skill] N)
+  
+  AddCasterSkill(1234, SKILL_DRAIN,  1000, 50);    // Vampiric
+  AddCasterSkill(1263, SKILL_DEBUFF, 4000, 0);    // debuff, again on the same mob after 30 sec
+  AddCasterSkill(1343, SKILL_NUKE,  7000, 70);    // Vortex
+  AddCasterSkill(1148, SKILL_NUKE,   500, 0);     // main damage skill
+
+  // ===== summon =====
+  // SetSummon(summon skill ID, renew %):
+  //   the skill is cast when the summon is missing and before every buff;
+  //   summon time left < renew % -> kill mobs on us, safe point, dismiss, summon again (0 = never renew)
+  // TODO: summon skill ID (cast it with action_sniffer running -> [Skill] N)
+  SetSummon(1154, 30);
+
+  // where to stand while renewing the summon / rebuffing (no line = right where we are)
+  // SetSafePoint(x, y, z);
+
+  // summon skills = action IDs (sniffed: 47, 1200), same kinds, SKILL_DRAIN param = summon HP %
+  // TODO: check which one is the M.Def debuff and which one is the damage - swap the IDs if needed
+  AddPetSkill(1200, SKILL_DEBUFF, 8000, 0);   // M.Def down on the mob, again on the same mob after 30 sec
+  AddPetSkill(47,   SKILL_NUKE,   5000,  0);   // damage every 5 sec
+
+  // no mobs around -> walk these points (inside the zone) until one shows up
+  // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  // SetExpOff(true);
+
+  // alerts: private messages + death are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+  // SetTelegram('api key from the Adrenaline cabinet');
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);
+  AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
+  AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
+  AddSupply(CURSED_BONE,              10000, 20000);
+  AddSupply(MANA_DRUG,                200, 500);
+  // AddSupply(MANA_POTION,              10, 50);
+  // AddSupply(HEALING_POTION,           10, 50);
+
+  RunFarm();
+end.
