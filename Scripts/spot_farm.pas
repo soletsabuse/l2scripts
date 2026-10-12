@@ -4,7 +4,8 @@ unit SpotFarm;
 //
 //   uses SpotFarm in 'spot_farm.pas';
 //   begin
-//     SetZone('xxx.zmap');                 // file in Library\Zones
+//     SetZone('xxx.zmap');                 // file in Library\Zones; '' = the zone active in the bot,
+//                                          //   no zone there -> 900 around the start point
 //     SetConfig('xxx.xml');                // file in Library\Configurations ('' = do not load)
 //     SetTeleport('_bbs_teleport?...');    // Aden gatekeeper -> spot bypass (no line = no teleport, path starts in Aden)
 //     SetBuff(1204, ['_bbs_buffer_show', 'book_use?...']);  // watched buff ID + buff bypasses in order
@@ -19,6 +20,9 @@ unit SpotFarm;
 //     SetSummon(skill, 10);                // optional: summon skill (cast when missing / before buff);
 //                                          //   time left (Fed %) < 10 -> safe point, dismiss, summon again; 0 = never
 //     SetTargetRange(700);                 // optional: caster mode picks targets only this close (default 700)
+//     SetWeapon(itemID);                   // optional: weapon to put back on after a disarm
+//                                          //   (no line = the weapon in hands at start is remembered)
+//     SetChampionAlert(100000);            // champion alert (mob MaxHP above N), ON by default; 0 = off
 //     AddPetSkill(action, SKILL_NUKE, 5000, 0);    // summon skills = action IDs, same kinds
 //     SetSummonBuff(['bypass']);           // optional: buff bypasses for the summon
 //   No SetPath and no SetTeleport = stay mode: farm where started, never travel, wait for a res on death.
@@ -83,6 +87,8 @@ procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
 procedure SetCasterFarm(MobIDs: array of integer);
 procedure SetSummon(SummonSkillID, RenewPercent: integer);
 procedure SetTargetRange(Range: integer);
+procedure SetWeapon(ItemID: integer);
+procedure SetChampionAlert(MinMaxHP: integer);
 procedure AddCasterSkill(SkillID, Kind, IntervalMs, Param: integer);
 procedure AddPetSkill(ActionID, Kind, IntervalMs, Param: integer);
 procedure SetSummonBuff(Bypasses: array of string);
@@ -131,16 +137,17 @@ const
   TREE_NEAR_RANGE   = 1000;     // "close to us" for the detection above
   TREE_STUCK_MS     = 10000;    // while shooting: no HP drop this long -> move around the mob (45 deg)
   TREE_MAX_REPOS    = 8;        // repositions (full circle) before giving up on the mob
-  DEFAULT_TARGET_RANGE = 700;   // caster mode: pick targets only this close, unless SetTargetRange
+  FREE_RADIUS       = 900;      // SetZone('') and no zone in the bot: farm this close to the start point
+  DEFAULT_TARGET_RANGE = 700;  // caster mode: pick targets only this close, unless SetTargetRange
   PET_ATTACK_ACTION = 22;      // RequestActionUse action: summon (servitor) attacks the target (pet = 16)
   PET_ATTACK_MS     = 2000;     // repeat the attack order every N ms
+  PET_MELEE_MIN_HP  = 100000;   // the summon gets the attack order (runs in, hits with hands) only on mobs with MaxHP above this
   PET_SKILL_GAP     = 1000;     // at least N ms between two summon skills
   RESUMMON_WAIT     = 5000;     // ms to wait after casting the summon skill
   AOE_AGGRO_DIST    = 1500;    // AoE mode: "aggro" mobs farther than this are ignored (stuck / teleported)
   AOE_SWEEP_RANGE   = 150;      // AoE mode: sweep only corpses this close
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
-  WEAPON_CHECK_MS   = 5000;     // while farming: check every N ms that the melee weapon is on
   PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
   PATH_REACHED      = 150;      // "I am at the point"
@@ -149,6 +156,11 @@ const
   DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
   DEFAULT_PRIVATE_SOUND = 'incoming private msg (fem).wav';
   DEFAULT_DEATH_SOUND   = 'caracter died.wav';
+  DEFAULT_CHAMPION_HP   = 100000;  // champion alert ON by default: a mob with MaxHP above this
+  DEFAULT_CHAMPION_SOUND = 'champion.wav';
+  WEAPON_POLL_MS        = 2000;    // check every N ms that the weapon is on (disarm)
+  WEAPON_SLOT_RHAND     = $4000;   // L2 body part: right hand (one-hand weapon)
+  WEAPON_SLOT_LRHAND    = $8000;   // L2 body part: two-hand weapon
   EVENTS_POLL_MS    = 1000;   // how often players around / private messages are checked
   LOGIN_KEY_WAIT    = 4;       // seconds before each Enter (proxy, character) - same as login_test.txt
   LOGIN_RETRY_WAIT  = 30000;    // ms between failed login attempts
@@ -175,6 +187,7 @@ var
   NeedReturn: boolean;    // true while the character must be brought back to the spot via Aden
   OnSpot: boolean;        // true while we are on the farm spot (farm is ON)
   TreeBusy: boolean;      // true while the tree handler shoots a mob: rebuff thread waits
+  EquipBusy: boolean;     // true while some thread is swapping weapons (EquipWeapon)
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -203,6 +216,9 @@ var
   SummonBusy: boolean;            // true while the summon is being renewed: fight / rebuff threads wait
   CasterRange: integer;           // SetTargetRange: pick targets only this close (aggro mobs always)
   IgnoreNames: array of string;   // NPCs never targeted (other players' summons, chests...), lower case
+  WeaponID: integer;              // SetWeapon: put it back on if a mob disarms us; 0 = no check
+  ChampionMinHP: integer;         // SetChampionAlert: alert on a mob with MaxHP above this; 0 = off
+  ChampionAlertSet: boolean;
   LastPetAttack, LastPetSkill: cardinal;
 
   // skills of the necro (owner 0, AddCasterSkill) and of the summon (owner 1, AddPetSkill),
@@ -219,6 +235,12 @@ var
 
 // ===================== Stay mode (no SetPath and no SetTeleport) =====================
   HomeX, HomeY, HomeZ: integer;   // where the script was started: we come back here
+
+// ===================== Farm area =====================
+// SetZone('') = use the zone that is active in the bot (drawn by hand);
+// no zone there at all -> farm within FREE_RADIUS of the start point.
+  UseRadius: boolean;             // true = no zone, farm area is a circle around Home
+  AreaDecided: boolean;
 
 // ===================== Patrol (SetPatrol) =====================
   PatrolPoints: array of integer; // x, y, z triples; empty = no patrol
@@ -320,6 +342,17 @@ begin
   CasterRange := Range;
 end;
 
+procedure SetWeapon(ItemID: integer);
+begin
+  WeaponID := ItemID;
+end;
+
+procedure SetChampionAlert(MinMaxHP: integer);
+begin
+  ChampionMinHP := MinMaxHP;
+  ChampionAlertSet := true;
+end;
+
 // ===================== Ignored NPCs =====================
 // Never target these: other players' summons / pets, chests. Edit the list right here.
 
@@ -412,6 +445,18 @@ begin
   SetLength(SummonBuffBypasses, Length(Bypasses));
   for i := 0 to Length(Bypasses) - 1 do
     SummonBuffBypasses[i] := Bypasses[i];
+end;
+
+// point is inside the farm area: the bot zone, or (no zone) FREE_RADIUS around the start point
+function InFarmArea(X, Y, Z: integer): boolean;
+var DX, DY: double;
+begin
+  if UseRadius then begin
+    DX := X - HomeX;
+    DY := Y - HomeY;
+    result := Sqrt(DX * DX + DY * DY) <= FREE_RADIUS;
+  end else
+    result := Engine.InZone(X, Y, Z);
 end;
 
 // no SetPath and no SetTeleport: we never travel, we farm where the script was started
@@ -873,7 +918,7 @@ begin
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
-    if not Engine.InZone(NX, NY, NZ) then continue;
+    if not InFarmArea(NX, NY, NZ) then continue;
     D := User.DistTo(NX, NY, NZ);
     if D < BestDist then begin
       BestDist := D;
@@ -1057,15 +1102,15 @@ begin
   end;
 end;
 
-// Mob to farm (not attacking us yet): Mode 0 = lowest HP inside CasterRange,
-// Mode 1 = nearest anywhere in the zone (we run to it). 0 = nothing.
+// Mob to farm (not attacking us yet), always the lowest absolute HP (CurHP), nearest on a tie:
+// Mode 0 = inside CasterRange, Mode 1 = anywhere in the zone (we run to it). 0 = nothing.
 function CasterFindNewMob(Mode: integer): integer;
 var
   i, NX, NY, NZ, HP, BestHP: integer;
   D, BestDist: double;
 begin
   result := 0;
-  BestHP := 101;
+  BestHP := MaxInt;
   BestDist := 999999;
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead then continue;
@@ -1074,31 +1119,26 @@ begin
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
-    if not Engine.InZone(NX, NY, NZ) then continue;
+    if not InFarmArea(NX, NY, NZ) then continue;
     D := User.DistTo(NX, NY, NZ);
-    if Mode = 0 then begin
-      if D > CasterRange then continue;
-      HP := NpcList(i).HP;   // percent
-      if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
-        BestHP := HP;
-        BestDist := D;
-        result := NpcList(i).OID;
-      end;
-    end else if D < BestDist then begin
+    if (Mode = 0) and (D > CasterRange) then continue;
+    HP := NpcList(i).CurHP;   // absolute HP, not percent
+    if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
+      BestHP := HP;
       BestDist := D;
       result := NpcList(i).OID;
     end;
   end;
 end;
 
-// lowest-HP mob among those that attack us or the summon; 0 = nobody attacks
+// lowest absolute HP (CurHP) mob among those that attack us or the summon; 0 = nobody attacks
 function CasterPickAggro(): integer;
 var
   i, NX, NY, NZ, HP, BestHP: integer;
   D, BestDist: double;
 begin
   result := 0;
-  BestHP := 101;
+  BestHP := MaxInt;
   BestDist := 999999;
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead then continue;
@@ -1108,7 +1148,7 @@ begin
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
     D := User.DistTo(NX, NY, NZ);
-    HP := NpcList(i).HP;
+    HP := NpcList(i).CurHP;   // absolute HP, not percent
     if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
       BestHP := HP;
       BestDist := D;
@@ -1129,7 +1169,7 @@ begin
       NX := NpcList(i).X;
       NY := NpcList(i).Y;
       NZ := NpcList(i).Z;
-      result := CasterIsAggro(i) or Engine.InZone(NX, NY, NZ);
+      result := CasterIsAggro(i) or InFarmArea(NX, NY, NZ);
       exit;
     end;
 end;
@@ -1137,7 +1177,7 @@ end;
 // Target choice:
 //  1) something attacks us / the summon -> the lowest-HP of them (switching between them)
 //  2) else keep the current target until it dies
-//  3) else a new mob: lowest HP within CasterRange, or the nearest one in the zone
+//  3) else a new mob: lowest HP within CasterRange, else lowest HP anywhere in the zone
 function CasterChooseTarget(): integer;
 begin
   result := CasterPickAggro();
@@ -1148,6 +1188,19 @@ begin
   end;
   result := CasterFindNewMob(0);
   if result = 0 then result := CasterFindNewMob(1);
+end;
+
+// mob with this OID is a champion (MaxHP above PET_MELEE_MIN_HP)
+function IsChampionOID(OID: integer): boolean;
+var i, MaxHP: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do
+    if NpcList(i).OID = OID then begin
+      MaxHP := NpcList(i).MaxHP;
+      result := MaxHP > PET_MELEE_MIN_HP;
+      exit;
+    end;
 end;
 
 // ---- skills by priority (AddCasterSkill / AddPetSkill) ----
@@ -1237,7 +1290,8 @@ begin
   end;
 
   if HaveSummon() then begin
-    if GetTickCount - LastPetAttack >= PET_ATTACK_MS then begin
+    // the summon runs in and hits with its hands only on champions; on others it just uses its skills
+    if (GetTickCount - LastPetAttack >= PET_ATTACK_MS) and IsChampionOID(OID) then begin
       PetAction(PET_ATTACK_ACTION);
       LastPetAttack := GetTickCount;
     end;
@@ -1274,7 +1328,7 @@ begin
     end;
     if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then continue;   // rebuff first
 
-    CheckSummon();
+    // a dead / missing summon is renewed by SummonWatch_Thread (safe point, combat, summon, buff)
     OID := CasterChooseTarget();
     if OID = 0 then begin
       CasterTarget := 0;
@@ -1351,12 +1405,15 @@ begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
-  result := Engine.InZone(UX, UY, UZ);
+  result := InFarmArea(UX, UY, UZ);
 end;
 
 // Loads the interface config and the farm zone.
 // Whether the zone really loaded is checked afterwards by IsInFarmZone.
+// SetZone('') = keep the zone that is active in the bot; if there is none
+// (we do not stand in it) -> FREE_RADIUS around the start point.
 procedure LoadFarmSettings();
+var UX, UY, UZ: integer;
 begin
   if ConfigName <> '' then begin
     Engine.Msg('[Init]', 'LoadConfig: ' + Script.Path + CONFIG_DIR + ConfigName, 128);
@@ -1364,10 +1421,28 @@ begin
     Delay(1000);
   end;
 
-  Engine.Msg('[Init]', 'LoadZone: ' + Script.Path + ZONE_DIR + ZoneName, 128);
-  Engine.ClearZone;
-  Engine.LoadZone(Script.Path + ZONE_DIR + ZoneName);
-  Delay(500);
+  if ZoneName <> '' then begin
+    Engine.Msg('[Init]', 'LoadZone: ' + Script.Path + ZONE_DIR + ZoneName, 128);
+    Engine.ClearZone;
+    Engine.LoadZone(Script.Path + ZONE_DIR + ZoneName);
+    Delay(500);
+    UseRadius := false;
+  end else if not AreaDecided then begin
+    AreaDecided := true;
+    UX := User.X;
+    UY := User.Y;
+    UZ := User.Z;
+    UseRadius := not Engine.InZone(UX, UY, UZ);
+    if UseRadius then begin
+      if not StayMode() then begin   // home = start point (stay mode sets it in RunFarm)
+        HomeX := UX;
+        HomeY := UY;
+        HomeZ := UZ;
+      end;
+      Engine.Msg('[Init]', 'No zone in the bot: farming within ' + IntToStr(FREE_RADIUS) + ' of the start point', 128);
+    end else
+      Engine.Msg('[Init]', 'Using the zone that is active in the bot', 128);
+  end;
 end;
 
 // Loads zone + config and turns the profile on ONLY if we stand inside the zone.
@@ -1892,9 +1967,19 @@ end;
 // sometimes ignored (attack / cast animation) and the char fights with bare hands.
 // Using an item that is already on takes it OFF, so before every UseItem the
 // inventory is refreshed and checked again - never toggle on stale data.
+// Only one thread swaps weapons at a time (EquipBusy): two UseItem of the same
+// weapon in a row would take it off again.
 function EquipWeapon(ItemID: integer): boolean;
-var Tries: integer;
+var Tries, Waited: integer;
 begin
+  // another thread is swapping right now -> wait for it, then check again
+  Waited := 0;
+  while EquipBusy and (Waited < 15000) do begin
+    Delay(200);
+    Waited := Waited + 200;
+  end;
+  EquipBusy := true;
+
   result := IsEquipped(ItemID);
   Tries := 0;
   while (not result) and (Tries < EQUIP_TRIES) and (not User.Dead) do begin
@@ -1907,7 +1992,9 @@ begin
     result := IsEquipped(ItemID);
   end;
   if not result then
-    Engine.Msg('[Tree]', 'Could not equip item ' + IntToStr(ItemID) + ' after ' + IntToStr(EQUIP_TRIES) + ' tries', 128);
+    Engine.Msg('[Weapon]', 'Could not equip item ' + IntToStr(ItemID) + ' after ' + IntToStr(EQUIP_TRIES) + ' tries', 128);
+
+  EquipBusy := false;
 end;
 
 // Shoots the mob with the bow until it dies. Ported from spoil_cbp_dion_2 HandleTreeMob.
@@ -2008,12 +2095,11 @@ procedure TreeWatch_Thread();
 const
   POLL_MS = 500;
 var
-  OID, LastOID, Idx, HP, LastHP, StuckMs, NX, NY, NZ, WeaponMs: integer;
+  OID, LastOID, Idx, HP, LastHP, StuckMs, NX, NY, NZ: integer;
 begin
   LastOID := 0;
   LastHP := -1;
   StuckMs := 0;
-  WeaponMs := 0;
   while Delay(POLL_MS) do begin
     // only while farming; a low buff belongs to the rebuff thread
     if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or User.Dead or
@@ -2022,20 +2108,7 @@ begin
       continue;
     end;
 
-    // the melee weapon must be on while farming (fixes "fights with bare hands / with the bow")
-    WeaponMs := WeaponMs + POLL_MS;
-    if WeaponMs >= WEAPON_CHECK_MS then begin
-      WeaponMs := 0;
-      if not IsEquipped(TreeMeleeID) then begin
-        RefreshInventory();
-        if not IsEquipped(TreeMeleeID) then begin
-          Engine.Msg('[Tree]', 'Melee weapon is not on, equipping ' + IntToStr(TreeMeleeID), 128);
-          TreeBusy := true;
-          EquipWeapon(TreeMeleeID);
-          TreeBusy := false;
-        end;
-      end;
-    end;
+    // the melee weapon between tree mobs is kept on by WeaponWatch_Thread (WeaponID = TreeMeleeID)
 
     OID := TargetOID();
     Idx := -1;
@@ -2070,6 +2143,50 @@ begin
   end;
 end;
 
+// No SetWeapon: remember the weapon we hold when the script starts.
+// Weapon = equipped item in the right-hand ($4000) or two-hand ($8000) slot.
+procedure RememberWeapon();
+var i, ID, Part: integer;
+  Parts: string;
+begin
+  // tree mobs on: the weapon between them is the melee one from SetTreeMobs, never the bow
+  if TreeEnabled then begin
+    if (WeaponID > 0) and (WeaponID <> TreeMeleeID) then
+      Engine.Msg('[Weapon]', 'SetWeapon differs from the SetTreeMobs melee weapon, using ' + IntToStr(TreeMeleeID), 128);
+    WeaponID := TreeMeleeID;
+    exit;
+  end;
+  if WeaponID > 0 then exit;
+  RefreshInventory();
+  Parts := '';
+  for i := 0 to Inventory.User.Count - 1 do begin
+    if not Inventory.User.Items(i).Equipped then continue;
+    ID := Inventory.User.Items(i).ID;
+    Part := Inventory.User.Items(i).BodyPart;
+    if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
+      WeaponID := ID;
+      Engine.Msg('[Weapon]', 'Remembered weapon: ' + Inventory.User.Items(i).Name + ' (ID ' + IntToStr(ID) + ')', 128);
+      exit;
+    end;
+    Parts := Parts + ' ' + IntToStr(ID) + '/' + IntToStr(Part);
+  end;
+  Engine.Msg('[Weapon]', 'No weapon in hands - disarm check is OFF. Equipped ID/slot:' + Parts, 128);
+end;
+
+// ===================== Disarm guard (SetWeapon) =====================
+// A mob can take the weapon off (disarm): put it back on. EquipWeapon refreshes
+// the inventory first, so a weapon that is on is never toggled off.
+
+procedure WeaponWatch_Thread();
+begin
+  while Delay(WEAPON_POLL_MS) do begin
+    if (not IsOnline()) or User.Dead or TreeBusy then continue;   // tree handler wears the bow on purpose
+    if IsEquipped(WeaponID) then continue;
+    Engine.Msg('[Weapon]', 'Weapon ' + IntToStr(WeaponID) + ' is not on (disarm?), equipping', 128);
+    EquipWeapon(WeaponID);
+  end;
+end;
+
 // ===================== Ignored NPCs in profile mode =====================
 // Script modes skip them when picking targets; the profile picks its own targets,
 // so here we just drop the target if the profile took an ignored NPC.
@@ -2089,10 +2206,49 @@ begin
   end;
 end;
 
-// ===================== Summon renew (SetSummon with RenewPercent) =====================
-// The summon lives for a limited time; its time left is the pet "Fed" %.
-// Below SummonRenewPct: kill what is on us, go to the safe point, dismiss the
-// summon, cast the summon skill again, back to farm.
+// ===================== Summon renew (SetSummon) =====================
+// Summon died / is missing, or its time left (pet "Fed" %) is below SummonRenewPct:
+//   safe point -> kill mobs + leave combat -> dismiss the old one (if alive) ->
+//   summon a new one -> rebuff (the new summon comes without buffs) -> farm.
+
+procedure RenewSummon(Reason: string);
+begin
+  SummonBusy := true;
+  Engine.Msg('[Summon]', Reason + ', renewing the summon', 128);
+  FarmOff();
+
+  // 1) safe point (mobs that follow us are killed there)
+  if not GoToSafePoint() then
+    Engine.Msg('[Summon]', 'Safe point is not safe, renewing here', 128);
+  // 2) kill everything on us and wait until we are out of combat
+  if not ClearCombat() then
+    Engine.Msg('[Summon]', 'Still in combat, summoning anyway', 128);
+
+  if (not User.Dead) and (not NeedReturn) then begin
+    // 3) dismiss the old summon if it is still alive
+    if HaveSummon() then begin
+      Engine.DismissSum;
+      Delay(2000);
+    end;
+    // 4) summon a new one
+    Engine.UseSkill(SummonSkill);
+    Delay(RESUMMON_WAIT);
+    if HaveSummon() then
+      Engine.Msg('[Summon]', 'New summon is out', 128)
+    else
+      Engine.Msg('[Summon]', 'Summon did NOT come out, next try in a moment', 128);
+
+    // 5) rebuff: the summon is buffed together with us
+    if (BuffID <> 0) and (not User.Dead) and HaveSummon() then begin
+      Engine.Msg('[Summon]', 'Rebuff after the summon', 0);
+      BuffAltB();
+      Delay(2000);
+    end;
+  end;
+
+  if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
+  SummonBusy := false;
+end;
 
 procedure SummonWatch_Thread();
 var
@@ -2102,45 +2258,22 @@ begin
   LastLog := 0;
   while Delay(1000) do begin
     if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or User.Dead or TreeBusy then continue;
-    if not HaveSummon() then continue;   // missing summon is summoned by the fight thread
 
+    // summon died or is not out
+    if not HaveSummon() then begin
+      RenewSummon('Summon is dead / missing');
+      continue;
+    end;
+
+    // summon time is running out
+    if SummonRenewPct <= 0 then continue;
     Fed := PetList(0).Fed;
     if GetTickCount - LastLog >= 60000 then begin
       Engine.Msg('[Summon]', 'Summon time left: ' + IntToStr(Fed) + '%', 0);
       LastLog := GetTickCount;
     end;
-    if Fed >= SummonRenewPct then continue;
-
-    SummonBusy := true;
-    Engine.Msg('[Summon]', 'Summon time ' + IntToStr(Fed) + '% < ' + IntToStr(SummonRenewPct) + '%, renewing', 128);
-    FarmOff();
-
-    // 1) safe point (mobs that follow us are killed there), 2) make sure nothing hits us
-    if not GoToSafePoint() then
-      Engine.Msg('[Summon]', 'Safe point is not safe, renewing here', 128);
-    CasterKillAggro();
-
-    if (not User.Dead) and (not NeedReturn) then begin
-      // 3) dismiss the old summon, 4) summon a new one
-      Engine.DismissSum;
-      Delay(2000);
-      Engine.UseSkill(SummonSkill);
-      Delay(RESUMMON_WAIT);
-      if HaveSummon() then
-        Engine.Msg('[Summon]', 'New summon is out', 128)
-      else
-        Engine.Msg('[Summon]', 'Summon did NOT come out, the fight thread will try again', 128);
-
-      // 5) buff: the new summon comes without buffs, it is buffed together with us
-      if (BuffID <> 0) and (not User.Dead) then begin
-        Engine.Msg('[Summon]', 'Buffing after the renew', 0);
-        BuffAltB();
-        Delay(2000);
-      end;
-    end;
-
-    if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
-    SummonBusy := false;
+    if Fed < SummonRenewPct then
+      RenewSummon('Summon time ' + IntToStr(Fed) + '% < ' + IntToStr(SummonRenewPct) + '%');
   end;
 end;
 
@@ -2229,16 +2362,27 @@ begin
   end;
 end;
 
+// ---- champions (SetChampionAlert): a mob with a lot of HP appeared ----
+
+procedure OnChampionDetected(i: integer);
+var MaxHP: integer;
+begin
+  MaxHP := NpcList(i).MaxHP;
+  Alert('[Champion]', NpcList(i).Name + ' (' + IntToStr(MaxHP) + ' HP) spawned near me', DEFAULT_CHAMPION_SOUND);
+end;
+
 procedure Events_Thread();
 var
   Seen, Cur: array of integer;   // OIDs of players near us: last poll / this poll
-  i, j, n, OID, X, Y, Z: integer;
+  SeenChamp: array of integer;   // OIDs of champions we already reported
+  i, j, n, OID, X, Y, Z, MaxHP: integer;
   Known: boolean;
   MaxOID: cardinal;
   M: TChatMessage;
   Me: string;
 begin
   SetLength(Seen, 0);
+  SetLength(SeenChamp, 0);
   MaxOID := LastPrivateOID();   // old messages are not events
 
   while Delay(EVENTS_POLL_MS) do begin
@@ -2280,6 +2424,30 @@ begin
         MaxOID := M.OID;
         if M.Sender <> Me then OnPrivateMessage(M.Sender, M.Text);
       end;
+    end;
+
+    // --- champions: alive mob with MaxHP above ChampionMinHP, once per mob ---
+    if ChampionMinHP > 0 then begin
+      SetLength(Cur, 0);
+      for i := 0 to NpcList.Count - 1 do begin
+        if NpcList(i).Dead then continue;
+        MaxHP := NpcList(i).MaxHP;
+        if MaxHP <= ChampionMinHP then continue;
+        if IsIgnoredNpc(i) then continue;
+
+        OID := NpcList(i).OID;
+        n := Length(Cur);
+        SetLength(Cur, n + 1);
+        Cur[n] := OID;
+
+        Known := false;
+        for j := 0 to Length(SeenChamp) - 1 do
+          if SeenChamp[j] = OID then begin Known := true; break; end;
+        if not Known then OnChampionDetected(i);
+      end;
+      // remember only champions that are still around (dead / gone -> forgotten)
+      SetLength(SeenChamp, Length(Cur));
+      for i := 0 to Length(Cur) - 1 do SeenChamp[i] := Cur[i];
     end;
   end;
 end;
@@ -2335,6 +2503,7 @@ begin
   if not PrivateSoundSet then PrivateSound := DEFAULT_PRIVATE_SOUND;
   if not DeathSoundSet then DeathSound := DEFAULT_DEATH_SOUND;
   if not AlertBlinkSet then AlertBlink := true;
+  if not ChampionAlertSet then ChampionMinHP := DEFAULT_CHAMPION_HP;
 end;
 
 procedure RunFarm();
@@ -2367,11 +2536,13 @@ begin
   if CasterEnabled then begin
     if CasterRange <= 0 then CasterRange := DEFAULT_TARGET_RANGE;
     Script.NewThread(@CasterFarm_Thread);
-    if (SummonSkill > 0) and (SummonRenewPct > 0) then Script.NewThread(@SummonWatch_Thread);
+    if SummonSkill > 0 then Script.NewThread(@SummonWatch_Thread);
   end;
   if HasPatrol() and (not AoeEnabled) and (not CasterEnabled) then Script.NewThread(@Patrol_Thread);
   if (not AoeEnabled) and (not CasterEnabled) then Script.NewThread(@IgnoreWatch_Thread);
-  if (PlayerAlertRange > 0) or PrivateAlert then Script.NewThread(@Events_Thread);
+  RememberWeapon();   // no SetWeapon -> the weapon in hands right now
+  if WeaponID > 0 then Script.NewThread(@WeaponWatch_Thread);
+  if (PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0) then Script.NewThread(@Events_Thread);
   Delay(-1);
 end;
 

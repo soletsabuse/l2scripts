@@ -10,7 +10,8 @@ begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
   // SetLogin('login', 'password');
 
-  SetZone('necro_1.zmap');   // Library\Zones - the zone to farm in
+  // '' = farm in the zone you drew in the bot; no zone there -> mobs within 900 of where you started
+  SetZone('');
   SetConfig('');             // no interface config
 
   // main character buff: watched buff ID + buff bypasses (sent in this order)
@@ -34,7 +35,7 @@ begin
   // No AddCasterSkill lines = plain attack.
   // TODO: necro skill IDs (cast them with action_sniffer running -> [Skill] N)
   
-  AddCasterSkill(1234, SKILL_DRAIN,  7000, 50);    // Vampiric
+  AddCasterSkill(1234, SKILL_DRAIN,  1000, 50);    // Vampiric
   AddCasterSkill(1263, SKILL_DEBUFF, 4000, 0);    // debuff, again on the same mob after 30 sec
   AddCasterSkill(1343, SKILL_NUKE,  7000, 70);    // Vortex
   AddCasterSkill(1148, SKILL_NUKE,   500, 0);     // main damage skill
@@ -71,8 +72,8 @@ begin
   // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
   // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
   AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
-  AddSupply(CURSED_BONE,              5000, 5000);
-  AddSupply(MANA_DRUG,                50, 100);
+  AddSupply(CURSED_BONE,              10000, 20000);
+  AddSupply(MANA_DRUG,                200, 500);
   // AddSupply(MANA_POTION,              10, 50);
   // AddSupply(HEALING_POTION,           10, 50);
 
