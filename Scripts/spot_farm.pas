@@ -13,11 +13,12 @@ unit SpotFarm;
 //     SetExpOff(true);                     // optional: turn XP gain off (exp?state=off)
 //     SetLogin('login', 'password');       // optional: log in at start and after a disconnect
 //     SetTreeMobs(bow, melee, 600);        // optional: shoot mobs the profile cannot reach (bow/melee item IDs)
-//     -- alerts are ON by default, these lines only change them --
-//     SetPlayerAlert(2000);                // player (not party/clan) closer than N; 0 = off
-//     SetPrivateAlert(true);               // private messages; false = off
-//     SetPlayerSound('player.wav');        // file in Library\Sounds; '' = no sound
-//     SetPrivateSound('private.wav');      // file in Library\Sounds; '' = no sound
+//     -- alerts: defaults below, these lines only change them --
+//     SetPlayerAlert(2000);                // player (not party/clan) closer than N; default 0 = off
+//     SetPrivateAlert(true);               // private messages; default ON, false = off
+//     SetPlayerSound('alarm (fem).wav');   // file in Library\Sounds; '' = no sound
+//     SetPrivateSound('incoming private msg (fem).wav');
+//     SetDeathSound('caracter died.wav');  // our character died; '' = no sound
 //     SetAlertBlink(true);                 // blink the game window in the taskbar; false = off
 //     SetTelegram('api key');              // optional: send alerts to Telegram (key from the Adrenaline cabinet)
 //     AddSupply(SOULSHOT_C, 8000, 15000);  // optional: less than 8000 -> buy up to 15000 (constants below)
@@ -66,6 +67,7 @@ procedure SetPlayerAlert(Range: integer);
 procedure SetPrivateAlert(Enabled: boolean);
 procedure SetPlayerSound(FileName: string);
 procedure SetPrivateSound(FileName: string);
+procedure SetDeathSound(FileName: string);
 procedure SetAlertBlink(Enabled: boolean);
 procedure SetTelegram(ApiKey: string);
 procedure AddSupply(ItemID: integer; MinCount, MaxCount: integer);
@@ -111,9 +113,10 @@ const
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
   PATH_REACHED      = 150;      // "I am at the point"
   SOUND_DIR         = '..\Sounds\';   // relative to Library\Scripts (Script.Path)
-  DEFAULT_PLAYER_ALERT_RANGE = 2000;  // alerts are ON unless the spot script changes them
-  DEFAULT_PLAYER_SOUND  = 'player.wav';
-  DEFAULT_PRIVATE_SOUND = 'private.wav';
+  DEFAULT_PLAYER_ALERT_RANGE = 0;     // players around: OFF by default (SetPlayerAlert(2000) turns it on)
+  DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
+  DEFAULT_PRIVATE_SOUND = 'incoming private msg (fem).wav';
+  DEFAULT_DEATH_SOUND   = 'caracter died.wav';
   EVENTS_POLL_MS    = 1000;   // how often players around / private messages are checked
   LOGIN_KEY_WAIT    = 4;       // seconds before each Enter (proxy, character) - same as login_test.txt
   LOGIN_RETRY_WAIT  = 30000;    // ms between failed login attempts
@@ -148,8 +151,9 @@ var
   PlayerSound: string;            // SetPlayerSound: file in Library\Sounds, '' = no sound
   PrivateSound: string;           // SetPrivateSound: file in Library\Sounds, '' = no sound
   TelegramKey: string;            // SetTelegram: '' = no telegram
+  DeathSound: string;             // SetDeathSound: file in Library\Sounds, '' = no sound
   AlertBlink: boolean;            // SetAlertBlink: blink the game window in the taskbar
-  PlayerAlertSet, PrivateAlertSet, PlayerSoundSet, PrivateSoundSet, AlertBlinkSet: boolean;
+  PlayerAlertSet, PrivateAlertSet, PlayerSoundSet, PrivateSoundSet, DeathSoundSet, AlertBlinkSet: boolean;
 
 // ===================== Tree mobs (SetTreeMobs) =====================
   TreeEnabled: boolean;
@@ -232,6 +236,12 @@ procedure SetPrivateSound(FileName: string);
 begin
   PrivateSound := FileName;
   PrivateSoundSet := true;
+end;
+
+procedure SetDeathSound(FileName: string);
+begin
+  DeathSound := FileName;
+  DeathSoundSet := true;
 end;
 
 procedure SetAlertBlink(Enabled: boolean);
@@ -858,6 +868,17 @@ begin
   IsRecovering := false;
 end;
 
+// ===================== Alerts =====================
+// Every alert goes to the bot chat + its sound from Library\Sounds + taskbar blink + Telegram (SetTelegram).
+
+procedure Alert(Title, Text, Sound: string);
+begin
+  Engine.Msg(Title, Text, 255);
+  if Sound <> '' then PlaySound(Script.Path + SOUND_DIR + Sound);
+  if AlertBlink then Engine.BlinkWindow(true);   // true = game window, false = Adrenaline window
+  if TelegramKey <> '' then SendToTelegram(TelegramKey, User.Name + ': ' + Title + ' ' + Text);
+end;
+
 // ===================== Death / return thread =====================
 // The ONLY thread that moves the character between town and spot.
 
@@ -876,7 +897,8 @@ begin
       OnSpot := false;
       NeedReturn := true;
       Engine.FaceControl(0, false);
-      Engine.Msg('[Death]', 'Dead. Waiting 5 sec before "To Village"...', 128);
+      Alert('[Death]', 'Character died', DeathSound);
+      Engine.Msg('[Death]', 'Waiting 5 sec before "To Village"...', 128);
 
       WaitCounter := 0;
       while (WaitCounter < 5) and User.Dead do begin
@@ -1229,15 +1251,7 @@ end;
 
 // ===================== Events: players around, private messages =====================
 // Everything is polled from one thread, so spot scripts need no OnAction.
-// Every event goes to the bot chat + its sound from Library\Sounds + Telegram (SetTelegram).
-
-procedure Alert(Title, Text, Sound: string);
-begin
-  Engine.Msg(Title, Text, 255);
-  if Sound <> '' then PlaySound(Script.Path + SOUND_DIR + Sound);
-  if AlertBlink then Engine.BlinkWindow(true);   // true = game window, false = Adrenaline window
-  if TelegramKey <> '' then SendToTelegram(TelegramKey, User.Name + ': ' + Title + ' ' + Text);
-end;
+// Every event goes through Alert (see above the death thread).
 
 // ---- players around (SetPlayerAlert) ----
 
@@ -1384,6 +1398,7 @@ begin
   if not PrivateAlertSet then PrivateAlert := true;
   if not PlayerSoundSet then PlayerSound := DEFAULT_PLAYER_SOUND;
   if not PrivateSoundSet then PrivateSound := DEFAULT_PRIVATE_SOUND;
+  if not DeathSoundSet then DeathSound := DEFAULT_DEATH_SOUND;
   if not AlertBlinkSet then AlertBlink := true;
 end;
 
