@@ -13,6 +13,17 @@ unit SpotFarm;
 //     SetExpOff(true);                     // optional: turn XP gain off (exp?state=off)
 //     SetLogin('login', 'password');       // optional: log in at start and after a disconnect
 //     SetTreeMobs(bow, melee, 600);        // optional: shoot mobs the profile cannot reach (bow/melee item IDs)
+//     SetPatrol(20, [x1, y1, z1,  x2, y2, z2]);  // optional: no target for 20 sec -> walk these points until one appears
+//     SetCasterFarm([mobs]);               // optional: farm WITHOUT the interface, lowest-HP mob first, retarget all the time
+//     AddCasterSkill(id, SKILL_DEBUFF, 30000, 0);  // our skills in priority order (kind, interval ms, param)
+//     SetSummon(skill, 10);                // optional: summon skill (cast when missing / before buff);
+//                                          //   time left (Fed %) < 10 -> safe point, dismiss, summon again; 0 = never
+//     SetTargetRange(700);                 // optional: caster mode picks targets only this close (default 700)
+//     AddPetSkill(action, SKILL_NUKE, 5000, 0);    // summon skills = action IDs, same kinds
+//     SetSummonBuff(['bypass']);           // optional: buff bypasses for the summon
+//   No SetPath and no SetTeleport = stay mode: farm where started, never travel, wait for a res on death.
+//     SetAoeFarm(5, 302, 444, [36], [20941, 20944]);  // optional: farm WITHOUT the interface (pull pack of 5,
+//                                          //   mass spoil 302, mass sweep 444, AoE skills, mob IDs; [0] = none/any)
 //     -- alerts: defaults below, these lines only change them --
 //     SetPlayerAlert(2000);                // player (not party/clan) closer than N; default 0 = off
 //     SetPrivateAlert(true);               // private messages; default ON, false = off
@@ -54,6 +65,11 @@ const
   MANA_POTION               = 728;
   HEALING_POTION            = 1539;
 
+// ===================== Skill kinds for AddCasterSkill / AddPetSkill =====================
+  SKILL_NUKE    = 1;   // damage: every IntervalMs (its reuse)
+  SKILL_DEBUFF  = 2;   // once per mob, again on the same mob only after IntervalMs
+  SKILL_DRAIN   = 3;   // only when HP % < Param (necro HP for AddCasterSkill, summon HP for AddPetSkill)
+
 procedure SetZone(Name: string);
 procedure SetConfig(Name: string);
 procedure SetTeleport(Bypass: string);
@@ -62,6 +78,14 @@ procedure SetPath(Points: array of integer);
 procedure SetSafePoint(X, Y, Z: integer);
 procedure SetExpOff(Enabled: boolean);
 procedure SetTreeMobs(BowID, MeleeID, BowRange: integer);
+procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, MobIDs: array of integer);
+procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
+procedure SetCasterFarm(MobIDs: array of integer);
+procedure SetSummon(SummonSkillID, RenewPercent: integer);
+procedure SetTargetRange(Range: integer);
+procedure AddCasterSkill(SkillID, Kind, IntervalMs, Param: integer);
+procedure AddPetSkill(ActionID, Kind, IntervalMs, Param: integer);
+procedure SetSummonBuff(Bypasses: array of string);
 procedure SetLogin(Login, Password: string);
 procedure SetPlayerAlert(Range: integer);
 procedure SetPrivateAlert(Enabled: boolean);
@@ -107,7 +131,15 @@ const
   TREE_NEAR_RANGE   = 1000;     // "close to us" for the detection above
   TREE_STUCK_MS     = 10000;    // while shooting: no HP drop this long -> move around the mob (45 deg)
   TREE_MAX_REPOS    = 8;        // repositions (full circle) before giving up on the mob
-  EQUIP_TRIES       = 5;        // UseItem attempts until the weapon is really on
+  DEFAULT_TARGET_RANGE = 700;   // caster mode: pick targets only this close, unless SetTargetRange
+  PET_ATTACK_ACTION = 22;      // RequestActionUse action: summon (servitor) attacks the target (pet = 16)
+  PET_ATTACK_MS     = 2000;     // repeat the attack order every N ms
+  PET_SKILL_GAP     = 1000;     // at least N ms between two summon skills
+  RESUMMON_WAIT     = 5000;     // ms to wait after casting the summon skill
+  AOE_AGGRO_DIST    = 1500;    // AoE mode: "aggro" mobs farther than this are ignored (stuck / teleported)
+  AOE_SWEEP_RANGE   = 150;      // AoE mode: sweep only corpses this close
+  AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
+  EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   WEAPON_CHECK_MS   = 5000;     // while farming: check every N ms that the melee weapon is on
   PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
@@ -154,6 +186,44 @@ var
   DeathSound: string;             // SetDeathSound: file in Library\Sounds, '' = no sound
   AlertBlink: boolean;            // SetAlertBlink: blink the game window in the taskbar
   PlayerAlertSet, PrivateAlertSet, PlayerSoundSet, PrivateSoundSet, DeathSoundSet, AlertBlinkSet: boolean;
+
+// ===================== AoE farm (SetAoeFarm) =====================
+  AoeEnabled: boolean;            // SetAoeFarm called: the script farms, the interface stays OFF
+  FarmPaused: boolean;            // AoE mode: FarmOff() pauses AoeFarm_Thread
+  AoePackSize, AoeSpoilSkill, AoeSweepSkill: integer;
+  AoeSkills: array of integer;    // AoE damage skills; empty = plain attack
+  AoeMobIDs: array of integer;    // mobs to pull; empty = any mob in the zone
+
+// ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
+  CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
+  CasterMobIDs: array of integer; // mobs to attack; empty = any mob in the zone
+  CasterTarget: integer;          // OID we are attacking now
+  SummonSkill: integer;           // skill that summons the servitor; 0 = do not summon
+  SummonRenewPct: integer;        // summon time left (Fed %) below this -> safe point, dismiss, summon again; 0 = never
+  SummonBusy: boolean;            // true while the summon is being renewed: fight / rebuff threads wait
+  CasterRange: integer;           // SetTargetRange: pick targets only this close (aggro mobs always)
+  IgnoreNames: array of string;   // NPCs never targeted (other players' summons, chests...), lower case
+  LastPetAttack, LastPetSkill: cardinal;
+
+  // skills of the necro (owner 0, AddCasterSkill) and of the summon (owner 1, AddPetSkill),
+  // in priority order: the first one that may be used right now is used
+  SkOwner, SkID, SkKind, SkInterval, SkParam: array of integer;
+  SkLast: array of cardinal;      // when it was used last time
+
+  // debuffs on mobs: ring of (skill index, mob OID, time)
+  DebuffSk: array[0..63] of integer;
+  DebuffOID: array[0..63] of integer;
+  DebuffTime: array[0..63] of cardinal;
+  DebuffHead: integer;
+  SummonBuffBypasses: array of string;   // SetSummonBuff: buff bypasses for the summon
+
+// ===================== Stay mode (no SetPath and no SetTeleport) =====================
+  HomeX, HomeY, HomeZ: integer;   // where the script was started: we come back here
+
+// ===================== Patrol (SetPatrol) =====================
+  PatrolPoints: array of integer; // x, y, z triples; empty = no patrol
+  PatrolIdle: integer;            // seconds without a target before patrolling (profile mode)
+  PatrolIdx: integer;             // next patrol point
 
 // ===================== Tree mobs (SetTreeMobs) =====================
   TreeEnabled: boolean;
@@ -204,6 +274,177 @@ end;
 procedure SetExpOff(Enabled: boolean);
 begin
   ExpOff := Enabled;
+end;
+
+procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, MobIDs: array of integer);
+var i: integer;
+begin
+  AoePackSize := PackSize;
+  AoeSpoilSkill := SpoilSkill;
+  AoeSweepSkill := SweepSkill;
+  SetLength(AoeSkills, 0);
+  for i := 0 to Length(AoeSkillIDs) - 1 do
+    if AoeSkillIDs[i] > 0 then begin   // [0] = no AoE skills (PaxScript has no empty array literal)
+      SetLength(AoeSkills, Length(AoeSkills) + 1);
+      AoeSkills[Length(AoeSkills) - 1] := AoeSkillIDs[i];
+    end;
+  SetLength(AoeMobIDs, 0);
+  for i := 0 to Length(MobIDs) - 1 do
+    if MobIDs[i] > 0 then begin        // [0] = any mob in the zone
+      SetLength(AoeMobIDs, Length(AoeMobIDs) + 1);
+      AoeMobIDs[Length(AoeMobIDs) - 1] := MobIDs[i];
+    end;
+  AoeEnabled := true;
+end;
+
+procedure SetCasterFarm(MobIDs: array of integer);
+var i: integer;
+begin
+  SetLength(CasterMobIDs, 0);
+  for i := 0 to Length(MobIDs) - 1 do
+    if MobIDs[i] > 0 then begin        // [0] = any mob in the zone
+      SetLength(CasterMobIDs, Length(CasterMobIDs) + 1);
+      CasterMobIDs[Length(CasterMobIDs) - 1] := MobIDs[i];
+    end;
+  CasterEnabled := true;
+end;
+
+procedure SetSummon(SummonSkillID, RenewPercent: integer);
+begin
+  SummonSkill := SummonSkillID;
+  SummonRenewPct := RenewPercent;
+end;
+
+procedure SetTargetRange(Range: integer);
+begin
+  CasterRange := Range;
+end;
+
+// ===================== Ignored NPCs =====================
+// Never target these: other players' summons / pets, chests. Edit the list right here.
+
+procedure AddIgnoreName(Name: string);
+var n: integer;
+begin
+  n := Length(IgnoreNames);
+  SetLength(IgnoreNames, n + 1);
+  IgnoreNames[n] := LowerCase(Name);
+end;
+
+procedure LoadIgnoreNames();
+begin
+  SetLength(IgnoreNames, 0);
+  AddIgnoreName('Cursed Man');
+  AddIgnoreName('Corrupted Man');
+  AddIgnoreName('Big Boom');
+  AddIgnoreName('Kat the Cat');
+  AddIgnoreName('Merrow the Unicorn');
+  AddIgnoreName('Boxer the Unicorn');
+  AddIgnoreName('Mirage the Unicorn');
+  AddIgnoreName('Shadow');
+  AddIgnoreName('Magnus the Unicorn');
+  AddIgnoreName('Spectral Lord');
+  AddIgnoreName('Soulless');
+  AddIgnoreName('Nightshade');
+  AddIgnoreName('Reanimated Man');
+  AddIgnoreName('Silhouette');
+  AddIgnoreName('Servitor');
+  AddIgnoreName('Cougar');
+  AddIgnoreName('Toy Knight');
+  AddIgnoreName('Feline Queen');
+  AddIgnoreName('Feline King');
+  AddIgnoreName('Soulgazer');
+  AddIgnoreName('Treasure Chest');
+end;
+
+// NPC i is on the ignore list, or it is one of OUR pets / summons
+function IsIgnoredNpc(i: integer): boolean;
+var j, OID, PetOID: integer;
+  N: string;
+begin
+  result := true;
+  OID := NpcList(i).OID;
+  for j := 0 to PetList.Count - 1 do begin
+    PetOID := PetList(j).OID;
+    if OID = PetOID then exit;
+  end;
+
+  result := false;
+  N := LowerCase(NpcList(i).Name);
+  for j := 0 to Length(IgnoreNames) - 1 do
+    if N = IgnoreNames[j] then begin
+      result := true;
+      exit;
+    end;
+end;
+
+procedure AddSkill(Owner, ID, Kind, IntervalMs, Param: integer);
+var n: integer;
+begin
+  n := Length(SkID);
+  SetLength(SkOwner, n + 1);
+  SetLength(SkID, n + 1);
+  SetLength(SkKind, n + 1);
+  SetLength(SkInterval, n + 1);
+  SetLength(SkParam, n + 1);
+  SetLength(SkLast, n + 1);
+  SkOwner[n] := Owner;
+  SkID[n] := ID;
+  SkKind[n] := Kind;
+  SkInterval[n] := IntervalMs;
+  SkParam[n] := Param;
+  SkLast[n] := 0;
+end;
+
+procedure AddCasterSkill(SkillID, Kind, IntervalMs, Param: integer);
+begin
+  AddSkill(0, SkillID, Kind, IntervalMs, Param);
+end;
+
+procedure AddPetSkill(ActionID, Kind, IntervalMs, Param: integer);
+begin
+  AddSkill(1, ActionID, Kind, IntervalMs, Param);
+end;
+
+procedure SetSummonBuff(Bypasses: array of string);
+var i: integer;
+begin
+  SetLength(SummonBuffBypasses, Length(Bypasses));
+  for i := 0 to Length(Bypasses) - 1 do
+    SummonBuffBypasses[i] := Bypasses[i];
+end;
+
+// no SetPath and no SetTeleport: we never travel, we farm where the script was started
+function StayMode(): boolean;
+begin
+  result := (Length(Path) = 0) and (TeleportBypass = '');
+end;
+
+procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
+var i: integer;
+begin
+  PatrolIdle := IdleSeconds;
+  SetLength(PatrolPoints, Length(Points));
+  for i := 0 to Length(Points) - 1 do
+    PatrolPoints[i] := Points[i];
+  PatrolIdx := 0;
+end;
+
+function HasPatrol(): boolean;
+begin
+  result := Length(PatrolPoints) >= 3;
+end;
+
+// walks to the next patrol point (round robin)
+procedure PatrolStep();
+var n: integer;
+begin
+  n := Length(PatrolPoints) div 3;
+  if n = 0 then exit;
+  if PatrolIdx >= n then PatrolIdx := 0;
+  Engine.Msg('[Patrol]', 'No mobs, patrol point ' + IntToStr(PatrolIdx + 1) + '/' + IntToStr(n), 0);
+  Engine.MoveTo(PatrolPoints[PatrolIdx * 3], PatrolPoints[PatrolIdx * 3 + 1], PatrolPoints[PatrolIdx * 3 + 2]);
+  PatrolIdx := (PatrolIdx + 1) mod n;
 end;
 
 procedure SetTreeMobs(BowID, MeleeID, BowRange: integer);
@@ -476,6 +717,10 @@ var i: integer;
 begin
   for i := 0 to Length(BuffBypasses) - 1 do
     if Engine.BypassToServer(BuffBypasses[i]) then delay(555);
+  // optional extra bypasses for the summon (SetSummonBuff), only if it is out
+  if PetList.Count > 0 then
+    for i := 0 to Length(SummonBuffBypasses) - 1 do
+      if Engine.BypassToServer(SummonBuffBypasses[i]) then delay(555);
 end;
 
 function IsAgr(Mob: TL2Npc): boolean;
@@ -495,6 +740,553 @@ begin
   end;
 end;
 
+// ===================== Farm ON / OFF =====================
+// Profile mode: the bot interface (FaceControl) farms.
+// AoE mode (SetAoeFarm): the interface stays OFF, AoeFarm_Thread farms; ON/OFF = unpause/pause it.
+
+procedure FarmOn();
+begin
+  if AoeEnabled or CasterEnabled then begin
+    Engine.FaceControl(0, false);
+    FarmPaused := false;
+  end else
+    Engine.FaceControl(0, true);
+end;
+
+procedure FarmOff();
+begin
+  FarmPaused := true;
+  Engine.FaceControl(0, false);
+end;
+
+// ===================== AoE farm (SetAoeFarm), ported from tanor_aoe_walk_1 =====================
+// Run past mobs until AoePackSize of them follow us -> mass spoil + AoE skills +
+// mass sweep until the pack is dead -> pick up the drop around. No interface.
+
+// mob is alive, attacks / chases us and is close (far "aggro" = teleported away / stuck)
+function AoeMobIsAggroed(i: integer): boolean;
+var AtkOID, TargetOID, NX, NY, NZ: integer;
+begin
+  result := false;
+  if NpcList(i).Dead then exit;
+  AtkOID := NpcList(i).AtkOID;
+  TargetOID := NpcList(i).Target.OID;
+  if (AtkOID <> User.OID) and (TargetOID <> User.OID) then exit;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  result := User.DistTo(NX, NY, NZ) < AOE_AGGRO_DIST;
+end;
+
+function AoeMobIsWhitelisted(i: integer): boolean;
+var j, ID: integer;
+begin
+  result := Length(AoeMobIDs) = 0;   // empty list = any mob
+  if result then exit;
+  ID := NpcList(i).ID;
+  for j := 0 to Length(AoeMobIDs) - 1 do
+    if ID = AoeMobIDs[j] then begin
+      result := true;
+      exit;
+    end;
+end;
+
+function AoeCountAggro(): integer;
+var i: integer;
+begin
+  result := 0;
+  for i := 0 to NpcList.Count - 1 do
+    if AoeMobIsAggroed(i) then Inc(result);
+end;
+
+function AoeHasUnspoiledMob(): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do
+    if AoeMobIsAggroed(i) and (not NpcList(i).Sweepable) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+function AoeHasSweepableCorpse(): boolean;
+var i, NX, NY, NZ: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do begin
+    if not NpcList(i).Dead then continue;
+    if not NpcList(i).Sweepable then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if User.DistTo(NX, NY, NZ) <= AOE_SWEEP_RANGE then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+procedure AoeTrySpoil();
+begin
+  if (AoeSpoilSkill > 0) and AoeHasUnspoiledMob() then begin
+    Engine.UseSkill(AoeSpoilSkill);
+    Delay(150);
+  end;
+end;
+
+procedure AoeTrySweep();
+begin
+  if (AoeSweepSkill > 0) and AoeHasSweepableCorpse() then begin
+    Engine.UseSkill(AoeSweepSkill);
+    Delay(150);
+  end;
+end;
+
+// pull must stop: something else (rebuff, death, return, tree) needs the character
+function AoeMustStop(): boolean;
+begin
+  result := User.Dead or NeedReturn or IsRecovering or FarmPaused or (not OnSpot) or (not IsOnline());
+end;
+
+// where to run when no mob is visible: the last point of the path (start of the spot)
+procedure AoeRunToSpot();
+var n: integer;
+begin
+  n := Length(Path);
+  if n >= 3 then Engine.MoveTo(Path[n - 3], Path[n - 2], Path[n - 1]);
+end;
+
+// nearest live, not yet aggroed, whitelisted mob inside the zone
+function AoeFindPullMob(var MX, MY, MZ, MOID: integer): boolean;
+var
+  i, NX, NY, NZ: integer;
+  BestDist, D: double;
+begin
+  result := false;
+  BestDist := 999999;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead then continue;
+    if IsIgnoredNpc(i) then continue;
+    if AoeMobIsAggroed(i) then continue;
+    if not AoeMobIsWhitelisted(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if not Engine.InZone(NX, NY, NZ) then continue;
+    D := User.DistTo(NX, NY, NZ);
+    if D < BestDist then begin
+      BestDist := D;
+      MX := NX; MY := NY; MZ := NZ;
+      MOID := NpcList(i).OID;
+      result := true;
+    end;
+  end;
+end;
+
+procedure AoePullPack();
+var
+  PrevCount, NoProgress, AggroBefore, MX, MY, MZ, MOID: integer;
+begin
+  PrevCount := -1;
+  NoProgress := 0;
+  while (AoeCountAggro() < AoePackSize) and (not AoeMustStop()) do begin
+    if AoeCountAggro() <> PrevCount then begin
+      Engine.Msg('[AoE]', 'Aggro ' + IntToStr(AoeCountAggro()) + '/' + IntToStr(AoePackSize), 0);
+      PrevCount := AoeCountAggro();
+      NoProgress := 0;
+    end else
+      Inc(NoProgress);
+    if NoProgress > 25 then begin
+      Engine.Msg('[AoE]', 'No progress, fighting what we have', 0);
+      exit;
+    end;
+
+    if not AoeFindPullMob(MX, MY, MZ, MOID) then begin
+      if HasPatrol() then PatrolStep() else AoeRunToSpot();   // no mobs: patrol (SetPatrol) or back to the spot start
+      Delay(300);
+      continue;
+    end;
+
+    // run to the mob: getting close should aggro it
+    AggroBefore := AoeCountAggro();
+    Engine.MoveTo(MX, MY, MZ);
+    Delay(150);
+
+    // did not aggro -> tap it once
+    if AoeCountAggro() = AggroBefore then begin
+      Engine.SetTarget(MOID);
+      Delay(30);
+      Engine.Attack;
+      Delay(50);
+      Engine.CancelTarget;
+    end;
+  end;
+end;
+
+// spoil + AoE + sweep until nothing attacks us (also used by the rebuff to clear mobs)
+procedure AoeFightPack();
+var i, ai, OID: integer;
+begin
+  while (AoeCountAggro() > 0) and (not User.Dead) and (not NeedReturn) do begin
+    OID := 0;
+    for i := 0 to NpcList.Count - 1 do
+      if AoeMobIsAggroed(i) then begin
+        OID := NpcList(i).OID;
+        break;
+      end;
+    if OID = 0 then break;
+
+    Engine.SetTarget(OID);
+    Delay(50);
+    AoeTrySpoil();
+    AoeTrySweep();
+
+    for ai := 0 to Length(AoeSkills) - 1 do begin
+      if (AoeCountAggro() = 0) or User.Dead then break;
+      AoeTrySpoil();
+      Engine.UseSkill(AoeSkills[ai]);
+      Delay(150);
+      AoeTrySweep();
+    end;
+
+    AoeTrySpoil();
+    AoeTrySweep();
+    if (AoeCountAggro() > 0) and (not User.Dead) then begin
+      Engine.Attack;
+      Delay(150);
+      AoeTrySweep();
+    end;
+  end;
+  if (not User.Dead) and (AoeSweepSkill > 0) then Engine.UseSkill(AoeSweepSkill);   // final sweep
+end;
+
+// pick up every drop near us
+procedure AoePickupLoot();
+var i, DX, DY, DZ: integer;
+begin
+  for i := DropList.Count - 1 downto 0 do begin
+    if User.Dead or NeedReturn then exit;
+    if i >= DropList.Count then continue;   // the list shrinks while we pick up
+    DX := DropList(i).X;
+    DY := DropList(i).Y;
+    DZ := DropList(i).Z;
+    if User.DistTo(DX, DY, DZ) > AOE_PICKUP_RANGE then continue;
+    Engine.MoveTo(DX, DY, DZ);
+    Delay(300);
+    Engine.Pickup;
+    Delay(500);
+  end;
+end;
+
+// the AoE farm loop; runs only while we are on the spot and nobody paused it
+procedure AoeFarm_Thread();
+begin
+  while Delay(300) do begin
+    if AoeMustStop() or TreeBusy then continue;
+    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then continue;   // rebuff first
+
+    AoePullPack();
+    if AoeMustStop() then continue;
+
+    if AoeCountAggro() > 0 then begin
+      Engine.Msg('[AoE]', 'Pack ' + IntToStr(AoeCountAggro()) + ', spoil + AoE + sweep', 0);
+      AoeFightPack();
+      AoePickupLoot();
+    end;
+  end;
+end;
+
+// ===================== Caster farm (SetCasterFarm + SetSummon) =====================
+// No interface. Every tick: pick the mob with the LOWEST HP (switching target
+// all the time, even in the middle of a fight), send the summon at it, use a
+// summon skill, cast our next attack skill. Mobs: whitelist inside the zone +
+// anything that attacks us. Summon missing -> cast SetSummon skill.
+
+// RequestActionUse (56): action ID, ctrl, shift - how the client gives orders to the summon
+procedure PetAction(ActionID: integer);
+begin
+  Engine.SendToServer('56' + HexLE32(ActionID) + '00000000' + '00');
+end;
+
+function HaveSummon(): boolean;
+begin
+  result := (PetList.Count > 0) and (not PetList(0).Dead);
+end;
+
+// no summon -> summon it (SetSummon skill)
+procedure CheckSummon();
+begin
+  if (SummonSkill <= 0) or HaveSummon() or User.Dead then exit;
+  Engine.Msg('[Summon]', 'No summon, casting ' + IntToStr(SummonSkill), 128);
+  Engine.UseSkill(SummonSkill);
+  Delay(RESUMMON_WAIT);
+end;
+
+// the summon is buffed together with us -> it must be out and alive before the buff
+procedure SummonBeforeBuff();
+begin
+  if SummonSkill <= 0 then exit;
+  CheckSummon();
+  if not HaveSummon() then
+    Engine.Msg('[Summon]', 'Summon is not out - it will not get the buff', 128);
+end;
+
+function CasterMobIsWhitelisted(i: integer): boolean;
+var j, ID: integer;
+begin
+  result := Length(CasterMobIDs) = 0;
+  if result then exit;
+  ID := NpcList(i).ID;
+  for j := 0 to Length(CasterMobIDs) - 1 do
+    if ID = CasterMobIDs[j] then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// mob attacks us or our summon
+function CasterIsAggro(i: integer): boolean;
+var Atk, PetOID: integer;
+begin
+  Atk := NpcList(i).AtkOID;
+  result := Atk = User.OID;
+  if (not result) and HaveSummon() then begin
+    PetOID := PetList(0).OID;
+    result := Atk = PetOID;
+  end;
+end;
+
+// Mob to farm (not attacking us yet): Mode 0 = lowest HP inside CasterRange,
+// Mode 1 = nearest anywhere in the zone (we run to it). 0 = nothing.
+function CasterFindNewMob(Mode: integer): integer;
+var
+  i, NX, NY, NZ, HP, BestHP: integer;
+  D, BestDist: double;
+begin
+  result := 0;
+  BestHP := 101;
+  BestDist := 999999;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead then continue;
+    if IsIgnoredNpc(i) then continue;
+    if not CasterMobIsWhitelisted(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if not Engine.InZone(NX, NY, NZ) then continue;
+    D := User.DistTo(NX, NY, NZ);
+    if Mode = 0 then begin
+      if D > CasterRange then continue;
+      HP := NpcList(i).HP;   // percent
+      if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
+        BestHP := HP;
+        BestDist := D;
+        result := NpcList(i).OID;
+      end;
+    end else if D < BestDist then begin
+      BestDist := D;
+      result := NpcList(i).OID;
+    end;
+  end;
+end;
+
+// lowest-HP mob among those that attack us or the summon; 0 = nobody attacks
+function CasterPickAggro(): integer;
+var
+  i, NX, NY, NZ, HP, BestHP: integer;
+  D, BestDist: double;
+begin
+  result := 0;
+  BestHP := 101;
+  BestDist := 999999;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead then continue;
+    if IsIgnoredNpc(i) then continue;
+    if not CasterIsAggro(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    D := User.DistTo(NX, NY, NZ);
+    HP := NpcList(i).HP;
+    if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
+      BestHP := HP;
+      BestDist := D;
+      result := NpcList(i).OID;
+    end;
+  end;
+end;
+
+// current target is still alive (and in the zone, unless it attacks us)
+function CasterTargetAlive(): boolean;
+var i, NX, NY, NZ: integer;
+begin
+  result := false;
+  if CasterTarget = 0 then exit;
+  for i := 0 to NpcList.Count - 1 do
+    if NpcList(i).OID = CasterTarget then begin
+      if NpcList(i).Dead then exit;
+      NX := NpcList(i).X;
+      NY := NpcList(i).Y;
+      NZ := NpcList(i).Z;
+      result := CasterIsAggro(i) or Engine.InZone(NX, NY, NZ);
+      exit;
+    end;
+end;
+
+// Target choice:
+//  1) something attacks us / the summon -> the lowest-HP of them (switching between them)
+//  2) else keep the current target until it dies
+//  3) else a new mob: lowest HP within CasterRange, or the nearest one in the zone
+function CasterChooseTarget(): integer;
+begin
+  result := CasterPickAggro();
+  if result <> 0 then exit;
+  if CasterTargetAlive() then begin
+    result := CasterTarget;
+    exit;
+  end;
+  result := CasterFindNewMob(0);
+  if result = 0 then result := CasterFindNewMob(1);
+end;
+
+// ---- skills by priority (AddCasterSkill / AddPetSkill) ----
+
+function HasSkills(Owner: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to Length(SkID) - 1 do
+    if SkOwner[k] = Owner then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// ms since skill k was put on this mob; huge if never
+function DebuffAge(k, OID: integer): cardinal;
+var i: integer;
+begin
+  result := $7FFFFFFF;
+  for i := 0 to 63 do
+    if (DebuffSk[i] = k) and (DebuffOID[i] = OID) and (DebuffTime[i] > 0) then
+      if GetTickCount - DebuffTime[i] < result then result := GetTickCount - DebuffTime[i];
+end;
+
+procedure MarkDebuff(k, OID: integer);
+begin
+  DebuffSk[DebuffHead] := k;
+  DebuffOID[DebuffHead] := OID;
+  DebuffTime[DebuffHead] := GetTickCount;
+  DebuffHead := (DebuffHead + 1) mod 64;
+end;
+
+// HP % of the skill owner: necro or summon
+function OwnerHP(Owner: integer): integer;
+begin
+  result := 100;
+  if Owner = 0 then result := User.HP
+  else if HaveSummon() then result := PetList(0).HP;
+end;
+
+function SkillReady(k, OID: integer): boolean;
+var Since: cardinal;
+begin
+  Since := GetTickCount - SkLast[k];
+  if SkKind[k] = SKILL_DEBUFF then
+    result := (Since >= 1000) and (DebuffAge(k, OID) >= cardinal(SkInterval[k]))
+  else if SkKind[k] = SKILL_DRAIN then
+    result := (OwnerHP(SkOwner[k]) < SkParam[k]) and (Since >= cardinal(SkInterval[k]))
+  else
+    result := Since >= cardinal(SkInterval[k]);
+end;
+
+// uses the first skill of this owner (0 = necro, 1 = summon) that may be used now
+function UseNextSkill(Owner, OID: integer): boolean;
+var k: integer;
+  Ok: boolean;
+begin
+  result := false;
+  for k := 0 to Length(SkID) - 1 do begin
+    if SkOwner[k] <> Owner then continue;
+    if not SkillReady(k, OID) then continue;
+
+    if Owner = 0 then
+      Ok := Engine.UseSkill(SkID[k])
+    else begin
+      PetAction(SkID[k]);
+      Ok := true;
+    end;
+    if not Ok then continue;   // not castable now (reuse, range...) -> try the next one
+
+    SkLast[k] := GetTickCount;
+    if SkKind[k] = SKILL_DEBUFF then MarkDebuff(k, OID);
+    result := true;
+    exit;
+  end;
+end;
+
+// one fight step on the lowest-HP mob: retarget, summon attack + skill, our skill
+procedure CasterFightStep(OID: integer);
+begin
+  if OID <> CasterTarget then begin
+    Engine.SetTarget(OID);
+    CasterTarget := OID;
+    LastPetAttack := 0;   // new target -> order the summon right away
+    Delay(100);
+  end;
+
+  if HaveSummon() then begin
+    if GetTickCount - LastPetAttack >= PET_ATTACK_MS then begin
+      PetAction(PET_ATTACK_ACTION);
+      LastPetAttack := GetTickCount;
+    end;
+    if GetTickCount - LastPetSkill >= PET_SKILL_GAP then
+      if UseNextSkill(1, OID) then LastPetSkill := GetTickCount;
+  end;
+
+  if not UseNextSkill(0, OID) then begin
+    if HasSkills(0) then Delay(100)        // every skill is waiting for its time
+    else Engine.Attack(300);               // no skills at all: plain attack
+  end;
+end;
+
+// kill everything that attacks us (rebuff uses it to leave combat)
+procedure CasterKillAggro();
+var OID: integer;
+begin
+  while (not User.Dead) and (not NeedReturn) do begin
+    OID := CasterPickAggro();
+    if OID = 0 then exit;
+    CasterFightStep(OID);
+    Delay(200);
+  end;
+end;
+
+procedure CasterFarm_Thread();
+var OID: integer;
+begin
+  CasterTarget := 0;
+  while Delay(200) do begin
+    if AoeMustStop() or TreeBusy or SummonBusy then begin
+      CasterTarget := 0;
+      continue;
+    end;
+    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then continue;   // rebuff first
+
+    CheckSummon();
+    OID := CasterChooseTarget();
+    if OID = 0 then begin
+      CasterTarget := 0;
+      if HasPatrol() then PatrolStep();   // no mob in the whole zone: patrol (SetPatrol)
+      continue;
+    end;
+    CasterFightStep(OID);
+  end;
+end;
+
+// ===================== Clear combat (rebuff) =====================
+
 // Fights off everything that attacks us and leaves combat.
 // Farm is turned OFF only when nobody hits us; if a mob appears again, farm goes back ON.
 function ClearCombat(): boolean;
@@ -505,19 +1297,27 @@ begin
   while (Rounds < 8) do begin
     if User.Dead or NeedReturn then exit;
 
-    // 1) kill everything that is on us
+    // 1) kill everything that is on us (profile mode: the profile kills them, AoE mode: the script)
     if HaveAgroMobs() then begin
       Engine.Msg('[Rebuff]', 'Mobs on me, killing them', 128);
-      Engine.FaceControl(0, true);
-      Wait := 0;
-      while HaveAgroMobs() and (Wait < 220) do begin
-        if User.Dead or NeedReturn then exit;
-        Delay(555); Inc(Wait);
+      if AoeEnabled then begin
+        FarmOff();          // no new pulls, just kill what is on us
+        AoeFightPack();
+      end else if CasterEnabled then begin
+        FarmOff();
+        CasterKillAggro();
+      end else begin
+        FarmOn();
+        Wait := 0;
+        while HaveAgroMobs() and (Wait < 220) do begin
+          if User.Dead or NeedReturn then exit;
+          Delay(555); Inc(Wait);
+        end;
       end;
     end;
 
     // 2) nobody on us now: stop farm and wait for the combat flag to drop
-    Engine.FaceControl(0, false);
+    FarmOff();
     Wait := 0;
     while User.InCombat and (not HaveAgroMobs()) and (Wait < 40) do begin
       if User.Dead or NeedReturn then exit;
@@ -576,7 +1376,7 @@ function StartFarm(ReportMismatch: boolean): boolean;
 begin
   result := false;
   OnSpot := false;
-  Engine.FaceControl(0, false);
+  FarmOff();
 
   LoadFarmSettings();
 
@@ -589,7 +1389,7 @@ begin
   end;
 
   OnSpot := true;
-  Engine.FaceControl(0, true);
+  FarmOn();
   Engine.Msg('[Farm]', '=== In the zone, profile ON ===', 128);
   result := true;
 end;
@@ -671,7 +1471,7 @@ begin
   for Tries := 1 to 3 do begin
     if User.Dead or NeedReturn then exit;
     Engine.Msg('[Rebuff]', 'Going to the safe point', 0);
-    Engine.FaceControl(0, false);
+    FarmOff();
     Engine.MoveTo(SafeX, SafeY, SafeZ);
     Delay(1000);
     if User.Dead or NeedReturn then exit;
@@ -702,7 +1502,7 @@ begin
   Engine.Msg('[Return]', Reason + ' -> going back via Aden', 128);
   OnSpot := false;
   NeedReturn := true;
-  Engine.FaceControl(0, false);
+  FarmOff();
 end;
 
 // ===================== Return logic (always via Aden) =====================
@@ -749,6 +1549,7 @@ begin
   end;
 
   Engine.Msg('[Return]', 'Buffing in Aden...', 0);
+  SummonBeforeBuff();   // the summon is buffed together with us
   Tries := 0;
   repeat
     if User.Dead then exit;
@@ -766,7 +1567,7 @@ end;
 procedure GoToGatekeeper();
 begin
   Engine.Msg('[Return]', 'Going to gatekeeper...', 0);
-  Engine.FaceControl(0, false);
+  FarmOff();
   Engine.MoveTo(GK_X, GK_Y, GK_Z);
   Delay(1000);
 end;
@@ -835,7 +1636,16 @@ begin
   result := false;
   IsRecovering := true;
   OnSpot := false;
-  Engine.FaceControl(0, false);
+  FarmOff();
+  // stay mode: no Aden, no teleport - walk back to where the script was started
+  if StayMode() then begin
+    Engine.Msg('[GoToSpot]', 'Stay mode: back to the start point', 0);
+    WalkToPoint(HomeX, HomeY, HomeZ);
+    result := StartFarm(true);
+    IsRecovering := false;
+    exit;
+  end;
+
   Engine.Msg('[GoToSpot]', '=== Going to the farm spot via Aden ===', 128);
 
   if not TeleportToAden() then begin
@@ -896,8 +1706,18 @@ begin
       IsRecovering := true;
       OnSpot := false;
       NeedReturn := true;
-      Engine.FaceControl(0, false);
+      FarmOff();
       Alert('[Death]', 'Character died', DeathSound);
+
+      // stay mode: there is no way back from town -> wait for a resurrection
+      if StayMode() then begin
+        Engine.Msg('[Death]', 'Stay mode: waiting for a resurrection (no "To Village")', 128);
+        while User.Dead do Delay(1000);
+        Delay(3000);
+        IsRecovering := false;
+        continue;   // NeedReturn -> back to the start point and farm
+      end;
+
       Engine.Msg('[Death]', 'Waiting 5 sec before "To Village"...', 128);
 
       WaitCounter := 0;
@@ -951,7 +1771,7 @@ begin
   Fails := 0;
   SuppliesDone := false;
   while delay(1000) do begin
-    if TreeBusy then continue;   // tree handler is shooting a mob, rebuff after it
+    if TreeBusy or SummonBusy then continue;   // tree handler / summon renew are busy, rebuff after them
     if (not IsOnline()) or IsRecovering or NeedReturn then begin
       Fails := 0;
       continue;
@@ -973,7 +1793,7 @@ begin
             continue;
           end;
           Engine.Msg('[Rebuff]', 'Still in combat, back to farm, retry in 5 sec', 128);
-          Engine.FaceControl(0, true);
+          FarmOn();
           Delay(5000);
           continue;
         end;
@@ -989,13 +1809,14 @@ begin
             continue;
           end;
           Engine.Msg('[Rebuff]', 'Safe point is not safe, back to farm, retry in 5 sec', 128);
-          Engine.FaceControl(0, true);
+          FarmOn();
           Delay(5000);
           continue;
         end;
         Delay(1000);
       end;
 
+      SummonBeforeBuff();   // the summon is buffed together with us
       BuffAltB();
       Delay(2000);
 
@@ -1019,7 +1840,7 @@ begin
         BuySupplies();
       end;
 
-      if OnSpot and (not User.Dead) and (not NeedReturn) then Engine.FaceControl(0, true);   // back to farm
+      if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();   // back to farm
     end else
       SuppliesDone := false;     // buffed: next low-buff event is a new cycle
   end;
@@ -1239,12 +2060,126 @@ begin
 
     if StuckMs >= TREE_DETECT_MS then begin
       TreeBusy := true;
-      Engine.FaceControl(0, false);
+      FarmOff();
       HandleTreeMob(OID);
-      if OnSpot and (not User.Dead) and (not NeedReturn) then Engine.FaceControl(0, true);
+      if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
       TreeBusy := false;
       LastOID := 0;
       StuckMs := 0;
+    end;
+  end;
+end;
+
+// ===================== Ignored NPCs in profile mode =====================
+// Script modes skip them when picking targets; the profile picks its own targets,
+// so here we just drop the target if the profile took an ignored NPC.
+
+procedure IgnoreWatch_Thread();
+var OID, Idx: integer;
+begin
+  while Delay(300) do begin
+    if (not IsOnline()) or (not OnSpot) or User.Dead then continue;
+    OID := TargetOID();
+    if OID = 0 then continue;
+    Idx := FindNpcIdxByOID(OID);
+    if (Idx >= 0) and IsIgnoredNpc(Idx) then begin
+      Engine.Msg('[Target]', 'Ignored NPC ' + NpcList(Idx).Name + ', dropping target', 0);
+      Engine.CancelTarget;
+    end;
+  end;
+end;
+
+// ===================== Summon renew (SetSummon with RenewPercent) =====================
+// The summon lives for a limited time; its time left is the pet "Fed" %.
+// Below SummonRenewPct: kill what is on us, go to the safe point, dismiss the
+// summon, cast the summon skill again, back to farm.
+
+procedure SummonWatch_Thread();
+var
+  Fed: integer;
+  LastLog: cardinal;
+begin
+  LastLog := 0;
+  while Delay(1000) do begin
+    if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or User.Dead or TreeBusy then continue;
+    if not HaveSummon() then continue;   // missing summon is summoned by the fight thread
+
+    Fed := PetList(0).Fed;
+    if GetTickCount - LastLog >= 60000 then begin
+      Engine.Msg('[Summon]', 'Summon time left: ' + IntToStr(Fed) + '%', 0);
+      LastLog := GetTickCount;
+    end;
+    if Fed >= SummonRenewPct then continue;
+
+    SummonBusy := true;
+    Engine.Msg('[Summon]', 'Summon time ' + IntToStr(Fed) + '% < ' + IntToStr(SummonRenewPct) + '%, renewing', 128);
+    FarmOff();
+
+    // 1) safe point (mobs that follow us are killed there), 2) make sure nothing hits us
+    if not GoToSafePoint() then
+      Engine.Msg('[Summon]', 'Safe point is not safe, renewing here', 128);
+    CasterKillAggro();
+
+    if (not User.Dead) and (not NeedReturn) then begin
+      // 3) dismiss the old summon, 4) summon a new one
+      Engine.DismissSum;
+      Delay(2000);
+      Engine.UseSkill(SummonSkill);
+      Delay(RESUMMON_WAIT);
+      if HaveSummon() then
+        Engine.Msg('[Summon]', 'New summon is out', 128)
+      else
+        Engine.Msg('[Summon]', 'Summon did NOT come out, the fight thread will try again', 128);
+
+      // 5) buff: the new summon comes without buffs, it is buffed together with us
+      if (BuffID <> 0) and (not User.Dead) then begin
+        Engine.Msg('[Summon]', 'Buffing after the renew', 0);
+        BuffAltB();
+        Delay(2000);
+      end;
+    end;
+
+    if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
+    SummonBusy := false;
+  end;
+end;
+
+// ===================== Patrol thread (SetPatrol, profile mode) =====================
+// The profile only attacks what it sees. No live target for PatrolIdle seconds ->
+// walk the patrol points one by one (profile stays ON) until it picks a target.
+// AoE mode patrols inside AoePullPack instead.
+
+function HasLiveTarget(): boolean;
+var OID, Idx: integer;
+begin
+  result := false;
+  OID := TargetOID();
+  if OID = 0 then exit;
+  Idx := FindNpcIdxByOID(OID);
+  if Idx < 0 then exit;
+  result := not NpcList(Idx).Dead;
+end;
+
+procedure Patrol_Thread();
+var Idle: integer;
+begin
+  Idle := 0;
+  while Delay(1000) do begin
+    if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or TreeBusy or User.Dead or
+       ((BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME)) then begin
+      Idle := 0;
+      continue;
+    end;
+
+    if HasLiveTarget() or HaveAgroMobs() then begin
+      Idle := 0;
+      continue;
+    end;
+
+    Inc(Idle);
+    if Idle >= PatrolIdle then begin
+      PatrolStep();   // MoveTo waits until we get there; the next loop checks the target again
+      Idle := PatrolIdle - 1;   // no target after the step -> next point right away
     end;
   end;
 end;
@@ -1359,13 +2294,13 @@ begin
 
   if User.Dead then begin
     Engine.Msg('[Init]', 'Character is dead, death handler will take over', 128);
-    Engine.FaceControl(0, false);
+    FarmOff();
   end else if StartFarm(false) then begin
     Engine.Msg('[Init]', 'Already in the farm zone. Farming', 128);
   end else begin
     // in Aden, another town or anywhere else -> standard route via Aden
     Engine.Msg('[Init]', 'Not on the spot. Going via Aden', 128);
-    Engine.FaceControl(0, false);
+    FarmOff();
     NeedReturn := true;
   end;
 end;
@@ -1406,6 +2341,7 @@ procedure RunFarm();
 begin
   Engine.Msg('[Init]', 'Spot farm started, zone ' + ZoneName, 128);
   ApplyAlertDefaults();
+  LoadIgnoreNames();
   IsRecovering := false;
   NeedReturn := false;
   OnSpot := false;
@@ -1414,12 +2350,27 @@ begin
     while not DoLogin() do Delay(LOGIN_RETRY_WAIT);
   Delay(1000);
 
+  if StayMode() then begin
+    HomeX := User.X;
+    HomeY := User.Y;
+    HomeZ := User.Z;
+    Engine.Msg('[Init]', 'Stay mode (no SetPath / SetTeleport): farming here, never travelling', 128);
+  end;
+
   StartInGame();
 
   Script.NewThread(@AltB_Rebuff_Thread);
   Script.NewThread(@DeathHandler_Thread);
   if HasLogin then Script.NewThread(@Login_Thread);
   if TreeEnabled then Script.NewThread(@TreeWatch_Thread);
+  if AoeEnabled then Script.NewThread(@AoeFarm_Thread);
+  if CasterEnabled then begin
+    if CasterRange <= 0 then CasterRange := DEFAULT_TARGET_RANGE;
+    Script.NewThread(@CasterFarm_Thread);
+    if (SummonSkill > 0) and (SummonRenewPct > 0) then Script.NewThread(@SummonWatch_Thread);
+  end;
+  if HasPatrol() and (not AoeEnabled) and (not CasterEnabled) then Script.NewThread(@Patrol_Thread);
+  if (not AoeEnabled) and (not CasterEnabled) then Script.NewThread(@IgnoreWatch_Thread);
   if (PlayerAlertRange > 0) or PrivateAlert then Script.NewThread(@Events_Thread);
   Delay(-1);
 end;

@@ -1,0 +1,54 @@
+uses SysUtils;
+
+// Client sniffer for the necro setup. Run it, then in the game:
+//   * press summon actions / summon skills on the panel -> [Action] N   (for SetSummon)
+//   * cast your own skills (attack, summon)             -> [Skill] N    (for SetCasterFarm / SetSummon)
+//   * buff the summon in ALT+B                          -> [Bypass] ... (for SetSummonBuff)
+//
+// Client packets:
+//   56 RequestActionUse      - actionId(4) ctrl(4) shift(1)
+//   39 RequestMagicSkillUse  - skillId(4) ctrl(4) shift(1)
+//   23 RequestBypassToServer - UTF-16LE text
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+function ReadWideString(Data: Pointer; Size: integer): string;
+var i, Code: integer;
+begin
+  result := '';
+  i := 0;
+  while i + 1 < Size do begin
+    Code := RdByte(Data, i) or (RdByte(Data, i + 1) shl 8);
+    i := i + 2;
+    if Code = 0 then break;
+    result := result + Chr(Code);
+  end;
+end;
+
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if (ID1 = $56) and (Size >= 4) then
+    Engine.Msg('[Action]', IntToStr(RdInt(Data, 0)), 128)
+  else if (ID1 = $39) and (Size >= 4) then
+    Engine.Msg('[Skill]', IntToStr(RdInt(Data, 0)), 128)
+  else if ID1 = $23 then
+    Engine.Msg('[Bypass]', ReadWideString(Data, Size), 128);
+end;
+
+begin
+  Engine.SendActID(2);   // enable packet hooks (same as packet_logger)
+  Engine.Msg('[Sniff]', 'Action / skill / bypass sniffer started', 128);
+  Delay(-1);
+end.

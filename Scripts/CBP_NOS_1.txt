@@ -25,19 +25,16 @@ begin
     81680, 225711, -3621
   ]);
 
-  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  // where to stand while rebuffing on the spot (remove the line = buff where you stand)
   SetSafePoint(78153, 224957, -3782);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
 
-  // alerts are ON by default (values below); uncomment a line only to change it
-  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; 0 = off
-  // SetPrivateAlert(true);             // private messages; false = off
-  // SetPlayerSound('player.wav');      // file in Library\Sounds; '' = no sound
-  // SetPrivateSound('private.wav');    // file in Library\Sounds; '' = no sound
-  // SetAlertBlink(true);              // blink the game window in the taskbar; false = off
-  // SetTelegram('api key from the Adrenaline cabinet');
+  SetPatrol(10, [
+  79651, 225763, -3790,
+  82315, 225926, -3688
+]);
 
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
   // Uncomment what you need:
