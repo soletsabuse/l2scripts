@@ -1,0 +1,51 @@
+uses SysUtils;
+
+// Test: does sending the "open inventory" packet make the server answer with
+// the item list? Every server packet that arrives right after the send is logged.
+
+var
+  Watching: boolean;
+  Seen: integer;
+
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if not Watching then exit;
+  Inc(Seen);
+  if Seen <= 30 then
+    Engine.Msg('[Inv]', '  server packet ' + IntToHex(ID1, 2) + ' / ' + IntToHex(ID2, 2) + ', size ' + IntToStr(Size), 0);
+end;
+
+procedure ListItems();
+var
+  i, ID, Cnt: integer;
+begin
+  Engine.Msg('[Inv]', 'Inventory: ' + IntToStr(Inventory.User.Count) + ' stacks', 128);
+  for i := 0 to Inventory.User.Count - 1 do begin
+    ID := Inventory.User.Items(i).ID;
+    Cnt := Inventory.User.Items(i).Count;
+    Engine.Msg('[Inv]', '  ' + Inventory.User.Items(i).Name + ' (ID ' + IntToStr(ID) + ') = ' + IntToStr(Cnt), 0);
+  end;
+end;
+
+procedure TryPacket(Hex: string);
+begin
+  Engine.Msg('[Inv]', '=== send ' + Hex + ' ===', 128);
+  Seen := 0;
+  Watching := true;
+  Engine.SendToServer(Hex);
+  Delay(3000);
+  Watching := false;
+  Engine.Msg('[Inv]', '=== ' + Hex + ': ' + IntToStr(Seen) + ' server packets in 3 sec ===', 128);
+end;
+
+begin
+  Watching := false;
+  ListItems();
+  Delay(1000);
+
+  TryPacket('14');   // RequestItemList
+  Delay(1000);
+  ListItems();       // after the refresh
+
+  Engine.Msg('[Inv]', 'done', 128);
+end.

@@ -1,0 +1,27 @@
+// Minimal startup test: no uses, no files.
+var UX, UY, UZ: integer;
+begin
+  Engine.Msg('[Test]', 'A) script runs', 128);
+  Delay(3000);
+
+  Engine.Msg('[Test]', 'B) LoadZone ..\Library\Zones\cbp_nos_1.zmap', 128);
+  Engine.ClearZone;
+  Engine.LoadZone('..\Library\Zones\cbp_nos_1.zmap');
+  Delay(3000);
+
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  if Engine.InZone(UX, UY, UZ) then
+    Engine.Msg('[Test]', 'C) zone loaded, InZone = TRUE', 128)
+  else
+    Engine.Msg('[Test]', 'C) zone call done, InZone = FALSE', 128);
+  Delay(3000);
+
+  Engine.Msg('[Test]', 'D) LoadConfig cbp_nos_test (file in Settings)', 128);
+  Delay(3000);
+  Engine.LoadConfig('cbp_nos_test');
+  Delay(3000);
+
+  Engine.Msg('[Test]', 'E) ALL OK', 128);
+end.

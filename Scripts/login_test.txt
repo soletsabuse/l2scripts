@@ -1,0 +1,71 @@
+uses SysUtils;
+
+// Login test. Start it when the character is NOT in game (login screen).
+//   1) AuthLogin             -> proxy screen
+//   2) Enter                 -> confirm the proxy   (the server disconnects after ~13 sec if nothing is pressed)
+//   3) Enter                 -> confirm the character
+//   4) GameStart             -> only if still not in game (fallback)
+// Every second it prints the bot status and every game event.
+
+var
+  LOGIN    : string  = 'Legchinazes';
+  PASSWORD : string  = 'paralhyys1';
+  KEY_WAIT : integer = 4;      // seconds before each Enter
+  END_WAIT : integer = 15;     // seconds to watch at the end
+
+  Events: integer;
+
+procedure OnAction(Action: TL2Action; P1, P2: Pointer);
+begin
+  Inc(Events);
+  if Events <= 40 then
+    Engine.Msg('[LoginTest]', '  event ' + IntToStr(Ord(Action)), 0);
+end;
+
+function StatusText(): string;
+begin
+  result := IntToStr(Ord(Engine.Status));
+  if Engine.Status = lsOnline then result := result + ' (online)';
+end;
+
+// prints the status every second for Sec seconds; returns true as soon as we are in game
+function Watch(Sec: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 1 to Sec do begin
+    Delay(1000);
+    Engine.Msg('[LoginTest]', '  ' + IntToStr(i) + 's status=' + StatusText(), 0);
+    if Engine.Status = lsOnline then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+begin
+  Events := 0;
+  Engine.Msg('[LoginTest]', 'start, status=' + StatusText(), 128);
+  if Engine.Status = lsOnline then begin
+    Engine.Msg('[LoginTest]', 'Already in game - log out to the login screen and run again', 128);
+    exit;
+  end;
+
+  Engine.Msg('[LoginTest]', '=== 1) AuthLogin ===', 128);
+  Engine.AuthLogin(LOGIN, PASSWORD);
+  if Watch(KEY_WAIT) then begin Engine.Msg('[LoginTest]', 'IN GAME after AuthLogin', 128); exit; end;
+
+  Engine.Msg('[LoginTest]', '=== 2) Enter (proxy) ===', 128);
+  Engine.UseKey('Enter');
+  if Watch(KEY_WAIT) then begin Engine.Msg('[LoginTest]', 'IN GAME after Enter #1', 128); exit; end;
+
+  Engine.Msg('[LoginTest]', '=== 3) Enter (character) ===', 128);
+  Engine.UseKey('Enter');
+  if Watch(END_WAIT) then begin Engine.Msg('[LoginTest]', 'IN GAME after Enter #2', 128); exit; end;
+
+  Engine.Msg('[LoginTest]', '=== 4) GameStart (fallback) ===', 128);
+  Engine.GameStart();
+  if Watch(END_WAIT) then begin Engine.Msg('[LoginTest]', 'IN GAME after GameStart', 128); exit; end;
+
+  Engine.Msg('[LoginTest]', 'NOT in game after all steps', 128);
+end.

@@ -1,0 +1,142 @@
+uses SysUtils;
+
+// Purchase logger. Run it, buy items in the shop by hand, then copy the
+// [Buy] lines. One line per purchase:
+//   [Buy] Mana Drug | item 726 | entry 105 | x50 | price 35000 | now 50
+//
+// entry  - position in multisell (from the client packet B0) -> used to BUY
+// item   - inventory item ID (from the server inventory update) -> used to COUNT
+// price  - adena spent / amount
+
+var
+  Pending: boolean;          // a B0 was sent, waiting for the server reply
+  PendingEntry: integer;
+  PendingAmount: integer;
+  PendingTick: cardinal;
+  AdenaBefore: integer;
+  LastAdena: integer;        // adena from the last server update (-1 = unknown)
+  GotItem, GotAdena: boolean;
+  BoughtItem, BoughtCount, AdenaAfter: integer;
+
+// ===================== raw packet reading =====================
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+// ===================== helpers =====================
+
+function InvAdena(): integer;
+var i, ID, Cnt: integer;
+begin
+  result := 0;
+  for i := 0 to Inventory.User.Count - 1 do begin
+    ID := Inventory.User.Items(i).ID;
+    if ID = 57 then begin
+      Cnt := Inventory.User.Items(i).Count;
+      result := Cnt;
+    end;
+  end;
+end;
+
+function ItemName(ItemID: integer): string;
+var i, ID: integer;
+begin
+  result := '?';
+  for i := 0 to Inventory.User.Count - 1 do begin
+    ID := Inventory.User.Items(i).ID;
+    if ID = ItemID then begin
+      result := Inventory.User.Items(i).Name;
+      exit;
+    end;
+  end;
+end;
+
+procedure Flush();
+var Line: string;
+begin
+  if not Pending then exit;
+  Pending := false;
+
+  if GotItem then
+    Line := ItemName(BoughtItem) + ' | item ' + IntToStr(BoughtItem)
+  else
+    Line := '(no item in reply) | item ?';
+  Line := Line + ' | entry ' + IntToStr(PendingEntry) + ' | x' + IntToStr(PendingAmount);
+
+  if GotAdena and (AdenaBefore > 0) and (PendingAmount > 0) then
+    Line := Line + ' | price ' + IntToStr((AdenaBefore - AdenaAfter) div PendingAmount)
+  else
+    Line := Line + ' | price ?';
+
+  if GotItem then Line := Line + ' | now ' + IntToStr(BoughtCount);
+
+  Engine.Msg('[Buy]', Line, 128);
+  if GotAdena then LastAdena := AdenaAfter;
+end;
+
+// ===================== hooks =====================
+
+// client -> server: catch RequestMultiSellChoose (B0)
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if (ID1 <> $B0) or (Size < 16) then exit;
+  Flush();   // previous purchase without a reply
+
+  Pending := true;
+  PendingEntry := RdInt(Data, 4);
+  PendingAmount := RdInt(Data, 8);
+  PendingTick := GetTickCount;
+  GotItem := false;
+  GotAdena := false;
+  if LastAdena >= 0 then AdenaBefore := LastAdena else AdenaBefore := InvAdena();
+end;
+
+// server -> client: inventory update (21), rows of 45 bytes:
+// action(2) . OID(4) ItemID(4) . amount(8) ...
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var
+  Count, i, Base, ItemID, Amount: integer;
+begin
+  if (ID1 <> $21) or (ID2 <> 0) or (Size < 9) then exit;
+  Count := RdInt(Data, 1);
+  if (Count <= 0) or (Count > 1000) or (Size <> 9 + Count * 45) then exit;
+
+  for i := 0 to Count - 1 do begin
+    Base := 9 + i * 45;
+    ItemID := RdInt(Data, Base + 7);
+    Amount := RdInt(Data, Base + 12);
+    if ItemID = 57 then begin
+      if Pending then begin GotAdena := true; AdenaAfter := Amount; end
+      else LastAdena := Amount;
+    end else if Pending and (not GotItem) then begin
+      GotItem := true;
+      BoughtItem := ItemID;
+      BoughtCount := Amount;
+    end;
+  end;
+
+  if Pending and GotItem and GotAdena then Flush();
+end;
+
+// ===================== main =====================
+
+begin
+  Pending := false;
+  LastAdena := -1;
+  Engine.SendActID(2);   // enable packet hooks (same as packet_logger)
+  Engine.Msg('[Buy]', 'Purchase logger started. Buy items by hand, then copy the [Buy] lines', 128);
+
+  while Delay(500) do
+    if Pending and (GetTickCount - PendingTick > 5000) then Flush();   // reply never came
+end.
