@@ -159,8 +159,8 @@ const
   DEFAULT_CHAMPION_HP   = 100000;  // champion alert ON by default: a mob with MaxHP above this
   DEFAULT_CHAMPION_SOUND = 'champion.wav';
   WEAPON_POLL_MS        = 2000;    // check every N ms that the weapon is on (disarm)
-  WEAPON_SLOT_RHAND     = $4000;   // L2 body part: right hand (one-hand weapon)
-  WEAPON_SLOT_LRHAND    = $8000;   // L2 body part: two-hand weapon
+  WEAPON_SLOT_RHAND     = $0080;   // L2 body part: right hand (one-hand weapon)
+  WEAPON_SLOT_LRHAND    = $4000;   // L2 body part: two-hand weapon ($8000 = full armor, NOT a weapon)
   EVENTS_POLL_MS    = 1000;   // how often players around / private messages are checked
   LOGIN_KEY_WAIT    = 4;       // seconds before each Enter (proxy, character) - same as login_test.txt
   LOGIN_RETRY_WAIT  = 30000;    // ms between failed login attempts
@@ -2144,7 +2144,7 @@ begin
 end;
 
 // No SetWeapon: remember the weapon we hold when the script starts.
-// Weapon = equipped item in the right-hand ($4000) or two-hand ($8000) slot.
+// Weapon = equipped item in the right-hand ($0080) or two-hand ($4000) slot.
 procedure RememberWeapon();
 var i, ID, Part: integer;
   Parts: string;
@@ -2165,7 +2165,8 @@ begin
     Part := Inventory.User.Items(i).BodyPart;
     if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
       WeaponID := ID;
-      Engine.Msg('[Weapon]', 'Remembered weapon: ' + Inventory.User.Items(i).Name + ' (ID ' + IntToStr(ID) + ')', 128);
+      Engine.Msg('[Weapon]', 'Remembered weapon: ' + Inventory.User.Items(i).Name + ' (ID ' + IntToStr(ID) +
+        ', slot ' + IntToStr(Part) + ')', 128);
       exit;
     end;
     Parts := Parts + ' ' + IntToStr(ID) + '/' + IntToStr(Part);
