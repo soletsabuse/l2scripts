@@ -1,0 +1,45 @@
+uses SysUtils;
+
+// Bypass sniffer. Run it, click teleports / buttons in the game, and every
+// bypass the client sends shows up in the messages as plain text, e.g.
+//   [Bypass] _bbs_teleport?id=122&fromtown=6
+// Ready to paste into SetTeleport / SetBuff.
+//
+// Catches client packets:
+//   23 RequestBypassToServer - buttons, community board (ALT+B), NPC dialogs
+//   22 RequestLinkHtml       - plain html links in NPC dialogs
+
+// reads a null-terminated UTF-16LE string from the packet payload
+function ReadWideString(Data: Pointer; Size: integer): string;
+var
+  P: Pointer;
+  i, Code: integer;
+begin
+  result := '';
+  P := Data;
+  i := 0;
+  while i + 1 < Size do begin
+    Code := PByte(P)^;
+    Inc(Cardinal(P), 1);
+    Code := Code or (PByte(P)^ shl 8);
+    Inc(Cardinal(P), 1);
+    i := i + 2;
+    if Code = 0 then break;
+    result := result + Chr(Code);
+  end;
+end;
+
+// client -> server packets
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if ID1 = $23 then
+    Engine.Msg('[Bypass]', ReadWideString(Data, Size), 128)
+  else if ID1 = $22 then
+    Engine.Msg('[Link]', ReadWideString(Data, Size), 128);
+end;
+
+begin
+  Engine.SendActID(2);   // enable packet hooks (same as packet_logger)
+  Engine.Msg('[Bypass]', 'Bypass sniffer started. Click teleports / buttons in the game', 128);
+  Delay(-1);
+end.
