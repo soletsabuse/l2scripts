@@ -1,49 +1,50 @@
 uses SysUtils;
 
 // =============================================================================
-// PVP target picker -- runs as a daemon, polls a hotkey, picks the enemy whose
-// direction puts the most hostile players into a 90deg fan cone, SetTarget's
-// them.
+// PVP target picker -- runs as a daemon, polls hotkeys, takes a target and puts
+// a mark (token) on it. Only players from ENEMY_CLANS are ever picked.
 //
-// Picking strategy:
-//   for each candidate primary T (alive, in hostile clan, matching class,
-//   within SKILL_RANGE, within HEIGHT_RANGE Z):
-//     direction := normalize(T - me)
-//     count := number of valid enemies whose angle from `direction`
-//             (measured at me) is <= FAN_HALF_ANGLE_DEG
-//   pick T with highest count, SetTarget(T).
+//   Space - fan mode: the enemy whose direction puts the most enemies into a
+//           90deg cone (multiple shot), classes from FAN_CLASS_IDS
+//   Z     - nearest Mystic Muse / Soultaker (Spellsinger / Necromancer)
+//   X     - nearest Cardinal / Eva's Saint (Bishop / Elven Elder)
+//   C     - res-kill: nearest enemy that was resurrected in the last RESKILL_SEC
 // =============================================================================
 
 // =============================================================================
 // CONFIG
 // =============================================================================
 var
-  // Hotkey -- VK code. Default: Space ($20).
-  // VK codes:
+  // Hotkeys -- VK codes:
   //   Space=$20  Tab=$09  Enter=$0D  Esc=$1B  Backspace=$08
   //   F1=$70 F2=$71 ... F8=$77 F12=$7B
   //   'A'..'Z' = $41..$5A   '0'..'9' = $30..$39
-  HOTKEY_VK          : integer = $20;       // Space
+  KEY_FAN            : integer = $20;       // Space
+  KEY_MAGES          : integer = $5A;       // Z
+  KEY_HEALERS        : integer = $58;       // X
+  KEY_RESKILL        : integer = $43;       // C
 
   // Hostile clan names. Exact case-sensitive match. [''] = match any clan.
   ENEMY_CLANS        : array of string = ['PLAYHARDGOPRO', 'GhostRiders', 'DeathSentence', 'HeavenSent', 'StayGrounded', 'Slayers'];
 
-  // Class IDs to focus on. Mage 3rd-profession on most L2 Classic servers:
-  //   16 = Bishop
-  //   27 = Spellsinger ("Mystic Muse" on some servers)
-  //   13 = Necromancer
-  //   36 = Spellhowler
-  //   39 = Shillien Elder
-  // If your server uses awakened class IDs, try instead:
-  //   97=Cardinal, 95=Mystic Muse, 99=Soultaker, 96=Storm Screamer, 100=Shillien Saint
-  ENEMY_CLASS_IDS    : array of integer = [112, 110, 105, 103, 98, 97, 95, 94];
+  // Z: Mystic Muse 103 (Spellsinger 27), Soultaker 95 (Necromancer 13)
+  MAGE_CLASS_IDS     : array of integer = [103, 27, 95, 13];
+  // X: Cardinal 97 (Bishop 16), Eva's Saint 105 (Elven Elder 30)
+  HEALER_CLASS_IDS   : array of integer = [97, 16, 105, 30];
+  // Space (fan mode): classes to aim at first; no one of them -> any class of the enemy clans
+  FAN_CLASS_IDS      : array of integer = [112, 110, 105, 103, 98, 97, 95, 94];
 
-  // Skill geometry, mirrors s_multiple_shot1:
+  // Z / X / C: pick only this close
+  PICK_RANGE         : integer = 1500;
+  // C: "just resurrected" = alive again not longer than this ago
+  RESKILL_SEC        : integer = 15;
+
+  // Fan geometry (Space), mirrors s_multiple_shot1:
   //   fan_range = {0;0;700;90}     -> 700u radius, 90deg total cone
   //   affect_scope_height = {-200;200}
   SKILL_RANGE        : integer = 700;
   FAN_HALF_ANGLE_DEG : integer = 45;        // half of 90, in degrees
-  HEIGHT_RANGE       : integer = 200;       // |dz| limit
+  HEIGHT_RANGE       : integer = 200;       // |dz| limit (all modes)
 
   // Polling interval in ms. Lower = more responsive but burns more CPU.
   KEY_POLL_MS        : integer = 30;
@@ -52,24 +53,90 @@ var
   // Sniffed on this server with token_sniffer.txt (manual mark):
   //   56 = RequestActionUse, action 0x50 (=80) LE, ctrl 0 (4 bytes), shift 0 (1 byte)
   // Other marks are other action IDs - sniff them the same way if needed.
-  // (Old chronicles used 'B36F000000' = RequestUserCommand /usetoken3 - does NOT work here.)
   // Set to '' to skip the mark.
   TOKEN_PACKET_HEX   : string  = '56500000000000000000';
 
 // =============================================================================
 // WinAPI -- read keyboard async-state directly. Returns smallint where the
 // high-bit (0x8000) is set when the key is currently pressed.
-//   Standard Delphi external-declaration syntax. If this PaxScript dialect
-//   doesn't support DLL imports, this is the line that'll fail to compile --
-//   tell me and we'll find an alternative.
 // =============================================================================
 function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
 
-// =============================================================================
-// Math helpers
-// =============================================================================
 const
   PI_VAL = 3.14159265358979;
+  REVIVE_SLOTS = 64;
+
+// =============================================================================
+// Resurrection tracking (C): we remember who was dead; dead -> alive = revived now
+// =============================================================================
+var
+  DeadOID: array[0..REVIVE_SLOTS - 1] of integer;      // players seen dead
+  ReviveOID: array[0..REVIVE_SLOTS - 1] of integer;    // players seen getting up
+  ReviveTime: array[0..REVIVE_SLOTS - 1] of cardinal;
+  DeadHead, ReviveHead: integer;
+  LastReviveScan: cardinal;
+
+function WasDead(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to REVIVE_SLOTS - 1 do
+    if DeadOID[k] = OID then begin result := true; exit; end;
+end;
+
+procedure ForgetDead(OID: integer);
+var k: integer;
+begin
+  for k := 0 to REVIVE_SLOTS - 1 do
+    if DeadOID[k] = OID then DeadOID[k] := 0;
+end;
+
+procedure RememberDead(OID: integer);
+begin
+  if WasDead(OID) then exit;
+  DeadOID[DeadHead] := OID;
+  DeadHead := (DeadHead + 1) mod REVIVE_SLOTS;
+end;
+
+procedure RememberRevive(OID: integer);
+begin
+  ReviveOID[ReviveHead] := OID;
+  ReviveTime[ReviveHead] := GetTickCount;
+  ReviveHead := (ReviveHead + 1) mod REVIVE_SLOTS;
+end;
+
+// revived not longer than RESKILL_SEC ago
+function JustRevived(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to REVIVE_SLOTS - 1 do
+    if (ReviveOID[k] = OID) and (GetTickCount - ReviveTime[k] <= cardinal(RESKILL_SEC * 1000)) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// every ~200 ms: who is dead now, who got up since the last look
+procedure ScanRevives();
+var i, OID: integer;
+begin
+  if GetTickCount - LastReviveScan < 200 then exit;
+  LastReviveScan := GetTickCount;
+  for i := 0 to CharList.Count - 1 do begin
+    OID := CharList(i).OID;
+    if CharList(i).Dead then
+      RememberDead(OID)
+    else if WasDead(OID) then begin
+      ForgetDead(OID);
+      RememberRevive(OID);
+    end;
+  end;
+end;
+
+// =============================================================================
+// Filters
+// =============================================================================
 
 // Clan is one of ENEMY_CLANS. An empty name in the list ('') = any clan.
 function IsEnemyClan(Clan: string): boolean;
@@ -83,6 +150,32 @@ begin
     end;
 end;
 
+function ClassInList(cls: integer; List: array of integer): boolean;
+var c: integer;
+begin
+  result := false;
+  for c := Low(List) to High(List) do
+    if cls = List[c] then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// alive enemy-clan player (not us) within Range and HEIGHT_RANGE
+function IsEnemyInRange(i, Range: integer): boolean;
+var PX, PY, PZ: integer;
+begin
+  result := false;
+  if CharList(i).Dead then exit;
+  if CharList(i).OID = User.OID then exit;
+  if not IsEnemyClan(CharList(i).Clan) then exit;
+  PX := CharList(i).X;
+  PY := CharList(i).Y;
+  PZ := CharList(i).Z;
+  if Abs(PZ - User.Z) > HEIGHT_RANGE then exit;
+  result := User.DistTo(PX, PY, PZ) <= Range;
+end;
+
 // clans as one line for the start message
 function ClansText(): string;
 var c: integer;
@@ -94,66 +187,109 @@ begin
   end;
 end;
 
-// Returns true if CharList(i) is a valid candidate. If IgnoreClass=true the
-// class filter is skipped (clan and other filters still apply).
-function IsValidEnemyEx(i: integer; IgnoreClass: boolean): boolean;
-var
-  PX, PY, PZ: integer;
-  c, cls: integer;
-  ClassOK: boolean;
+// =============================================================================
+// Target + mark
+// =============================================================================
+
+procedure SendTokenPacket();
 begin
-  result := false;
-  if CharList(i).Dead then exit;
-  if CharList(i).OID = User.OID then exit;          // never self
+  if TOKEN_PACKET_HEX = '' then exit;
+  Engine.SendToServer(TOKEN_PACKET_HEX);
+end;
 
-  if not IsEnemyClan(CharList(i).Clan) then exit;
+procedure TakeTarget(i: integer; Mode: string);
+var OID: integer;
+begin
+  OID := CharList(i).OID;
+  Engine.SetTarget(OID);
+  Delay(50);   // let the server register the target before the mark
+  SendTokenPacket;
+  Engine.Msg('[Pvp]', Mode + ': ' + CharList(i).Name + ' [' + CharList(i).Clan + ']', 128);
+end;
 
-  if (not IgnoreClass) and (Length(ENEMY_CLASS_IDS) > 0) then begin
-    ClassOK := false;
-    cls := CharList(i).ClassID;
-    for c := Low(ENEMY_CLASS_IDS) to High(ENEMY_CLASS_IDS) do
-      if cls = ENEMY_CLASS_IDS[c] then begin
-        ClassOK := true;
-        break;
-      end;
-    if not ClassOK then exit;
+// =============================================================================
+// Z / X: nearest enemy of the given classes
+// =============================================================================
+procedure PickNearestOfClasses(Classes: array of integer; Mode: string);
+var i, Best, PX, PY, PZ: integer;
+  D, BestD: double;
+begin
+  Best := -1;
+  BestD := 999999;
+  for i := 0 to CharList.Count - 1 do begin
+    if not IsEnemyInRange(i, PICK_RANGE) then continue;
+    if not ClassInList(CharList(i).ClassID, Classes) then continue;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    D := User.DistTo(PX, PY, PZ);
+    if D < BestD then begin
+      BestD := D;
+      Best := i;
+    end;
   end;
+  if Best < 0 then
+    Engine.Msg('[Pvp]', Mode + ': nobody in range', 128)
+  else
+    TakeTarget(Best, Mode);
+end;
 
-  PZ := CharList(i).Z;
-  if Abs(PZ - User.Z) > HEIGHT_RANGE then exit;
+// =============================================================================
+// C: res-kill - nearest enemy that just got up
+// =============================================================================
+procedure PickResKill();
+var i, Best, PX, PY, PZ: integer;
+  D, BestD: double;
+begin
+  ScanRevives();
+  Best := -1;
+  BestD := 999999;
+  for i := 0 to CharList.Count - 1 do begin
+    if not IsEnemyInRange(i, PICK_RANGE) then continue;
+    if not JustRevived(CharList(i).OID) then continue;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    D := User.DistTo(PX, PY, PZ);
+    if D < BestD then begin
+      BestD := D;
+      Best := i;
+    end;
+  end;
+  if Best < 0 then
+    Engine.Msg('[Pvp]', 'Res-kill: nobody resurrected in the last ' + IntToStr(RESKILL_SEC) + ' sec', 128)
+  else
+    TakeTarget(Best, 'Res-kill');
+end;
 
-  PX := CharList(i).X;
-  PY := CharList(i).Y;
-  if User.DistTo(PX, PY, PZ) > SKILL_RANGE then exit;
+// =============================================================================
+// Space: fan mode (the enemy whose direction covers the most enemies)
+// =============================================================================
 
-  result := true;
+function IsValidFanEnemy(i: integer; IgnoreClass: boolean): boolean;
+begin
+  result := IsEnemyInRange(i, SKILL_RANGE);
+  if result and (not IgnoreClass) and (Length(FAN_CLASS_IDS) > 0) then
+    result := ClassInList(CharList(i).ClassID, FAN_CLASS_IDS);
 end;
 
 // Count valid enemies inside a 2D fan from (User pos) aimed at (TX, TY).
-// Includes the primary itself (it's at angle 0). IgnoreClass forwards to the
-// validity check.
 function CountInFanEx(TX, TY: integer; CosHalfFan: double; IgnoreClass: boolean): integer;
 var
-  i: integer;
-  UX, UY: integer;
-  DX, DY, DLen: double;
-  EX, EY: integer;
-  EVecX, EVecY, ELen: double;
-  Dot, CosAng: double;
+  i, UX, UY, EX, EY: integer;
+  DX, DY, DLen, EVecX, EVecY, ELen, Dot: double;
 begin
   result := 0;
   UX := User.X;
   UY := User.Y;
-
   DX := TX - UX;
   DY := TY - UY;
   DLen := Sqrt(DX*DX + DY*DY);
-  if DLen < 1 then exit;     // primary on top of us -- can't aim
+  if DLen < 1 then exit;
   DX := DX / DLen;
   DY := DY / DLen;
-
   for i := 0 to CharList.Count - 1 do begin
-    if not IsValidEnemyEx(i, IgnoreClass) then continue;
+    if not IsValidFanEnemy(i, IgnoreClass) then continue;
     EX := CharList(i).X;
     EY := CharList(i).Y;
     EVecX := EX - UX;
@@ -161,117 +297,76 @@ begin
     ELen := Sqrt(EVecX*EVecX + EVecY*EVecY);
     if ELen < 1 then continue;
     Dot := DX * EVecX + DY * EVecY;
-    CosAng := Dot / ELen;
-    if CosAng >= CosHalfFan then
-      result := result + 1;
+    if Dot / ELen >= CosHalfFan then result := result + 1;
   end;
 end;
 
-// Find the primary target whose facing-fan covers the most valid enemies.
-// Returns -1 if no candidates exist.
 function FindBestPrimary(CosHalfFan: double; IgnoreClass: boolean): integer;
-var
-  i, BestIdx, BestCnt, Cnt: integer;
-  TX, TY: integer;
+var i, BestCnt, Cnt, TX, TY: integer;
 begin
-  BestIdx := -1;
+  result := -1;
   BestCnt := 0;
   for i := 0 to CharList.Count - 1 do begin
-    if not IsValidEnemyEx(i, IgnoreClass) then continue;
+    if not IsValidFanEnemy(i, IgnoreClass) then continue;
     TX := CharList(i).X;
     TY := CharList(i).Y;
     Cnt := CountInFanEx(TX, TY, CosHalfFan, IgnoreClass);
     if Cnt > BestCnt then begin
       BestCnt := Cnt;
-      BestIdx := i;
+      result := i;
     end;
   end;
-  result := BestIdx;
 end;
 
-// Send the token-mark packet directly. Bypasses the chat UI -- we just push
-// the same bytes the client would send if you typed /usetoken3 yourself.
-procedure SendTokenPacket();
-begin
-  if TOKEN_PACKET_HEX = '' then exit;
-  Engine.SendToServer(TOKEN_PACKET_HEX);
-end;
-
-// =============================================================================
-// PICK -- find best primary (with class filter, then any class), SetTarget,
-// drop the moon mark on them via /usetoken3.
-// =============================================================================
-procedure PickPvPTarget();
-var
-  BestIdx, BestCnt: integer;
-  TX, TY: integer;
-  OID: integer;
+procedure PickFanTarget();
+var Best: integer;
   CosHalfFan: double;
-  UsedFallback: boolean;
 begin
   CosHalfFan := Cos(FAN_HALF_ANGLE_DEG * PI_VAL / 180.0);
-  UsedFallback := false;
-
-  // first pass: with class filter
-  BestIdx := FindBestPrimary(CosHalfFan, false);
-
-  // fallback: no targets in the wanted classes -> drop class filter, keep clan
-  if BestIdx < 0 then begin
-    BestIdx := FindBestPrimary(CosHalfFan, true);
-    UsedFallback := true;
-  end;
-
-  if BestIdx < 0 then begin
-    Engine.Msg('[Pvp]', 'No valid enemy in range', 128);
-    exit;
-  end;
-
-  // recompute fan coverage on the chosen primary for log
-  TX := CharList(BestIdx).X;
-  TY := CharList(BestIdx).Y;
-  BestCnt := CountInFanEx(TX, TY, CosHalfFan, UsedFallback);
-
-  OID := CharList(BestIdx).OID;
-  Engine.SetTarget(OID);
-
-  // Small gap so the server registers the new target before the token packet
-  // arrives (otherwise the mark may land on the previous target).
-  Delay(50);
-
-  // Drop the moon mark (/usetoken3) directly via raw packet -- visible to
-  // allies/party for focus call.
-  SendTokenPacket;
-
-  Engine.Msg('[Pvp]',
-    'Target: ' + CharList(BestIdx).Name +
-    ' OID=' + IntToStr(OID) +
-    ' (fan covers ' + IntToStr(BestCnt) + ' enemies)' +
-    ' [' + IntToStr(Ord(UsedFallback)) + '=fallback]', 128);
+  Best := FindBestPrimary(CosHalfFan, false);
+  if Best < 0 then Best := FindBestPrimary(CosHalfFan, true);   // no wanted class -> any class of the enemy clans
+  if Best < 0 then
+    Engine.Msg('[Pvp]', 'Fan: no valid enemy in range', 128)
+  else
+    TakeTarget(Best, 'Fan');
 end;
 
 // =============================================================================
 // Hotkey watcher loop. Edge-triggered: fires on press, not while held.
 // =============================================================================
 var
-  KeyWasDown: boolean = false;
-  KeyDown:    boolean;
+  FanWas, MagesWas, HealersWas, ResWas: boolean;
+
+function Pressed(VK: integer): boolean;
+begin
+  result := (GetAsyncKeyState(VK) and $8000) <> 0;
+end;
 
 begin
-  Engine.Msg('[Pvp]',
-    'Started -- hotkey VK=$' + IntToHex(HOTKEY_VK, 2) +
-    ' clans=' + ClansText() +
-    ' classes=' + IntToStr(Length(ENEMY_CLASS_IDS)) +
-    ' range=' + IntToStr(SKILL_RANGE) +
-    ' fan=' + IntToStr(FAN_HALF_ANGLE_DEG * 2) + 'deg', 128);
+  Engine.Msg('[Pvp]', 'Started -- Space = fan, Z = Mystic Muse / Soultaker, X = Cardinal / Eva''s Saint, ' +
+    'C = res-kill; clans ' + ClansText(), 128);
 
   while Delay(KEY_POLL_MS) do begin
-    KeyDown := (GetAsyncKeyState(HOTKEY_VK) and $8000) <> 0;
-    if KeyDown then begin
-      if not KeyWasDown then begin
-        PickPvPTarget;
-        KeyWasDown := true;
-      end;
-    end else
-      KeyWasDown := false;
+    ScanRevives();   // keep the dead / revived list fresh for C
+
+    if Pressed(KEY_FAN) then begin
+      if not FanWas then PickFanTarget;
+      FanWas := true;
+    end else FanWas := false;
+
+    if Pressed(KEY_MAGES) then begin
+      if not MagesWas then PickNearestOfClasses(MAGE_CLASS_IDS, 'Mystic Muse / Soultaker');
+      MagesWas := true;
+    end else MagesWas := false;
+
+    if Pressed(KEY_HEALERS) then begin
+      if not HealersWas then PickNearestOfClasses(HEALER_CLASS_IDS, 'Cardinal / Eva''s Saint');
+      HealersWas := true;
+    end else HealersWas := false;
+
+    if Pressed(KEY_RESKILL) then begin
+      if not ResWas then PickResKill;
+      ResWas := true;
+    end else ResWas := false;
   end;
 end.

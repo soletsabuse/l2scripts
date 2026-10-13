@@ -686,7 +686,8 @@ end;
 // Total amount of an item in the inventory (all stacks). Call RefreshInventory first.
 function ItemCount(ItemID: integer): Int64;
 var
-  i, ID, Cnt: integer;
+  i, ID: integer;
+  Cnt: Int64;     // 64-bit: adena can be above 2.1 billion
 begin
   result := 0;
   for i := 0 to Inventory.User.Count - 1 do begin
@@ -703,11 +704,10 @@ procedure BuySupplies();
 var
   i, ItemID, EntryID, Price: integer;
   Have, After, Adena, Need, CanPay: Int64;
-  ShopOpened: boolean;
+
   Name: string;
 begin
   if Length(SupplyItems) = 0 then exit;
-  ShopOpened := false;
 
   for i := 0 to Length(SupplyItems) - 1 do begin
     if User.Dead then exit;
@@ -735,10 +735,9 @@ begin
     end;
 
     Engine.Msg('[Supplies]', Name + ': ' + IntToStr(Have) + ' -> buying ' + IntToStr(Need), 128);
-    if not ShopOpened then begin
-      OpenShop();
-      ShopOpened := true;
-    end;
+    // open the multisell before EVERY purchase: the inventory refresh in between
+    // may make the server forget the open list
+    OpenShop();
     MultisellBuy(EntryID, Need);
     Delay(BUY_WAIT);   // let the server finish the purchase before asking for the inventory
 
