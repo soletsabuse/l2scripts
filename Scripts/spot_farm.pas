@@ -14,11 +14,13 @@ unit SpotFarm;
 //     SetExpOff(true);                     // optional: turn XP gain off (exp?state=off)
 //     SetLogin('login', 'password');       // optional: log in at start and after a disconnect
 //     SetTreeMobs(bow, melee, 600);        // optional: shoot mobs the profile cannot reach (bow/melee item IDs)
-//     SetPatrol(20, [x1, y1, z1,  x2, y2, z2]);  // optional: no target for 20 sec -> walk these points until one appears
+//     SetPatrol(3, [x1, y1, z1,  x2, y2, z2]);   // optional: standing still 3 sec with no target -> run to the
+//                                          //   farthest point; stop as soon as the profile takes a target
 //     SetCasterFarm([mobs]);               // optional: farm WITHOUT the interface, lowest-HP mob first, retarget all the time
 //     AddCasterSkill(id, SKILL_DEBUFF, 30000, 0);  // our skills in priority order (kind, interval ms, param)
-//     SetSummon(skill, 10);                // optional: summon skill (cast when missing / before buff);
-//                                          //   time left (Fed %) < 10 -> safe point, dismiss, summon again; 0 = never
+//     SetSummon(skill, 0);                 // optional: summon skill - cast when the summon is dead / missing
+//                                          //   (safe point, leave combat, summon, rebuff) and before every buff;
+//                                          //   the second number is ignored (summon time is not watched)
 //     SetTargetRange(700);                 // optional: caster mode picks targets only this close (default 700)
 //     SetWeapon(itemID);                   // optional: weapon to put back on after a disarm
 //                                          //   (no line = the weapon in hands at start is remembered)
@@ -137,20 +139,24 @@ const
   TREE_NEAR_RANGE   = 1000;     // "close to us" for the detection above
   TREE_STUCK_MS     = 10000;    // while shooting: no HP drop this long -> move around the mob (45 deg)
   TREE_MAX_REPOS    = 8;        // repositions (full circle) before giving up on the mob
-  FREE_RADIUS       = 900;      // SetZone('') and no zone in the bot: farm this close to the start point
+  AGGRO_MAX_RANGE   = 1000;     // caster mode: mobs attacking us / the summon are targeted only this close
+  FREE_RADIUS       = 900;    // SetZone('') and no zone in the bot: farm this close to the start point
   DEFAULT_TARGET_RANGE = 700;  // caster mode: pick targets only this close, unless SetTargetRange
   PET_ATTACK_ACTION = 22;      // RequestActionUse action: summon (servitor) attacks the target (pet = 16)
   PET_ATTACK_MS     = 2000;     // repeat the attack order every N ms
   PET_MELEE_MIN_HP  = 100000;   // the summon gets the attack order (runs in, hits with hands) only on mobs with MaxHP above this
   PET_SKILL_GAP     = 1000;     // at least N ms between two summon skills
   RESUMMON_WAIT     = 5000;     // ms to wait after casting the summon skill
+  SUMMON_BUFF_TRIES = 3;        // summon attempts before a buff when the summon is missing
   AOE_AGGRO_DIST    = 1500;    // AoE mode: "aggro" mobs farther than this are ignored (stuck / teleported)
   AOE_SWEEP_RANGE   = 150;      // AoE mode: sweep only corpses this close
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
-  PATH_REACHED      = 150;      // "I am at the point"
+  PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
+  PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
+  PATH_REACHED      = 150;     // "I am at the point"
   SOUND_DIR         = '..\Sounds\';   // relative to Library\Scripts (Script.Path)
   DEFAULT_PLAYER_ALERT_RANGE = 0;     // players around: OFF by default (SetPlayerAlert(2000) turns it on)
   DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
@@ -188,6 +194,7 @@ var
   OnSpot: boolean;        // true while we are on the farm spot (farm is ON)
   TreeBusy: boolean;      // true while the tree handler shoots a mob: rebuff thread waits
   EquipBusy: boolean;     // true while some thread is swapping weapons (EquipWeapon)
+  PatrolBusy: boolean;    // true while the profile patrol runs to a point (profile OFF): rebuff waits
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -212,7 +219,7 @@ var
   CasterMobIDs: array of integer; // mobs to attack; empty = any mob in the zone
   CasterTarget: integer;          // OID we are attacking now
   SummonSkill: integer;           // skill that summons the servitor; 0 = do not summon
-  SummonRenewPct: integer;        // summon time left (Fed %) below this -> safe point, dismiss, summon again; 0 = never
+  SummonRenewPct: integer;        // not used any more (summon time is not watched), kept so old scripts compile
   SummonBusy: boolean;            // true while the summon is being renewed: fight / rebuff threads wait
   CasterRange: integer;           // SetTargetRange: pick targets only this close (aggro mobs always)
   IgnoreNames: array of string;   // NPCs never targeted (other players' summons, chests...), lower case
@@ -388,6 +395,7 @@ begin
   AddIgnoreName('Feline King');
   AddIgnoreName('Soulgazer');
   AddIgnoreName('Treasure Chest');
+  AddIgnoreName('Dark Panther');
 end;
 
 // NPC i is on the ignore list, or it is one of OUR pets / summons
@@ -1068,11 +1076,19 @@ begin
   Delay(RESUMMON_WAIT);
 end;
 
-// the summon is buffed together with us -> it must be out and alive before the buff
+// the summon is buffed together with us -> before every buff make sure it is out
+// and alive; summon it (several tries) if it is not
 procedure SummonBeforeBuff();
+var Tries: integer;
 begin
   if SummonSkill <= 0 then exit;
-  CheckSummon();
+  Tries := 0;
+  while (not HaveSummon()) and (Tries < SUMMON_BUFF_TRIES) and (not User.Dead) and (not NeedReturn) do begin
+    Inc(Tries);
+    Engine.Msg('[Summon]', 'No summon before the buff, summoning (try ' + IntToStr(Tries) + ')', 128);
+    Engine.UseSkill(SummonSkill);
+    Delay(RESUMMON_WAIT);
+  end;
   if not HaveSummon() then
     Engine.Msg('[Summon]', 'Summon is not out - it will not get the buff', 128);
 end;
@@ -1106,12 +1122,15 @@ end;
 // Mode 0 = inside CasterRange, Mode 1 = anywhere in the zone (we run to it). 0 = nothing.
 function CasterFindNewMob(Mode: integer): integer;
 var
-  i, NX, NY, NZ, HP, BestHP: integer;
+  i, NX, NY, NZ, UX, UY, UZ, HP, BestHP: integer;
   D, BestDist: double;
 begin
   result := 0;
   BestHP := MaxInt;
   BestDist := 999999;
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead then continue;
     if IsIgnoredNpc(i) then continue;
@@ -1148,6 +1167,8 @@ begin
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
     D := User.DistTo(NX, NY, NZ);
+    // never chase: aggro mobs farther than AGGRO_MAX_RANGE are not targeted
+    if D > AGGRO_MAX_RANGE then continue;
     HP := NpcList(i).CurHP;   // absolute HP, not percent
     if (HP < BestHP) or ((HP = BestHP) and (D < BestDist)) then begin
       BestHP := HP;
@@ -1157,7 +1178,7 @@ begin
   end;
 end;
 
-// current target is still alive (and in the zone, unless it attacks us)
+// current target is still alive and inside the zone / radius (or right next to us)
 function CasterTargetAlive(): boolean;
 var i, NX, NY, NZ: integer;
 begin
@@ -1169,7 +1190,7 @@ begin
       NX := NpcList(i).X;
       NY := NpcList(i).Y;
       NZ := NpcList(i).Z;
-      result := CasterIsAggro(i) or InFarmArea(NX, NY, NZ);
+      result := InFarmArea(NX, NY, NZ) or (User.DistTo(NX, NY, NZ) <= CasterRange);
       exit;
     end;
 end;
@@ -1177,7 +1198,8 @@ end;
 // Target choice:
 //  1) something attacks us / the summon -> the lowest-HP of them (switching between them)
 //  2) else keep the current target until it dies
-//  3) else a new mob: lowest HP within CasterRange, else lowest HP anywhere in the zone
+//  3) else a new mob: lowest HP within CasterRange (in the zone)
+//  nothing -> CasterFarm_Thread patrols to the next SetPatrol point (like patrol.txt)
 function CasterChooseTarget(): integer;
 begin
   result := CasterPickAggro();
@@ -1187,7 +1209,6 @@ begin
     exit;
   end;
   result := CasterFindNewMob(0);
-  if result = 0 then result := CasterFindNewMob(1);
 end;
 
 // mob with this OID is a champion (MaxHP above PET_MELEE_MIN_HP)
@@ -1317,13 +1338,41 @@ begin
   end;
 end;
 
+// Patrol like patrol.txt: run to the next patrol point (round robin) in short
+// steps; stop as soon as a mob shows up within range or something attacks us.
+procedure CasterPatrolStep();
+var n, TX, TY, TZ: integer;
+  Started: cardinal;
+begin
+  n := Length(PatrolPoints) div 3;
+  if n = 0 then exit;
+  if PatrolIdx >= n then PatrolIdx := 0;
+  TX := PatrolPoints[PatrolIdx * 3];
+  TY := PatrolPoints[PatrolIdx * 3 + 1];
+  TZ := PatrolPoints[PatrolIdx * 3 + 2];
+  Engine.Msg('[Patrol]', 'No mobs around, patrol point ' + IntToStr(PatrolIdx + 1) + '/' + IntToStr(n), 0);
+  PatrolIdx := (PatrolIdx + 1) mod n;
+
+  Started := GetTickCount;
+  while User.DistTo(TX, TY, TZ) > PATH_REACHED do begin
+    if User.Dead or AoeMustStop() or TreeBusy or SummonBusy then exit;
+    if CasterChooseTarget() <> 0 then exit;     // a mob within range / attacking us -> fight it
+    if GetTickCount - Started > 60000 then exit;
+    Engine.MoveTo(TX, TY, TZ, PATROL_STEP_MS);
+  end;
+end;
+
 procedure CasterFarm_Thread();
-var OID: integer;
+var OID, IdleMs, IdleLimit: integer;
 begin
   CasterTarget := 0;
+  IdleMs := 0;
+  IdleLimit := PatrolIdle * 1000;
+  if IdleLimit <= 0 then IdleLimit := 3000;
   while Delay(200) do begin
     if AoeMustStop() or TreeBusy or SummonBusy then begin
       CasterTarget := 0;
+      IdleMs := 0;
       continue;
     end;
     if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then continue;   // rebuff first
@@ -1331,10 +1380,17 @@ begin
     // a dead / missing summon is renewed by SummonWatch_Thread (safe point, combat, summon, buff)
     OID := CasterChooseTarget();
     if OID = 0 then begin
+      // nobody within range: after IdleLimit go to the next patrol point (SetPatrol)
       CasterTarget := 0;
-      if HasPatrol() then PatrolStep();   // no mob in the whole zone: patrol (SetPatrol)
+      IdleMs := IdleMs + 200;
+      if HasPatrol() and (IdleMs >= IdleLimit) then begin
+        CasterPatrolStep();
+        IdleMs := 0;
+      end;
       continue;
     end;
+
+    IdleMs := 0;
     CasterFightStep(OID);
   end;
 end;
@@ -1846,7 +1902,7 @@ begin
   Fails := 0;
   SuppliesDone := false;
   while delay(1000) do begin
-    if TreeBusy or SummonBusy then continue;   // tree handler / summon renew are busy, rebuff after them
+    if TreeBusy or SummonBusy or PatrolBusy then continue;   // tree handler / summon renew / patrol run are busy, rebuff after them
     if (not IsOnline()) or IsRecovering or NeedReturn then begin
       Fails := 0;
       continue;
@@ -2208,30 +2264,16 @@ begin
 end;
 
 // ===================== Summon renew (SetSummon) =====================
-// Summon died / is missing, or its time left (pet "Fed" %) is below SummonRenewPct:
-//   safe point -> kill mobs + leave combat -> dismiss the old one (if alive) ->
-//   summon a new one -> rebuff (the new summon comes without buffs) -> farm.
+// Summon died / is missing: summon a new one RIGHT HERE, in the middle of the fight
+// (no safe point, no leaving combat), then rebuff so the new summon gets the buff.
+// The fight thread only pauses while the summon skill is being cast.
 
 procedure RenewSummon(Reason: string);
 begin
-  SummonBusy := true;
-  Engine.Msg('[Summon]', Reason + ', renewing the summon', 128);
-  FarmOff();
-
-  // 1) safe point (mobs that follow us are killed there)
-  if not GoToSafePoint() then
-    Engine.Msg('[Summon]', 'Safe point is not safe, renewing here', 128);
-  // 2) kill everything on us and wait until we are out of combat
-  if not ClearCombat() then
-    Engine.Msg('[Summon]', 'Still in combat, summoning anyway', 128);
+  SummonBusy := true;   // the fight thread waits while we cast the summon
+  Engine.Msg('[Summon]', Reason + ', summoning right here', 128);
 
   if (not User.Dead) and (not NeedReturn) then begin
-    // 3) dismiss the old summon if it is still alive
-    if HaveSummon() then begin
-      Engine.DismissSum;
-      Delay(2000);
-    end;
-    // 4) summon a new one
     Engine.UseSkill(SummonSkill);
     Delay(RESUMMON_WAIT);
     if HaveSummon() then
@@ -2239,7 +2281,7 @@ begin
     else
       Engine.Msg('[Summon]', 'Summon did NOT come out, next try in a moment', 128);
 
-    // 5) rebuff: the summon is buffed together with us
+    // rebuff: the summon is buffed together with us
     if (BuffID <> 0) and (not User.Dead) and HaveSummon() then begin
       Engine.Msg('[Summon]', 'Rebuff after the summon', 0);
       BuffAltB();
@@ -2247,34 +2289,15 @@ begin
     end;
   end;
 
-  if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
   SummonBusy := false;
 end;
 
+// summon died / is not out -> renew it (its time left is NOT watched)
 procedure SummonWatch_Thread();
-var
-  Fed: integer;
-  LastLog: cardinal;
 begin
-  LastLog := 0;
   while Delay(1000) do begin
     if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or User.Dead or TreeBusy then continue;
-
-    // summon died or is not out
-    if not HaveSummon() then begin
-      RenewSummon('Summon is dead / missing');
-      continue;
-    end;
-
-    // summon time is running out
-    if SummonRenewPct <= 0 then continue;
-    Fed := PetList(0).Fed;
-    if GetTickCount - LastLog >= 60000 then begin
-      Engine.Msg('[Summon]', 'Summon time left: ' + IntToStr(Fed) + '%', 0);
-      LastLog := GetTickCount;
-    end;
-    if Fed < SummonRenewPct then
-      RenewSummon('Summon time ' + IntToStr(Fed) + '% < ' + IntToStr(SummonRenewPct) + '%');
+    if not HaveSummon() then RenewSummon('Summon is dead / missing');
   end;
 end;
 
@@ -2294,26 +2317,139 @@ begin
   result := not NpcList(Idx).Dead;
 end;
 
-procedure Patrol_Thread();
-var Idle: integer;
+// mobs that were around when the run started: the profile did not take them, do not stop for them
+var
+  PatrolStartOIDs: array of integer;
+
+function PatrolMobOK(i: integer): boolean;
+var NX, NY, NZ: integer;
 begin
-  Idle := 0;
-  while Delay(1000) do begin
+  result := false;
+  if NpcList(i).Dead then exit;
+  if IsIgnoredNpc(i) then exit;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  if User.DistTo(NX, NY, NZ) > PATROL_MOB_RANGE then exit;
+  result := InFarmArea(NX, NY, NZ);
+end;
+
+procedure RememberPatrolStartMobs();
+var i, n: integer;
+begin
+  SetLength(PatrolStartOIDs, 0);
+  for i := 0 to NpcList.Count - 1 do
+    if PatrolMobOK(i) then begin
+      n := Length(PatrolStartOIDs);
+      SetLength(PatrolStartOIDs, n + 1);
+      PatrolStartOIDs[n] := NpcList(i).OID;
+    end;
+end;
+
+// a NEW live mob (not there at the start of the run) close to us inside the farm area
+function PatrolMobNearby(): boolean;
+var i, j, OID: integer;
+  Old: boolean;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do begin
+    if not PatrolMobOK(i) then continue;
+    OID := NpcList(i).OID;
+    Old := false;
+    for j := 0 to Length(PatrolStartOIDs) - 1 do
+      if PatrolStartOIDs[j] = OID then begin Old := true; break; end;
+    if Old then continue;
+    result := true;
+    exit;
+  end;
+end;
+
+// index of the patrol point farthest from us
+function FarthestPatrolPoint(): integer;
+var k, n, PX, PY, PZ: integer;
+  D, Best: double;
+begin
+  result := 0;
+  Best := -1;
+  n := Length(PatrolPoints) div 3;
+  for k := 0 to n - 1 do begin
+    PX := PatrolPoints[k * 3];
+    PY := PatrolPoints[k * 3 + 1];
+    PZ := PatrolPoints[k * 3 + 2];
+    D := User.DistTo(PX, PY, PZ);
+    if D > Best then begin
+      Best := D;
+      result := k;
+    end;
+  end;
+end;
+
+// Profile mode patrol: we stand still for PatrolIdle seconds with no target and
+// nobody hitting us -> run to the FARTHEST patrol point in short steps; as soon
+// as the profile takes a target (or a mob attacks) we stop and leave it alone.
+procedure Patrol_Thread();
+const
+  POLL_MS = 250;
+var
+  StillMs, LastX, LastY, UX, UY, k, TX, TY, TZ: integer;
+  Moving: boolean;
+  MoveStart: cardinal;
+  DX, DY: double;
+begin
+  StillMs := 0;
+  Moving := false;
+  LastX := User.X;
+  LastY := User.Y;
+  while Delay(POLL_MS) do begin
     if (not IsOnline()) or (not OnSpot) or IsRecovering or NeedReturn or TreeBusy or User.Dead or
-       ((BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME)) then begin
-      Idle := 0;
+       ((not Moving) and (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME)) then begin
+      StillMs := 0;
+      Moving := false;
+      PatrolBusy := false;
       continue;
     end;
+
+    // running to a patrol point: the profile is OFF meanwhile (it would hold us back),
+    // plain MoveTo like patrol.txt; a live mob near us -> stop and give it back to the profile
+    if Moving then begin
+      if HaveAgroMobs() or PatrolMobNearby() or
+         (User.DistTo(TX, TY, TZ) < PATH_REACHED) or (GetTickCount - MoveStart > 60000) then begin
+        Moving := false;
+        StillMs := 0;
+        PatrolBusy := false;
+        if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
+        continue;
+      end;
+      Engine.MoveTo(TX, TY, TZ);
+      continue;
+    end;
+
+    // standing still?
+    UX := User.X;
+    UY := User.Y;
+    DX := UX - LastX;
+    DY := UY - LastY;
+    if Sqrt(DX * DX + DY * DY) < 30 then StillMs := StillMs + POLL_MS else StillMs := 0;
+    LastX := UX;
+    LastY := UY;
 
     if HasLiveTarget() or HaveAgroMobs() then begin
-      Idle := 0;
+      StillMs := 0;
       continue;
     end;
 
-    Inc(Idle);
-    if Idle >= PatrolIdle then begin
-      PatrolStep();   // MoveTo waits until we get there; the next loop checks the target again
-      Idle := PatrolIdle - 1;   // no target after the step -> next point right away
+    if StillMs >= PatrolIdle * 1000 then begin
+      k := FarthestPatrolPoint();
+      TX := PatrolPoints[k * 3];
+      TY := PatrolPoints[k * 3 + 1];
+      TZ := PatrolPoints[k * 3 + 2];
+      Engine.Msg('[Patrol]', 'Standing without a target, running to patrol point ' + IntToStr(k + 1), 0);
+      PatrolBusy := true;   // rebuff waits, the profile is off while we run
+      FarmOff();
+      RememberPatrolStartMobs();
+      Moving := true;
+      MoveStart := GetTickCount;
+      StillMs := 0;
     end;
   end;
 end;
@@ -2369,7 +2505,7 @@ procedure OnChampionDetected(i: integer);
 var MaxHP: integer;
 begin
   MaxHP := NpcList(i).MaxHP;
-  Alert('[Champion]', NpcList(i).Name + ' (' + IntToStr(MaxHP) + ' HP) spawned near me', DEFAULT_CHAMPION_SOUND);
+  Alert('[Champion]', NpcList(i).Name + ' (' + IntToStr(MaxHP) + ' HP) spawned in the farm area', DEFAULT_CHAMPION_SOUND);
 end;
 
 procedure Events_Thread();
@@ -2435,6 +2571,11 @@ begin
         MaxHP := NpcList(i).MaxHP;
         if MaxHP <= ChampionMinHP then continue;
         if IsIgnoredNpc(i) then continue;
+        // only champions in our farm area: the zone, or (no zone) FREE_RADIUS around the start point
+        X := NpcList(i).X;
+        Y := NpcList(i).Y;
+        Z := NpcList(i).Z;
+        if not InFarmArea(X, Y, Z) then continue;
 
         OID := NpcList(i).OID;
         n := Length(Cur);

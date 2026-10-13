@@ -1,0 +1,59 @@
+uses SysUtils;
+
+// Token (mark) sniffer. Run it, take a target in the game and put a mark on it
+// by hand (type /usetoken3 in chat, or the mark button). Then copy the [Cli] lines
+// that appeared at that moment - the token packet is one of them.
+//
+// Every client packet is logged as hex, except noisy ones (movement, position, ping).
+// Chat (49) and bypass (23) packets are also decoded to text.
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function ToHex(Data: Pointer; Size: integer): string;
+var i: integer;
+begin
+  result := '';
+  for i := 0 to Size - 1 do
+    result := result + IntToHex(RdByte(Data, i), 2);
+end;
+
+function ReadWideString(Data: Pointer; Size: integer): string;
+var i, Code: integer;
+begin
+  result := '';
+  i := 0;
+  while i + 1 < Size do begin
+    Code := RdByte(Data, i) or (RdByte(Data, i + 1) shl 8);
+    i := i + 2;
+    if Code = 0 then break;
+    result := result + Chr(Code);
+  end;
+end;
+
+function IsNoise(ID1: Cardinal): boolean;
+begin
+  // 0F MoveBackwardToLocation, 59 ValidatePosition, B1 NetPing, 48 RequestTargetCanceld? (kept), 14 ItemList
+  result := (ID1 = $0F) or (ID1 = $59) or (ID1 = $B1);
+end;
+
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var Line: string;
+begin
+  if IsNoise(ID1) then exit;
+  Line := 'op=' + IntToHex(ID1, 2) + ' op2=' + IntToHex(ID2, 2) + ' size=' + IntToStr(Size);
+  if Size <= 64 then Line := Line + ' hex=' + ToHex(Data, Size);
+  if (ID1 = $49) or (ID1 = $23) then Line := Line + ' text="' + ReadWideString(Data, Size) + '"';
+  Engine.Msg('[Cli]', Line, 128);
+end;
+
+begin
+  Engine.SendActID(2);   // enable packet hooks (same as packet_logger)
+  Engine.Msg('[Cli]', 'Token sniffer started: take a target, put a mark on it by hand', 128);
+  Delay(-1);
+end.
