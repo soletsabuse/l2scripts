@@ -26,7 +26,7 @@ begin
   ]);
 
   // where to stand while rebuffing on the spot (remove the line = buff where you stand)
-  SetSafePoint(81789, 225900, -3646);
+  SetSafePoint(81485, 226277, -3610);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
