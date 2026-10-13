@@ -26,15 +26,12 @@ begin
   ]);
 
   // where to stand while rebuffing on the spot (remove the line = buff where you stand)
-  SetSafePoint(78153, 224957, -3782);
+  SetSafePoint(81485, 226277, -3610);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
 
-  SetPatrol(10, [
-  79651, 225763, -3790,
-  82315, 225926, -3688
-]);
+  // standing still 3 sec with no target -> run to the farthest patrol point (stops when the profile takes a target)
 
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
   // Uncomment what you need:

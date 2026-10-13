@@ -1,0 +1,62 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// Tanor DMP 1 (data from tanor_aoe_walk_1). Dwarf AoE farm WITHOUT the interface:
+// pull a pack -> mass spoil + AoE + mass sweep -> pick up the drop.
+// Only data here, all logic is in spot_farm.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  // SetLogin('login', 'password');
+
+  SetZone('tanor_walk_1.zmap');                                    // Library\Zones
+  SetConfig('tanor_dmp.xml');                                      // Library\Configurations
+  SetTeleport('_bbs_teleport?id=203&telTownIdList=4&fromtown=6');  // Aden gatekeeper -> spot
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=1&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line)
+  SetPath([
+    81310, 148442, -3495,
+    80450, 148658, -3528,
+    80156, 148690, -3559,
+    76066, 148528, -3603,
+    72905, 146433, -3178,
+    70792, 145251, -3066,
+    66537, 145379, -3651,
+    67896, 144676, -3414
+  ]);
+
+  // AoE farm without the interface: pack size, mass spoil skill, mass sweep skill,
+  // [AoE damage skills] ([0] = plain attack), [mob IDs] ([0] = any mob in the zone)
+  SetAoeFarm(5, 302, 444, [36], [20941, 20944]);
+
+  // no mobs in sight while pulling -> walk these points (inside the zone)
+  // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  // SetSafePoint(x, y, z);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  // SetExpOff(true);
+
+  // alerts: private messages + death + champions are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+  // SetTelegram('api key from the Adrenaline cabinet');
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // AddSupply(SOULSHOT_D,               8000, 15000);
+  // AddSupply(SOULSHOT_C,               8000, 15000);
+  // AddSupply(SOULSHOT_B,               8000, 15000);
+  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_S,               8000, 15000);
+  // AddSupply(MANA_DRUG,                50, 100);
+  // AddSupply(MANA_POTION,              10, 50);
+  // AddSupply(HEALING_POTION,           10, 50);
+
+  RunFarm();
+end.
