@@ -1,0 +1,79 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// CBP NOS 1. Only data here, all logic is in spot_farm.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  SetLogin('lwnsalam', 'ASD123qwe');
+
+  SetZone('eab2.zmap');                      // Library\Zones
+  SetConfig('EAB.xml');                     // Library\Configurations
+  SetTeleport('_bbs_teleport?id=148&fromtown=6'); // Aden gatekeeper -> spot
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line)
+  SetPath([
+     115029, -108377, -873,
+    116218, -107869, -914,
+    117874, -107543, -1101,
+    118493, -107175, -1120,
+    119046, -106708, -1327,
+    119500, -105943, -1588,
+    120152, -105346, -1901,
+    120773, -105368, -2113,
+    121440, -105900, -2214,
+    121943, -106072, -2234,
+    122573, -106134, -2424,
+    123165, -105692, -2691,
+    123792, -105244, -2596,
+    124117, -105184, -2359,
+    124330, -104889, -2294,
+    124568, -104817, -2346,
+    125096, -105416, -2788,
+    125548, -105536, -2799,
+    125898, -105119, -2800
+
+  ]);
+
+  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+
+  // alerts are ON by default (values below); uncomment a line only to change it
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; 0 = off
+  // SetPrivateAlert(true);             // private messages; false = off
+  // SetPlayerSound('player.wav');      // file in Library\Sounds; '' = no sound
+  // SetPrivateSound('private.wav');    // file in Library\Sounds; '' = no sound
+  // SetAlertBlink(true);              // blink the game window in the taskbar; false = off
+  // SetTelegram('api key from the Adrenaline cabinet');
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // Uncomment what you need:
+  // AddSupply(SOULSHOT_D,               8000, 15000);
+  // AddSupply(SOULSHOT_C,                  16111, 16200);
+   AddSupply(SOULSHOT_B,               5000, 10000);
+  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_S,               8000, 15000);
+  // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_B,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
+  // AddSupply(BEAST_SOULSHOT,           2000, 5000);
+  // AddSupply(BEAST_BLESSED_SPIRITSHOT, 2000, 5000);
+  //AddSupply(SPIRIT_ORE,               100, 500);
+  // AddSupply(CURSED_BONE,              100, 500);
+  AddSupply(MANA_DRUG,                   50, 100);
+  // AddSupply(MANA_POTION,              10, 50);
+  // AddSupply(HEALING_POTION,           10, 50);
+
+  RunFarm();
+end.
