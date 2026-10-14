@@ -1,0 +1,62 @@
+uses SysUtils;
+uses SpotFarm3 in 'farm_spot_v3.pas';
+
+// IT EWS necro 1 (settings from it_room_1). The INTERFACE fights (its attack + skills),
+// the script picks targets, drives the summon, spams the HP drain, rebuffs, summons, buys.
+// The profile must be in MANUAL target mode (MTarget="true"), it stays ON all the time.
+// Only data here, all logic is in farm_spot_v3.pas.
+
+begin
+  SetZone('it_room_1.zmap');   // Library\Zones; '' = the zone active in the bot
+  // SetConfig('xxx.xml');     // Library\Configurations - the necro profile (manual target mode)
+
+  // our buff: watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+  // summon buff: bypasses sent right after ours (only if the summon is out)
+  // TODO: the real summon buff bypass (bypass_sniffer.txt while buffing the summon)
+  SetSummonBuff([
+    'book_use?name=s&pre=0&target=Summon'
+  ]);
+
+  // after the aggro is dead: here we summon and buff
+  SetSafePoint(177904, -76189, -2878);
+
+  // no targets -> run these points one by one (targets are searched on the way)
+  SetPatrol([
+    177887, -75365, -2758
+  ]);
+
+  // new targets only this close (mobs that attack us / the summon - always, up to 1000)
+  SetTargetRange(700);
+
+  // mobs to target; [0] = any mob in the zone
+  SetMobs([0]);
+
+  // ===== summon =====
+  // summon skill; summon time left (Fed %) below 30 -> dismiss + summon a new one (0 = never)
+  SetSummon(1154, 30);
+
+  // summon skills = action IDs: AddPetSkill(action, kind, interval ms, param)
+  //   SKILL_DEBUFF - once per mob, again on the same mob after interval
+  //   SKILL_NUKE   - every interval
+  //   SKILL_DRAIN  - only when summon HP % < param
+  AddPetSkill(1200, SKILL_DEBUFF, 8000, 0);   // M.Def down on the mob
+  AddPetSkill(47,   SKILL_NUKE,   5000, 0);   // damage
+
+  // summon attack order (runs in, hits with hands): only on mobs with MaxHP >= N (0 = every mob)
+  SetPetAttack(true, 100000);
+
+  // ===== HP drain: our HP below N % -> the script spams the skill until its reuse starts =====
+  AddDrainSkill(1234, 70);   // Vampiric Claw
+
+  // ===== supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max =====
+  AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
+  AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
+  AddSupply(CURSED_BONE,              10000, 20000);
+  AddSupply(MANA_DRUG,                200, 500);
+
+  RunFarm();
+end.
