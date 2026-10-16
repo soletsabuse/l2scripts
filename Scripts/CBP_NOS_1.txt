@@ -4,12 +4,9 @@ uses SpotFarm in 'spot_farm.pas';
 // CBP NOS 1. Only data here, all logic is in spot_farm.pas.
 
 begin
-  // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('SUMqwer', 'ASD123qwe');
 
-  SetZone('cbp_nos_1.zmap');                      // Library\Zones
-  SetConfig('cbp_nos_1.xml');                     // Library\Configurations
-  SetTeleport('_bbs_teleport?id=122&fromtown=6'); // Aden gatekeeper -> spot
+  SetZone('apostate_ewb_konec.zmap');                      // Library\Zones
+  SetConfig('ewb_spoiler.xml');                     // Library\Configurations
 
   // watched buff ID + buff bypasses (sent in this order)
   SetBuff(1204, [
@@ -18,15 +15,9 @@ begin
   ]);
 
   // teleport landing -> inside the zone (x, y, z per line)
-  SetPath([
-    83980, 232126, -3435,
-    83496, 230793, -3276,
-    81819, 227358, -3693,
-    81680, 225711, -3621
-  ]);
 
   // where to stand while rebuffing on the spot (remove the line = buff where you stand)
-  SetSafePoint(81485, 226277, -3610);
+  SetSafePoint(-11124, -248596, -8191);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
@@ -36,8 +27,8 @@ begin
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
   // Uncomment what you need:
   // AddSupply(SOULSHOT_D,               8000, 15000);
-  AddSupply(SOULSHOT_C,                  16111, 16200);
-  // AddSupply(SOULSHOT_B,               8000, 15000);
+  //AddSupply(SOULSHOT_C,                  16111, 16200);
+  AddSupply(SOULSHOT_B,               8000, 15000);
   // AddSupply(SOULSHOT_A,               8000, 15000);
   // AddSupply(SOULSHOT_S,               8000, 15000);
   // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
@@ -49,7 +40,7 @@ begin
   // AddSupply(BEAST_BLESSED_SPIRITSHOT, 2000, 5000);
   //AddSupply(SPIRIT_ORE,               100, 500);
   // AddSupply(CURSED_BONE,              100, 500);
-  AddSupply(MANA_DRUG,                   50, 100);
+  AddSupply(MANA_DRUG,                   100, 100);
   // AddSupply(MANA_POTION,              10, 50);
   // AddSupply(HEALING_POTION,           10, 50);
 

@@ -11,7 +11,7 @@ begin
   // SetLogin('login', 'password');
 
   // '' = farm in the zone you drew in the bot; no zone there -> mobs within 900 of where you started
-  SetZone('pagan_levo.zmap');
+  SetZone('it_room_1.zmap');
   SetConfig('');             // no interface config
 
   // main character buff: watched buff ID + buff bypasses (sent in this order)
@@ -26,11 +26,10 @@ begin
   SetCasterFarm([0]);
   // pick targets only this close to us (mobs that attack us - always)
   SetTargetRange(700);
-  SetSafePoint(-20366, -53830, -11140);
+  SetSafePoint(177904, -76189, -2878);
 
   SetPatrol(3, [
-    -20233, -54320, -11140,
-    -20172, -52678, -10964
+    177887, -75365, -2758
   ]);
   // ===== necro skills, in PRIORITY order (the first one that may be used now is used) =====
   // AddCasterSkill(skill ID, kind, interval ms, param)
