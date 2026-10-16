@@ -45,7 +45,7 @@ begin
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
-
+   SetChampionAlert(0);
   // alerts are ON by default (values below); uncomment a line only to change it
   // SetPlayerAlert(2000);              // player (not party/clan) closer than N; 0 = off
   // SetPrivateAlert(true);             // private messages; false = off

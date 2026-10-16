@@ -1,0 +1,115 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// CBP NOS 1. Only data here, all logic is in spot_farm.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  // SetLogin('dufssss', 'ASD123qwe');
+
+  SetZone('gc_tmh.zmap');                      // Library\Zones
+  SetConfig('gc_tmh.xml');                     // Library\Configurations
+  SetTeleport('_bbs_teleport?id=88&fromtown=6'); // Aden gatekeeper -> spot
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line)
+  SetPath([
+    168831, 38255, -4102,
+    169746, 38572, -4095,
+    171127, 39096, -4113,
+    172943, 39792, -4145,
+    174435, 40133, -4173,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4273,
+    176017, 41176, -4224,
+    176885, 42001, -4277,
+    177333, 43599, -4268,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4076,
+    179619, 44044, -4024,
+    179834, 45109, -4024,
+    180073, 45913, -4093,
+    180688, 46223, -4152,
+    181589, 46424, -4374,
+    183617, 47390, -4396,
+    184176, 47022, -4396,
+    184739, 46949, -4396,
+    185586, 47387, -4374,
+    187942, 48763, -4396,
+    190600, 50230, -4396
+]);
+
+  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+  SetChampionAlert(0);
+  // alerts are ON by default (values below); uncomment a line only to change it
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; 0 = off
+  // SetPrivateAlert(true);             // private messages; false = off
+  // SetPlayerSound('player.wav');      // file in Library\Sounds; '' = no sound
+  // SetPrivateSound('private.wav');    // file in Library\Sounds; '' = no sound
+  // SetAlertBlink(true);              // blink the game window in the taskbar; false = off
+  // SetTelegram('api key from the Adrenaline cabinet');
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // Uncomment what you need:
+  // AddSupply(SOULSHOT_D,               8000, 15000);
+  // AddSupply(SOULSHOT_C,                  16111, 16200);
+  // AddSupply(SOULSHOT_B,               5000, 10000);
+  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_S,               8000, 15000);
+  // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);
+   AddSupply(BLESSED_SPIRITSHOT_B,     5000, 10000);
+  // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
+  // AddSupply(BEAST_SOULSHOT,           2000, 5000);
+  // AddSupply(BEAST_BLESSED_SPIRITSHOT, 2000, 5000);
+  //AddSupply(SPIRIT_ORE,               100, 500);
+  // AddSupply(CURSED_BONE,              100, 500);
+  AddSupply(MANA_DRUG,                   100, 200);
+  // AddSupply(MANA_POTION,              10, 50);
+  // AddSupply(HEALING_POTION,           10, 50);
+
+  RunFarm();
+end.
