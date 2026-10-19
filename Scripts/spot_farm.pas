@@ -139,6 +139,7 @@ const
   TREE_NEAR_RANGE   = 1000;     // "close to us" for the detection above
   TREE_STUCK_MS     = 10000;    // while shooting: no HP drop this long -> move around the mob (45 deg)
   TREE_MAX_REPOS    = 8;        // repositions (full circle) before giving up on the mob
+  SAFE_AGGRO_RANGE  = 700;      // rebuff at the safe point: mobs hitting us (also from range) this close are killed, farther ignored
   AGGRO_MAX_RANGE   = 1000;     // caster mode: mobs attacking us / the summon are targeted only this close
   FREE_RADIUS       = 900;    // SetZone('') and no zone in the bot: farm this close to the start point
   DEFAULT_TARGET_RANGE = 700;  // caster mode: pick targets only this close, unless SetTargetRange
@@ -1617,6 +1618,99 @@ begin
   end;
 end;
 
+// nearest alive mob that hits us within SAFE_AGGRO_RANGE (also archers / casters hitting
+// from range - we go and kill them); farther ones are ignored
+function NearAggroOID(): integer;
+var i, NX, NY, NZ: integer;
+  D, BestD: double;
+begin
+  result := 0;
+  BestD := 999999;
+  for i := 0 to NpcList.Count - 1 do begin
+    if not IsAgr(NpcList(i)) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    D := User.DistTo(NX, NY, NZ);
+    if D > SAFE_AGGRO_RANGE then continue;
+    if D < BestD then begin
+      BestD := D;
+      result := NpcList(i).OID;
+    end;
+  end;
+end;
+
+// the script itself kills one mob that hits us (the interface is OFF here)
+procedure SafeFightStep(OID: integer);
+begin
+  if AoeEnabled then begin
+    AoeFightPack();
+    exit;
+  end;
+  if CasterEnabled then begin
+    CasterFightStep(OID);
+    Delay(200);
+    exit;
+  end;
+  Engine.SetTarget(OID);
+  Engine.Attack(500);
+end;
+
+// Rebuff with a safe point: interface OFF -> run to the safe point (no fighting on the way) ->
+// there kill everybody who came after us and wait until we are out of combat -> true.
+// Keeps trying until it works; false only on death / return.
+// kill this mob to the end (max 60 sec: unreachable / bugged mob)
+procedure SafeKillMob(OID: integer);
+var i, Idx: integer;
+  Started: cardinal;
+begin
+  Started := GetTickCount;
+  while (not User.Dead) and (not NeedReturn) and (GetTickCount - Started < 60000) do begin
+    Idx := -1;
+    for i := 0 to NpcList.Count - 1 do
+      if NpcList(i).OID = OID then begin Idx := i; break; end;
+    if (Idx < 0) or NpcList(Idx).Dead then exit;
+    SafeFightStep(OID);
+  end;
+end;
+
+function SafePointClear(): boolean;
+var OID, Tries: integer;
+begin
+  result := false;
+  FarmOff();
+  Engine.Msg('[Rebuff]', 'Interface OFF, running to the safe point', 0);
+  Tries := 0;
+  while (User.DistTo(SafeX, SafeY, SafeZ) > 150) and (Tries < 5) do begin
+    if User.Dead or NeedReturn then exit;
+    Engine.MoveTo(SafeX, SafeY, SafeZ);
+    Inc(Tries);
+  end;
+
+  // at the safe point: a mob hits us -> kill it to the end -> back to the safe point;
+  // again and again until we are out of combat
+  while true do begin
+    if User.Dead or NeedReturn then exit;
+    OID := NearAggroOID();
+    if OID <> 0 then begin
+      SafeKillMob(OID);
+      if User.Dead or NeedReturn then exit;
+      Engine.CancelTarget;
+      Engine.MoveTo(SafeX, SafeY, SafeZ);
+      continue;
+    end;
+    if User.DistTo(SafeX, SafeY, SafeZ) > 150 then begin
+      Engine.MoveTo(SafeX, SafeY, SafeZ);
+      continue;
+    end;
+    if not User.InCombat then break;
+    Delay(300);
+  end;
+  Engine.CancelTarget;
+  Engine.Msg('[Rebuff]', 'Out of combat at the safe point', 0);
+  result := true;
+end;
+
 // SetExpOff(true): tell the server to stop giving XP. Sent at start and on every
 // return via Aden, so it stays off even if the server reset it.
 procedure ApplyExpOff();
@@ -1913,7 +2007,12 @@ begin
     if (BuffTime(BuffID) < REBUFF_TIME) then begin
       Engine.Msg('[Rebuff]', 'Buff is low, preparing to rebuff...', 0);
 
-      // --- fight off mobs and leave combat (only on the spot) ---
+      // --- safe point set: interface OFF, run there, fight back there until out of combat ---
+      if OnSpot and HasSafePoint then begin
+        if not SafePointClear() then continue;   // died / going back via Aden
+        Delay(500);
+      end else
+      // --- no safe point: fight off mobs and leave combat right here (only on the spot) ---
       if OnSpot then begin
         if not ClearCombat() then begin
           if User.Dead or NeedReturn then continue;

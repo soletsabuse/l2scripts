@@ -1,0 +1,91 @@
+uses SysUtils;
+uses NecroFight in 'necro_fight.pas';
+
+// Necro solo: necromancer with a summon. Only settings here, all logic is in necro_fight.pas.
+// Fight + rebuff at the safe point + supplies + anti-disarm + patrol.
+
+// the bot sends game events only to the script itself - pass them on to the library
+// (needed for "Can't see target."); do not remove
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  NecroOnAction(Action, P1, P2);
+end;
+
+begin
+  // ===== our skills, PRIORITY order inside each kind =====
+  // AddMySkill(skill ID, kind, param)
+  //   KIND_DRAIN  - param = HP %: spammed while our HP is below it
+  //   KIND_DEBUFF - param = ms: cast again on the SAME mob only after this
+  //   KIND_NUKE   - param unused: always spammed (the one that reloads first)
+  // AddMyAoe(skill ID, radius, cast range) - AoE: only when ready, 3+ mobs within radius of the target
+  //   and the target closer than cast range (0 = any distance)
+  // AddMyDebuff(skill ID, recast ms, min mob HP) - a debuff cast only on mobs with more HP than that
+  AddMySkill(1234, KIND_DRAIN,  85);      // Vampiric Claw, HP < 70 %
+  AddMySkill(1382, KIND_DEBUFF, 6000);   // debuff, again on the same mob after 30 sec
+  AddMySkill(1343, KIND_NUKE,  6500);       // Vortex
+  AddMySkill(1148, KIND_NUKE,   0);       // Death Spike
+  AddMyAoe(1155, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
+
+  AddMyDebuff(1337, 13000, 100000); 
+  // how often a skill packet is sent (ms)
+  SetSpamMs(100);
+
+  // ===== summon =====
+  SetSummon(1154);   // summon skill (summoned when missing)
+
+  // summon skills = action IDs: AddPetSkill(action, kind, param)
+  //   KIND_DEBUFF - again on the same mob after param ms
+  //   KIND_NUKE   - every param ms
+  //   KIND_DRAIN  - when summon HP % < param
+  AddPetSkill(1200, KIND_DEBUFF, 8000);   // M.Def down on the mob
+  AddPetSkill(47,   KIND_NUKE,   5000);   // damage
+
+  // summon attack order (runs in, hits with hands): -1 = never, 0 = every mob, N = only mobs with MaxHP >= N
+  SetPetAttack(-1);
+
+  // ===== targets: only inside the zone active in the bot (no zone -> radius around the start) =====
+  SetTargetRange(800);   // new targets / current target only this close
+  SetAggroRange(800);    // mobs on us / the summon only this close
+  SetFreeRadius(800);    // no zone in the bot: farm this close to the start point
+  SetCastRange(600);     // our skills reach this far: a target farther away -> walk closer first
+
+  // extra names to never target (other players' summons, chests... are skipped by default)
+  // AddIgnoreName('Some Mob');
+
+  // ===== rebuff: watched buff ID + buff bypasses =====
+  // buff running out -> fight off until OUT of combat -> safe point (if set) -> summon ->
+  // buff (only out of combat) -> supplies
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+  // separate buff profile for the summon: SetSummonBuff(buff watched ON THE SUMMON, its bypasses)
+  //   every rebuff sends BOTH profiles: ours above, then this one (the summon gets buffed too)
+  //   (no line = the summon gets buffed together with us by the bypasses above)
+  //   put the real bypass of your summon profile instead of SUMMON_PROFILE / target (sniff it once);
+  //   the summon still without its buff after 5 tries -> the script gives up on it for 10 min
+  // SetSummonBuff(1204, [
+  //   '_bbs_buffer_show',
+  //   'book_use?name=SUMMON_PROFILE&pre=0&target=Summon'
+  // ]);
+
+  // where to rebuff (no line = right where we are)
+  SetSafePoint(-12403, -53433, -11035);
+
+  // ===== patrol: no targets -> run these points one by one =====
+  // attacked / a mob shows up on the way -> fight it, then run on to the same point
+
+  // with patrol, new mobs only this close (mobs that attack us are always fought, up to 900)
+  SetPatrolRange(200);
+
+  // ===== anti-disarm: the weapon in hands at start is remembered (or set it here) =====
+  // SetWeapon(1234);
+
+  // ===== supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max =====
+  AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
+  AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
+  AddSupply(CURSED_BONE,              10000, 20000);
+  AddSupply(MANA_DRUG,                200, 500);
+
+  RunNecro();
+end.

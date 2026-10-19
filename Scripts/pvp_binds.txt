@@ -1,0 +1,827 @@
+uses SysUtils, Classes, Controls, Forms, StdCtrls;
+
+// =============================================================================
+// PVP binds: a small window to set up hotkeys, each one picks an enemy player
+// by class priority / range / clans. Plus auto-assist on an assister.
+//
+// Hotkey press:
+//   classes are checked line by line (line 1 = top priority); the first line that
+//   has somebody valid wins -> the nearest of them. Pressing the key again while
+//   that player is already our target -> the next nearest of the same line (cycle).
+//   No class lines -> the nearest valid player of any class.
+// Auto-assist:
+//   the assister picks a NEW target -> we take it too. Skipped while the assister
+//   has one of the aggression debuffs (his target is forced then); that forced
+//   target is not taken after the debuff ends either - only his next new one.
+//
+// Settings are saved next to the script in pvp_binds.ini (button Save).
+// =============================================================================
+
+const
+  INI_NAME      = 'pvp_binds.ini';
+  KEY_POLL_MS   = 30;
+  ASSIST_MS     = 100;
+  HEIGHT_RANGE  = 400;      // |dz| limit for picking
+  // mark on the picked target (RequestActionUse 0x50), sniffed earlier on this server
+  TOKEN_PACKET_HEX = '56500000000000000000';
+
+function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
+
+type
+  THandlers = class
+    procedure ListClick(Sender: TObject);
+    procedure AddClick(Sender: TObject);
+    procedure DelClick(Sender: TObject);
+    procedure SaveClick(Sender: TObject);
+  end;
+
+var
+  // class names for the "classes" lines (a number works too)
+  CLS_IDS: array of integer = [
+    2, 3, 5, 6, 8, 9, 12, 13, 14, 16, 17, 20, 21, 23, 24, 27, 28, 30, 33, 34, 36, 37, 40, 41,
+    43, 46, 48, 51, 52, 55, 57,
+    88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+    108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+    127, 128, 129, 130, 131, 132, 133, 134, 135, 136];
+  CLS_NAMES: array of string = [
+    'Gladiator', 'Warlord', 'Paladin', 'Dark Avenger', 'Treasure Hunter', 'Hawkeye', 'Sorcerer',
+    'Necromancer', 'Warlock', 'Bishop', 'Prophet', 'Temple Knight', 'Swordsinger', 'Plainswalker',
+    'Silver Ranger', 'Spellsinger', 'Elemental Summoner', 'Elven Elder', 'Shillien Knight',
+    'Bladedancer', 'Abyss Walker', 'Phantom Ranger', 'Spellhowler', 'Phantom Summoner',
+    'Shillien Elder', 'Destroyer', 'Tyrant', 'Overlord', 'Warcryer', 'Bounty Hunter', 'Warsmith',
+    'Duelist', 'Dreadnought', 'Phoenix Knight', 'Hell Knight', 'Sagittarius', 'Adventurer',
+    'Archmage', 'Soultaker', 'Arcana Lord', 'Cardinal', 'Hierophant', 'Eva''s Templar',
+    'Sword Muse', 'Wind Rider', 'Moonlight Sentinel', 'Mystic Muse', 'Elemental Master',
+    'Eva''s Saint', 'Shillien Templar', 'Spectral Dancer', 'Ghost Hunter', 'Ghost Sentinel',
+    'Storm Screamer', 'Spectral Master', 'Shillien Saint', 'Titan', 'Grand Khavatari',
+    'Dominator', 'Doomcryer', 'Fortune Seeker', 'Maestro',
+    'Berserker', 'Soulbreaker', 'Soulbreaker', 'Arbalester', 'Doombringer', 'Soul Hound',
+    'Soul Hound', 'Trickster', 'Inspector', 'Judicator'];
+
+  // binds (parallel arrays)
+  BName, BKey, BClans, BClasses: array of string;   // BClans: ',' between clans; BClasses: '#' between lines
+  BRange, BCode: array of integer;                  // BCode = VK + 256 * modifiers (0 = no key)
+  BWas: array of boolean;
+
+  // auto-assist
+  AssistOn, MarkOn: boolean;
+  AssisterName, AggroText: string;
+  AggroIDs: array of integer;
+  LastAssistOID: integer;
+  LastAssistCheck: cardinal;
+
+  Busy: boolean;      // the window is changing the binds right now - the loop waits
+  SelIdx: integer;
+
+  // window
+  Form: TForm;
+  Handlers: THandlers;
+  LbBinds: TListBox;
+  EdName, EdKey, EdRange, EdAssister, EdAggro: TEdit;
+  MmClans, MmClasses: TMemo;
+  ChkAssist, ChkMark: TCheckBox;
+
+// =============================================================================
+// Strings
+// =============================================================================
+
+procedure SplitTo(S, Sep: string; L: TStringList);
+var p: integer;
+begin
+  L.Clear;
+  if S = '' then exit;
+  while true do begin
+    p := Pos(Sep, S);
+    if p = 0 then begin L.Add(S); break; end;
+    L.Add(Copy(S, 1, p - 1));
+    Delete(S, 1, p);
+  end;
+end;
+
+function NoBar(S: string): string;
+begin
+  result := StringReplace(S, '|', '/', [rfReplaceAll]);
+end;
+
+// memo lines -> one string, empty lines skipped
+function MemoJoin(M: TMemo; Sep: string): string;
+var i: integer;
+  S: string;
+begin
+  result := '';
+  for i := 0 to M.Lines.Count - 1 do begin
+    S := Trim(NoBar(M.Lines[i]));
+    if S = '' then continue;
+    if result <> '' then result := result + Sep;
+    result := result + S;
+  end;
+end;
+
+procedure MemoFill(M: TMemo; S, Sep: string);
+var L: TStringList;
+  i: integer;
+begin
+  L := TStringList.Create;
+  SplitTo(S, Sep, L);
+  M.Lines.Clear;
+  for i := 0 to L.Count - 1 do M.Lines.Add(L[i]);
+  L.Free;
+end;
+
+// class name or number -> class ID (0 = unknown)
+function ClassIDOf(S: string): integer;
+var i: integer;
+begin
+  S := Trim(S);
+  result := StrToIntDef(S, 0);
+  if result > 0 then exit;
+  for i := 0 to Length(CLS_NAMES) - 1 do
+    if LowerCase(CLS_NAMES[i]) = LowerCase(S) then begin
+      result := CLS_IDS[i];
+      exit;
+    end;
+end;
+
+// one classes line ("Cardinal, Eva's Saint") contains this class ID
+function LineHasClass(Line: string; ClassID: integer): boolean;
+var L: TStringList;
+  i: integer;
+begin
+  result := false;
+  L := TStringList.Create;
+  SplitTo(Line, ',', L);
+  for i := 0 to L.Count - 1 do
+    if ClassIDOf(L[i]) = ClassID then begin result := true; break; end;
+  L.Free;
+end;
+
+// =============================================================================
+// Hotkeys: "Z", "F1", "Ctrl+Q", "Shift+Alt+2", "Mouse4", "Space", "Num5" ...
+// =============================================================================
+
+function KeyVK(S: string): integer;
+var n: integer;
+begin
+  result := 0;
+  S := UpperCase(Trim(S));
+  if S = '' then exit;
+  if (Length(S) = 1) and (((S[1] >= 'A') and (S[1] <= 'Z')) or ((S[1] >= '0') and (S[1] <= '9'))) then begin
+    result := Ord(S[1]);
+    exit;
+  end;
+  if (Length(S) >= 2) and (S[1] = 'F') then begin
+    n := StrToIntDef(Copy(S, 2, 2), 0);
+    if (n >= 1) and (n <= 24) then begin result := $6F + n; exit; end;
+  end;
+  if Copy(S, 1, 3) = 'NUM' then begin
+    n := StrToIntDef(Copy(S, 4, 1), -1);
+    if n >= 0 then begin result := $60 + n; exit; end;
+  end;
+  if S = 'SPACE' then result := $20
+  else if S = 'TAB' then result := $09
+  else if S = 'ENTER' then result := $0D
+  else if S = 'ESC' then result := $1B
+  else if S = 'BACKSPACE' then result := $08
+  else if S = 'INSERT' then result := $2D
+  else if S = 'DELETE' then result := $2E
+  else if S = 'HOME' then result := $24
+  else if S = 'END' then result := $23
+  else if S = 'PAGEUP' then result := $21
+  else if S = 'PAGEDOWN' then result := $22
+  else if S = 'UP' then result := $26
+  else if S = 'DOWN' then result := $28
+  else if S = 'LEFT' then result := $25
+  else if S = 'RIGHT' then result := $27
+  else if S = 'MOUSE3' then result := $04
+  else if S = 'MOUSE4' then result := $05
+  else if S = 'MOUSE5' then result := $06
+  else if S = '~' then result := $C0;
+end;
+
+// "Ctrl+Shift+Z" -> VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = can't read it
+function ParseKey(S: string): integer;
+var L: TStringList;
+  i, Md, VK: integer;
+  P: string;
+begin
+  result := 0;
+  Md := 0;
+  VK := 0;
+  L := TStringList.Create;
+  SplitTo(Trim(S), '+', L);
+  for i := 0 to L.Count - 1 do begin
+    P := UpperCase(Trim(L[i]));
+    if P = 'CTRL' then Md := Md or 1
+    else if P = 'SHIFT' then Md := Md or 2
+    else if P = 'ALT' then Md := Md or 4
+    else VK := KeyVK(P);
+  end;
+  L.Free;
+  if VK <> 0 then result := VK + 256 * Md;
+end;
+
+function KeyDown(VK: integer): boolean;
+begin
+  result := (GetAsyncKeyState(VK) and $8000) <> 0;
+end;
+
+function ModsNow(): integer;
+begin
+  result := 0;
+  if KeyDown($11) then result := result or 1;
+  if KeyDown($10) then result := result or 2;
+  if KeyDown($12) then result := result or 4;
+end;
+
+// =============================================================================
+// Binds data
+// =============================================================================
+
+procedure AddBind(Name, Key: string; Range: integer; Clans, ClassLines: string);
+var n: integer;
+begin
+  n := Length(BName);
+  SetLength(BName, n + 1);
+  SetLength(BKey, n + 1);
+  SetLength(BClans, n + 1);
+  SetLength(BClasses, n + 1);
+  SetLength(BRange, n + 1);
+  SetLength(BCode, n + 1);
+  SetLength(BWas, n + 1);
+  BName[n] := Name;
+  BKey[n] := Key;
+  BRange[n] := Range;
+  BClans[n] := Clans;
+  BClasses[n] := ClassLines;
+  BCode[n] := ParseKey(Key);
+  BWas[n] := false;
+end;
+
+procedure DeleteBind(b: integer);
+var i, n: integer;
+begin
+  n := Length(BName);
+  if (b < 0) or (b >= n) then exit;
+  for i := b to n - 2 do begin
+    BName[i] := BName[i + 1];
+    BKey[i] := BKey[i + 1];
+    BClans[i] := BClans[i + 1];
+    BClasses[i] := BClasses[i + 1];
+    BRange[i] := BRange[i + 1];
+    BCode[i] := BCode[i + 1];
+    BWas[i] := BWas[i + 1];
+  end;
+  SetLength(BName, n - 1);
+  SetLength(BKey, n - 1);
+  SetLength(BClans, n - 1);
+  SetLength(BClasses, n - 1);
+  SetLength(BRange, n - 1);
+  SetLength(BCode, n - 1);
+  SetLength(BWas, n - 1);
+end;
+
+procedure ParseAggro();
+var L: TStringList;
+  i, ID, n: integer;
+begin
+  SetLength(AggroIDs, 0);
+  L := TStringList.Create;
+  SplitTo(AggroText, ',', L);
+  for i := 0 to L.Count - 1 do begin
+    ID := StrToIntDef(Trim(L[i]), 0);
+    if ID <= 0 then continue;
+    n := Length(AggroIDs);
+    SetLength(AggroIDs, n + 1);
+    AggroIDs[n] := ID;
+  end;
+  L.Free;
+end;
+
+function IniPath(): string;
+begin
+  result := Script.Path + INI_NAME;
+end;
+
+procedure SaveIni();
+var L: TStringList;
+  b, a, m: integer;
+begin
+  a := 0;  if AssistOn then a := 1;
+  m := 0;  if MarkOn then m := 1;
+  L := TStringList.Create;
+  L.Add('ASSIST|' + IntToStr(a) + '|' + NoBar(AssisterName) + '|' + NoBar(AggroText) + '|' + IntToStr(m));
+  for b := 0 to Length(BName) - 1 do
+    L.Add('BIND|' + NoBar(BName[b]) + '|' + NoBar(BKey[b]) + '|' + IntToStr(BRange[b]) + '|' +
+      BClans[b] + '|' + BClasses[b]);
+  try
+    L.SaveToFile(IniPath());
+    Engine.Msg('[Pvp]', 'Saved to ' + IniPath(), 128);
+  except
+    Engine.Msg('[Pvp]', 'Could not save ' + IniPath(), 255);
+  end;
+  L.Free;
+end;
+
+procedure LoadIni();
+var L, P: TStringList;
+  i: integer;
+begin
+  // defaults (no file yet)
+  AssistOn := false;
+  MarkOn := true;
+  AssisterName := '';
+  AggroText := '28, 18, 286';
+  L := TStringList.Create;
+  P := TStringList.Create;
+  try
+    if FileExists(IniPath()) then L.LoadFromFile(IniPath());
+  except
+  end;
+  for i := 0 to L.Count - 1 do begin
+    SplitTo(L[i], '|', P);
+    if (P.Count >= 5) and (P[0] = 'ASSIST') then begin
+      AssistOn := P[1] = '1';
+      AssisterName := P[2];
+      AggroText := P[3];
+      MarkOn := P[4] = '1';
+    end else if (P.Count >= 6) and (P[0] = 'BIND') then
+      AddBind(P[1], P[2], StrToIntDef(P[3], 1200), P[4], P[5]);
+  end;
+  P.Free;
+  L.Free;
+  if Length(BName) = 0 then begin
+    AddBind('Mages', 'Z', 1200, '', 'Mystic Muse, Soultaker#Archmage, Storm Screamer');
+    AddBind('Healers', 'X', 1200, '', 'Cardinal, Eva''s Saint, Shillien Saint');
+  end;
+  ParseAggro();
+end;
+
+// =============================================================================
+// Picking a target
+// =============================================================================
+
+function InClans(Clan, ClanList: string): boolean;
+var L: TStringList;
+  i: integer;
+begin
+  result := false;
+  L := TStringList.Create;
+  SplitTo(ClanList, ',', L);
+  for i := 0 to L.Count - 1 do
+    if LowerCase(Trim(L[i])) = LowerCase(Clan) then begin result := true; break; end;
+  L.Free;
+end;
+
+// alive player, not us; clan list empty -> anyone not from our clan; within range / height
+function ValidFor(i, b: integer): boolean;
+var PX, PY, PZ: integer;
+  Clan, MyClan: string;
+begin
+  result := false;
+  if CharList(i).Dead then exit;
+  if CharList(i).OID = User.OID then exit;
+  Clan := CharList(i).Clan;
+  if BClans[b] <> '' then begin
+    if not InClans(Clan, BClans[b]) then exit;
+  end else begin
+    MyClan := '';
+    try MyClan := User.Clan; except end;
+    if (MyClan <> '') and (LowerCase(Clan) = LowerCase(MyClan)) then exit;
+  end;
+  PX := CharList(i).X;
+  PY := CharList(i).Y;
+  PZ := CharList(i).Z;
+  if Abs(PZ - User.Z) > HEIGHT_RANGE then exit;
+  result := User.DistTo(PX, PY, PZ) <= BRange[b];
+end;
+
+function CurTargetOID(): integer;
+begin
+  result := 0;
+  try
+    result := User.Target.OID;
+  except
+    result := 0;
+  end;
+end;
+
+procedure TakeTarget(OID: integer; Why: string);
+begin
+  Engine.SetTarget(OID);
+  if MarkOn and (TOKEN_PACKET_HEX <> '') then begin
+    Delay(50);    // the server registers the target before the mark
+    Engine.SendToServer(TOKEN_PACKET_HEX);
+  end;
+  Engine.Msg('[Pvp]', Why, 128);
+end;
+
+procedure PickForBind(b: integer);
+var Lines: TStringList;
+  g, i, j, n, Cur, Pos0, ClassID, PX, PY, PZ, TI: integer;
+  CandI: array of integer;
+  CandD: array of double;
+  TD: double;
+  Found: boolean;
+begin
+  Lines := TStringList.Create;
+  SplitTo(BClasses[b], '#', Lines);
+  if Lines.Count = 0 then Lines.Add('*');     // no class lines -> any class
+  Cur := CurTargetOID();
+  Found := false;
+
+  for g := 0 to Lines.Count - 1 do begin
+    SetLength(CandI, 0);
+    SetLength(CandD, 0);
+    for i := 0 to CharList.Count - 1 do begin
+      if not ValidFor(i, b) then continue;
+      ClassID := CharList(i).ClassID;
+      if (Lines[g] <> '*') and (not LineHasClass(Lines[g], ClassID)) then continue;
+      PX := CharList(i).X;
+      PY := CharList(i).Y;
+      PZ := CharList(i).Z;
+      n := Length(CandI);
+      SetLength(CandI, n + 1);
+      SetLength(CandD, n + 1);
+      CandI[n] := i;
+      CandD[n] := User.DistTo(PX, PY, PZ);
+    end;
+    n := Length(CandI);
+    if n = 0 then continue;
+
+    // nearest first
+    for i := 0 to n - 2 do
+      for j := i + 1 to n - 1 do
+        if CandD[j] < CandD[i] then begin
+          TD := CandD[i];  CandD[i] := CandD[j];  CandD[j] := TD;
+          TI := CandI[i];  CandI[i] := CandI[j];  CandI[j] := TI;
+        end;
+
+    // already on one of them -> the next one (cycle), else the nearest
+    Pos0 := 0;
+    for i := 0 to n - 1 do
+      if CharList(CandI[i]).OID = Cur then begin Pos0 := (i + 1) mod n; break; end;
+    i := CandI[Pos0];
+    TakeTarget(CharList(i).OID, BName[b] + ': ' + CharList(i).Name + ' [' + CharList(i).Clan + '] ' +
+      IntToStr(Round(CandD[Pos0])));
+    Found := true;
+    break;
+  end;
+  Lines.Free;
+  if not Found then Engine.Msg('[Pvp]', BName[b] + ': nobody in range', 128);
+end;
+
+// =============================================================================
+// Auto-assist
+// =============================================================================
+
+procedure AssistTick();
+var i, j, k, A, T, ID: integer;
+  Aggro: boolean;
+  Nm: string;
+begin
+  if (not AssistOn) or (AssisterName = '') then exit;
+  if GetTickCount - LastAssistCheck < ASSIST_MS then exit;
+  LastAssistCheck := GetTickCount;
+
+  A := -1;
+  Nm := LowerCase(Trim(AssisterName));
+  for i := 0 to CharList.Count - 1 do
+    if LowerCase(CharList(i).Name) = Nm then begin A := i; break; end;
+  if A < 0 then exit;
+  if CharList(A).Dead then exit;
+
+  T := 0;
+  try
+    T := CharList(A).Target.OID;
+  except
+    T := 0;
+  end;
+  if (T = 0) or (T = LastAssistOID) then begin
+    LastAssistOID := T;
+    exit;
+  end;
+
+  // his target is forced by an aggression debuff: remember it as seen, do not take it
+  Aggro := false;
+  try
+    for j := 0 to CharList(A).Buffs.Count - 1 do begin
+      ID := CharList(A).Buffs.Items(j).ID;
+      for k := 0 to Length(AggroIDs) - 1 do
+        if AggroIDs[k] = ID then Aggro := true;
+    end;
+  except
+  end;
+  LastAssistOID := T;
+  if Aggro then begin
+    Engine.Msg('[Assist]', AssisterName + ' is under aggression, not following', 0);
+    exit;
+  end;
+  if (T = User.OID) or (T = CurTargetOID()) then exit;
+  TakeTarget(T, 'Assist: ' + AssisterName + ' -> new target');
+end;
+
+// =============================================================================
+// Window (created / freed in the main thread)
+// =============================================================================
+
+function MakeLabel(X, Y: integer; Text: string): TLabel;
+begin
+  result := TLabel.Create(Form);
+  result.Parent := Form;
+  result.Left := X;
+  result.Top := Y;
+  result.Caption := Text;
+end;
+
+function MakeEdit(X, Y, W: integer): TEdit;
+begin
+  result := TEdit.Create(Form);
+  result.Parent := Form;
+  result.Left := X;
+  result.Top := Y;
+  result.Width := W;
+end;
+
+function MakeMemo(X, Y, W, H: integer): TMemo;
+begin
+  result := TMemo.Create(Form);
+  result.Parent := Form;
+  result.Left := X;
+  result.Top := Y;
+  result.Width := W;
+  result.Height := H;
+  result.ScrollBars := ssVertical;
+  result.WordWrap := false;
+end;
+
+function MakeButton(X, Y, W: integer; Text: string): TButton;
+begin
+  result := TButton.Create(Form);
+  result.Parent := Form;
+  result.Left := X;
+  result.Top := Y;
+  result.Width := W;
+  result.Height := 26;
+  result.Caption := Text;
+end;
+
+function MakeCheck(X, Y, W: integer; Text: string): TCheckBox;
+begin
+  result := TCheckBox.Create(Form);
+  result.Parent := Form;
+  result.Left := X;
+  result.Top := Y;
+  result.Width := W;
+  result.Caption := Text;
+end;
+
+procedure RefreshList();
+var b: integer;
+begin
+  LbBinds.Items.Clear;
+  for b := 0 to Length(BName) - 1 do
+    LbBinds.Items.Add(BName[b] + '   [' + BKey[b] + ']');
+  if SelIdx >= Length(BName) then SelIdx := Length(BName) - 1;
+  LbBinds.ItemIndex := SelIdx;
+end;
+
+procedure BindToFields();
+begin
+  if (SelIdx < 0) or (SelIdx >= Length(BName)) then begin
+    EdName.Text := '';
+    EdKey.Text := '';
+    EdRange.Text := '';
+    MmClans.Lines.Clear;
+    MmClasses.Lines.Clear;
+    exit;
+  end;
+  EdName.Text := BName[SelIdx];
+  EdKey.Text := BKey[SelIdx];
+  EdRange.Text := IntToStr(BRange[SelIdx]);
+  MemoFill(MmClans, BClans[SelIdx], ',');
+  MemoFill(MmClasses, BClasses[SelIdx], '#');
+end;
+
+// unknown class names on the lines -> say so in the bot chat
+procedure CheckClassNames(ClassLines: string);
+var Lines, Parts: TStringList;
+  g, i: integer;
+begin
+  Lines := TStringList.Create;
+  Parts := TStringList.Create;
+  SplitTo(ClassLines, '#', Lines);
+  for g := 0 to Lines.Count - 1 do begin
+    SplitTo(Lines[g], ',', Parts);
+    for i := 0 to Parts.Count - 1 do
+      if (Trim(Parts[i]) <> '') and (ClassIDOf(Parts[i]) = 0) then
+        Engine.Msg('[Pvp]', 'Unknown class: "' + Trim(Parts[i]) + '" (write the name as in the list or the class ID)', 255);
+  end;
+  Parts.Free;
+  Lines.Free;
+end;
+
+procedure FieldsToBind();
+var b: integer;
+begin
+  b := SelIdx;
+  if (b < 0) or (b >= Length(BName)) then exit;
+  BName[b] := Trim(NoBar(EdName.Text));
+  if BName[b] = '' then BName[b] := 'Bind ' + IntToStr(b + 1);
+  BKey[b] := Trim(NoBar(EdKey.Text));
+  BCode[b] := ParseKey(BKey[b]);
+  if (BKey[b] <> '') and (BCode[b] = 0) then
+    Engine.Msg('[Pvp]', 'Unknown hotkey: "' + BKey[b] + '"', 255);
+  BRange[b] := StrToIntDef(Trim(EdRange.Text), 1200);
+  BClans[b] := MemoJoin(MmClans, ',');
+  BClasses[b] := MemoJoin(MmClasses, '#');
+  CheckClassNames(BClasses[b]);
+  BWas[b] := true;     // do not fire right away if the key is held
+end;
+
+procedure FieldsToAssist();
+begin
+  AssistOn := ChkAssist.Checked;
+  MarkOn := ChkMark.Checked;
+  AssisterName := Trim(NoBar(EdAssister.Text));
+  AggroText := Trim(NoBar(EdAggro.Text));
+  ParseAggro();
+end;
+
+procedure THandlers.ListClick(Sender: TObject);
+begin
+  if LbBinds.ItemIndex < 0 then exit;
+  SelIdx := LbBinds.ItemIndex;
+  BindToFields();
+end;
+
+procedure THandlers.AddClick(Sender: TObject);
+begin
+  Busy := true;
+  try
+    AddBind('New bind', '', 1200, '', '');
+    SelIdx := Length(BName) - 1;
+    RefreshList();
+    BindToFields();
+  finally
+    Busy := false;
+  end;
+end;
+
+procedure THandlers.DelClick(Sender: TObject);
+begin
+  if (SelIdx < 0) or (SelIdx >= Length(BName)) then exit;
+  Busy := true;
+  try
+    DeleteBind(SelIdx);
+    RefreshList();
+    BindToFields();
+  finally
+    Busy := false;
+  end;
+  SaveIni();
+end;
+
+procedure THandlers.SaveClick(Sender: TObject);
+begin
+  Busy := true;
+  try
+    FieldsToBind();
+    FieldsToAssist();
+    RefreshList();
+  finally
+    Busy := false;
+  end;
+  SaveIni();
+end;
+
+// debug: where the start stops (removed once the window works)
+procedure Step(S: string);
+begin
+  Engine.Msg('[Pvp]', 'step: ' + S, 0);
+end;
+
+procedure CreateForm();
+var B: TButton;
+begin
+  Step('form 1: handlers');
+  Handlers := THandlers.Create;
+  Step('form 2: TForm.Create');
+  Form := TForm.Create(nil);
+  Step('form 3: properties');
+  Form.Caption := 'PvP binds';
+  Form.FormStyle := fsStayOnTop;
+  Form.Position := poScreenCenter;
+  Form.ClientWidth := 620;
+  Form.ClientHeight := 470;
+  Step('form 4: list');
+
+  LbBinds := TListBox.Create(Form);
+  LbBinds.Parent := Form;
+  LbBinds.Left := 10;
+  LbBinds.Top := 10;
+  LbBinds.Width := 190;
+  LbBinds.Height := 300;
+  LbBinds.OnClick := Handlers.ListClick;
+
+  Step('form 5: buttons');
+  B := MakeButton(10, 318, 92, 'Add');
+  B.OnClick := Handlers.AddClick;
+  B := MakeButton(108, 318, 92, 'Delete');
+  B.OnClick := Handlers.DelClick;
+
+  Step('form 6: fields');
+  MakeLabel(215, 13, 'Name');
+  EdName := MakeEdit(290, 10, 320);
+  MakeLabel(215, 43, 'Hotkey');
+  EdKey := MakeEdit(290, 40, 110);
+  MakeLabel(408, 43, 'Z, F1, Ctrl+Q, Mouse4, Num5, Space');
+  MakeLabel(215, 73, 'Range');
+  EdRange := MakeEdit(290, 70, 110);
+
+  MakeLabel(215, 100, 'Clans, one per line (empty = all except my clan)');
+  MmClans := MakeMemo(215, 116, 395, 64);
+  MakeLabel(215, 186, 'Classes by priority: line 1 first; equal ones on one line, comma');
+  MmClasses := MakeMemo(215, 202, 395, 108);
+
+  ChkAssist := MakeCheck(10, 362, 120, 'Auto-assist');
+  MakeLabel(150, 364, 'Assister');
+  EdAssister := MakeEdit(210, 360, 180);
+  MakeLabel(10, 394, 'Aggression debuff IDs');
+  EdAggro := MakeEdit(210, 390, 400);
+  ChkMark := MakeCheck(10, 424, 250, 'Put a mark on the picked target');
+
+  B := MakeButton(500, 432, 110, 'Save');
+  B.Height := 30;
+  B.OnClick := Handlers.SaveClick;
+
+  Step('form 7: fill');
+  ChkAssist.Checked := AssistOn;
+  ChkMark.Checked := MarkOn;
+  EdAssister.Text := AssisterName;
+  EdAggro.Text := AggroText;
+  SelIdx := 0;
+  RefreshList();
+  BindToFields();
+  Step('form 8: show');
+  Form.Show;
+  Step('form 9: done');
+end;
+
+procedure FreeForm();
+begin
+  if Form <> nil then begin
+    Form.Free;
+    Form := nil;
+  end;
+  if Handlers <> nil then begin
+    Handlers.Free;
+    Handlers := nil;
+  end;
+end;
+
+procedure OnFree;
+begin
+  Script.MainProc(@FreeForm);
+end;
+
+// =============================================================================
+// Main loop
+// =============================================================================
+
+function FormFocused(): boolean;
+begin
+  result := false;
+  try
+    if Form <> nil then result := Form.Active;
+  except
+  end;
+end;
+
+var
+  b, VK, Md: integer;
+  Down, Typing: boolean;
+
+begin
+  Step('1: start');
+  LoadIni();
+  Step('2: settings loaded (' + IntToStr(Length(BName)) + ' binds)');
+  Script.MainProc(@CreateForm);
+  Step('3: after MainProc');
+  Engine.Msg('[Pvp]', 'PvP binds started: ' + IntToStr(Length(BName)) + ' binds, settings in ' + IniPath(), 128);
+
+  while Delay(KEY_POLL_MS) do begin
+    if Busy then continue;
+    Typing := FormFocused();    // typing in our window: the hotkeys do not fire
+
+    for b := 0 to Length(BCode) - 1 do begin
+      if BCode[b] = 0 then continue;
+      VK := BCode[b] mod 256;
+      Md := BCode[b] div 256;
+      Down := KeyDown(VK) and (ModsNow() = Md);
+      if Down and (not BWas[b]) and (not Typing) then PickForBind(b);
+      BWas[b] := Down;
+    end;
+
+    AssistTick();
+  end;
+end.

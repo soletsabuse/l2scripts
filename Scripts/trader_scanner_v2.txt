@@ -1,0 +1,829 @@
+// =============================================
+// Lineage 2 Trader Scanner — per-character loop (v2)
+// Changes vs v1:
+//  [REMOVED] SoE 27500 anchor logic — character spawns where it logged out
+//  [REMOVED] ReturnToAnchorNoSkills — no anchor anymore
+//  [CHANGED] Character selection: random from a pool that drains; refills after
+//            all chars used (no repeats inside one round)
+//  [ADDED]   Watcher: WATCHED_NICKS list. If any of them is in visible range
+//            and changes XY between checks (every 5s) — wait 30s, logout,
+//            pause whole script for 10 minutes, then resume.
+// =============================================
+
+uses SysUtils, TCP;
+
+type
+  PBytePtr     = ^Byte;
+  PCardinalPtr = ^Cardinal;
+  PInt64Ptr    = ^Int64;
+
+  TItemInfo = packed record
+    Mask: Byte;
+    ObjectId: Cardinal;
+    ItemId: Cardinal;
+    Location: Byte;
+    Count: Int64;
+    ItemType2: Byte;
+    CustomType1: Byte;
+    Equipped: Word;
+    BodyPart: Int64;
+    EnchantLevel: Byte;
+    CustomType2: Byte;
+    Mana: Cardinal;
+    Time: Cardinal;
+    IsAvailable: Byte;
+    Proto140a: Byte;
+    Proto140b: Byte;
+    Price: Int64;
+    ReferencePrice2x: Int64;
+  end;
+
+var
+  Location: string;
+  ct: TL2Char;
+  charsToCheck: TL2List;
+  initialTraderOids: array of Cardinal;
+
+  // ====== CONFIG / CONSTANTS ======
+
+  // Random map pool
+  MAP_LIST: array[0..14] of string = (
+    'g_new_1.zmap',
+    'g_new_2.zmap',
+    'g_new_3.zmap',
+    'g_new_4.zmap',
+    'g_new_5.zmap',
+    'g_new_6.zmap',
+    'g_new_7.zmap',
+    'g_new_8.zmap',
+    'g_new_9.zmap',
+    'g_new_10.zmap',
+    'g_new_11.zmap',
+    'g_new_12.zmap',
+    'g_new_13.zmap',
+    'g_new_14.zmap',
+    'g_new_15.zmap'
+  );
+
+  // Pacing
+  IDLE_SLEEP_MS: Cardinal = 100;
+
+  // Trade shout pool; timer continues across character changes
+  SHOUT_MESSAGES: array[0..29] of string = (
+    'WTB EAA',
+    'WTS DC gloves full',
+    'WTS AEWA',
+    'WTS Combat Coin',
+    'WTT DC GLOVES FOR TALLUM',
+    'WTS Red SA 11',
+    'WTB GC /t Shprankle',
+    'WTS NM/MJ boots',
+    'WTB LS 76',
+    'WTS Elysian offers',
+    'WTB BOMT',
+    'WTB Carnage Bow',
+    'WTS TODs',
+    'WTB AM heads/BOMT heads',
+    'WTS NM shield',
+    'WTS DC heavy set',
+    'WTB Wizard ++',
+    'WTB SA Green 11',
+    'WTS DCr set',
+    'WTS TMr set',
+    'WTS MJr set',
+    'WTS BWr set',
+    'WTB EWA ',
+    'WTS AA cheap',
+    'WTB Combat Coin 15kk each mail',
+    'WTS Soul Seporator cheap',
+    'WTS Tallum Glaive offers',
+    'WTS SoM tods',
+    'wtb dc helmet mw',
+    'wtb EWB 6kk each mail'
+  );
+  shoutLastTs: Cardinal;
+  shoutIntervalMs: Cardinal;
+
+  // Relog
+  TOTAL_CHARS: Integer = 7;              // total characters on account
+
+  // [ADDED] pool of unused character indices for "no-repeat until full round"
+  charPool: array of Integer;
+
+  // Anti-stall
+  STALL_MS: Cardinal = 30000;            // 30s without progress → abort scan
+
+  // [ADDED] Watcher (nicks to monitor)
+  WATCHED_NICKS: array[0..0] of string = ('Ritualist');
+  WATCH_CHECK_INTERVAL_MS: Cardinal = 5000;       // check every 5s
+  WATCH_WAIT_BEFORE_LOGOUT_MS: Cardinal = 30000;  // 30s after detection
+  WATCH_PAUSE_MS: Cardinal = 600000;              // 10 min full-script pause
+
+  // [ADDED] watcher state (size = number of WATCHED_NICKS entries)
+  watchedLastX:    array[0..0] of Integer;
+  watchedLastY:    array[0..0] of Integer;
+  watchedSeenOnce: array[0..0] of Boolean;
+  watchedLastCheckTs: Cardinal;
+
+  // [ADDED v3] alert state across scans (so we know when to send watch_clear)
+  inWatchAlert:         Boolean = False;
+  watchedAlertNick:     string = '';
+  watchedAlertCharName: string = '';
+
+// ===== Helpers (no inline) =====
+
+function SqrI(a: Integer): Int64;
+begin
+  Result := Int64(a) * a;
+end;
+
+function DistanceSq(ax, ay, az, bx, by, bz: Integer): Int64;
+begin
+  Result := SqrI(ax - bx) + SqrI(ay - by) + SqrI(az - bz);
+end;
+
+procedure SafeSleep(ms: Cardinal);
+begin
+  Delay(ms);
+end;
+
+function RandBetween(a, b: Cardinal): Cardinal;
+begin
+  Result := a + Cardinal(Random(Integer(b - a + 1)));
+end;
+
+procedure TrySendTradeShout();
+begin
+  if (GetTickCount - shoutLastTs) < shoutIntervalMs then Exit;
+
+  Engine.Say(SHOUT_MESSAGES[Low(SHOUT_MESSAGES) + Random(High(SHOUT_MESSAGES) - Low(SHOUT_MESSAGES) + 1)], 1, '');
+  shoutLastTs := GetTickCount;
+  shoutIntervalMs := RandBetween(120000, 420000);
+end;
+
+function PickRandomMap(): string;
+var
+  idx: Integer;
+begin
+  idx := Random(High(MAP_LIST) - Low(MAP_LIST) + 1) + Low(MAP_LIST);
+  Result := MAP_LIST[idx];
+end;
+
+function BuffTime(ID: Integer): Cardinal;
+var
+  i: Integer;
+begin
+  Result := 0;
+  for i := 0 to User.Buffs.Count - 1 do
+    if User.Buffs.Items(i).ID = ID then
+    begin
+      Result := User.Buffs.Items(i).EndTime;
+      Break;
+    end;
+end;
+
+procedure BuffAltB();
+begin
+  if Engine.BypassToServer('_bbs_buffer_show') then SafeSleep(555);
+  if Engine.BypassToServer('book_use?name=s&pre=0&target=Player') then SafeSleep(555);
+end;
+
+// ===== JSON utils =====
+
+function Int64ToStr(const Value: Int64): string;
+begin
+  Result := Format('%d', [Value]);
+end;
+
+function EscapeJson(const S: string): string;
+begin
+  Result := StringReplace(S, '"', '\"', [rfReplaceAll]);
+end;
+
+function ItemToJson(const Item: TItemInfo): string;
+begin
+  Result := Format(
+    '{"itemId":%d,"count":%s,"price":%s,"enchantLevel":%d}',
+    [Item.ItemId, Int64ToStr(Item.Count), Int64ToStr(Item.Price), Item.EnchantLevel]
+  );
+end;
+
+procedure SendJsonToServer(const Json: string);
+var
+  Sock: TTCPBlockSocket;
+  Host, Port: string;
+begin
+  Host := '65.108.38.173';
+  Port := '9000';
+  Sock := TTCPBlockSocket.Create;
+  try
+    Sock.Connect(Host, Port);
+    if Sock.LastError = 0 then Sock.SendString(Json);
+  finally
+    Sock.Free;
+  end;
+end;
+
+// ===== Packet parsing =====
+
+procedure ParseItemBase(var P: Pointer; out Item: TItemInfo);
+begin
+  Item.Mask       := PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.ObjectId   := PCardinal(P)^;   Inc(Cardinal(P), 4);
+  Item.ItemId     := PCardinal(P)^;   Inc(Cardinal(P), 4);
+  Item.Location   := PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.Count      := PInt64(P)^;      Inc(Cardinal(P), 8);
+  Item.ItemType2  := PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.CustomType1:= PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.Equipped   := PWord(P)^;       Inc(Cardinal(P), 2);
+  Item.BodyPart   := PInt64(P)^;      Inc(Cardinal(P), 8);
+  Item.EnchantLevel:=PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.CustomType2:= PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.Mana       := PCardinal(P)^;   Inc(Cardinal(P), 4);
+  Item.Time       := PCardinal(P)^;   Inc(Cardinal(P), 4);
+  Item.IsAvailable:= PByte(P)^;       Inc(Cardinal(P), 1);
+  if (Item.Mask = 4) then Inc(Cardinal(P), 12); // skip augmentation
+  Item.Proto140a  := PByte(P)^;       Inc(Cardinal(P), 1);
+  Item.Proto140b  := PByte(P)^;       Inc(Cardinal(P), 1);
+end;
+
+procedure ParseItemPacketSell(var P: Pointer; out Item: TItemInfo);
+begin
+  ParseItemBase(P, Item);
+  Item.Price           := PInt64(P)^; Inc(Cardinal(P), 8);
+  Item.ReferencePrice2x:= PInt64(P)^; Inc(Cardinal(P), 8);
+end;
+
+procedure ParseItemPacketBuy(var P: Pointer; out Item: TItemInfo);
+begin
+  ParseItemBase(P, Item);
+  Inc(Cardinal(P), 4); // trash
+  Item.Price           := PInt64(P)^; Inc(Cardinal(P), 8);
+  Item.ReferencePrice2x:= PInt64(P)^; Inc(Cardinal(P), 8);
+  Item.Count           := PInt64(P)^; Inc(Cardinal(P), 8);
+end;
+
+procedure ParsePacketSell(DataPtr: Pointer; Size: Cardinal);
+var
+  P: Pointer;
+  PackageSale, Unknown, ItemCount: Cardinal;
+  PlayerAdena: Int64;
+  i: Integer;
+  Item: TItemInfo;
+  TraderName: string;
+  ItemsJson, Json: string;
+begin
+  P := DataPtr;
+  TraderName := EscapeJson(Engine.GetUser().Target.Name);
+
+  Inc(Cardinal(P), 4); // ObjId
+  PackageSale := PCardinal(P)^; Inc(Cardinal(P), 4);
+  PlayerAdena := PInt64(P)^;    Inc(Cardinal(P), 8);
+  Unknown     := PCardinal(P)^; Inc(Cardinal(P), 4);
+  ItemCount   := PCardinal(P)^; Inc(Cardinal(P), 4);
+
+  ItemsJson := '';
+  for i := 0 to ItemCount - 1 do
+  begin
+    ParseItemPacketSell(P, Item);
+    if ItemsJson <> '' then ItemsJson := ItemsJson + ',';
+    ItemsJson := ItemsJson + ItemToJson(Item);
+  end;
+
+  Json := Format(
+    '{"type":"sell","location":"%s","traderName":"%s","packageSale":%d,"adena":%s,"items":[%s]}',
+    [Location, TraderName, PackageSale, Int64ToStr(PlayerAdena), ItemsJson]
+  );
+  SendJsonToServer(Json);
+end;
+
+procedure ParsePacketBuy(DataPtr: Pointer; Size: Cardinal);
+var
+  P: Pointer;
+  Unknown, ItemCount: Cardinal;
+  PlayerAdena: Int64;
+  i: Integer;
+  Item: TItemInfo;
+  TraderName: string;
+  ItemsJson, Json: string;
+begin
+  P := DataPtr;
+  TraderName := EscapeJson(Engine.GetUser().Target.Name);
+
+  Inc(Cardinal(P), 4); // ObjId
+  PlayerAdena := PInt64(P)^;    Inc(Cardinal(P), 8);
+  Unknown     := PCardinal(P)^; Inc(Cardinal(P), 4);
+  ItemCount   := PCardinal(P)^; Inc(Cardinal(P), 4);
+
+  ItemsJson := '';
+  for i := 0 to ItemCount - 1 do
+  begin
+    ParseItemPacketBuy(P, Item);
+    if ItemsJson <> '' then ItemsJson := ItemsJson + ',';
+    ItemsJson := ItemsJson + ItemToJson(Item);
+  end;
+
+  Json := Format(
+    '{"type":"buy","location":"%s","traderName":"%s","adena":%s,"items":[%s]}',
+    [Location, TraderName, Int64ToStr(PlayerAdena), ItemsJson]
+  );
+  SendJsonToServer(Json);
+end;
+
+// ===== Discovery & selection =====
+
+procedure FindInitialShops();
+var
+  i: Integer;
+  ch: TL2Char;
+  allChars: TL2List;
+begin
+  allChars := Engine.GetCharList();
+  for i := 0 to allChars.Count - 1 do
+  begin
+    ch := TL2Char(allChars.Items[i]);
+    if (((ch.StoreType = Byte(stSell)) or (ch.StoreType = Byte(stBuy)) or
+         (ch.StoreType = Byte(stSellPackage))) and (Engine.InZone(ch))) then
+    begin
+      SetLength(initialTraderOids, Length(initialTraderOids) + 1);
+      initialTraderOids[High(initialTraderOids)] := ch.OID;
+      AddTraderToWatchlist(ch);
+    end;
+  end;
+end;
+
+procedure AddTraderToWatchlist(ch: TL2Char);
+var
+  i: Integer; tmpChar: TL2Char;
+begin
+  for i := charsToCheck.Count - 1 downto 0 do
+  begin
+    tmpChar := TL2Char(charsToCheck.Items[i]);
+    if tmpChar.OID = ch.OID then
+    begin
+      charsToCheck.Delete(i);
+      Break;
+    end;
+  end;
+
+  charsToCheck.Insert(0, ch);
+end;
+
+procedure FindNewShops();
+var
+  i, j: Integer;
+  ch: TL2Char;
+  allChars: TL2List;
+  wasInInitialScan: Boolean;
+begin
+  allChars := Engine.GetCharList();
+  for i := 0 to allChars.Count - 1 do
+  begin
+    ch := TL2Char(allChars.Items[i]);
+    if (((ch.StoreType = Byte(stSell)) or (ch.StoreType = Byte(stBuy)) or
+         (ch.StoreType = Byte(stSellPackage))) and (Engine.InZone(ch))) then
+    begin
+      wasInInitialScan := False;
+      for j := 0 to High(initialTraderOids) do
+        if initialTraderOids[j] = ch.OID then
+        begin
+          wasInInitialScan := True;
+          Break;
+        end;
+      if not wasInInitialScan then
+        AddTraderToWatchlist(ch);
+    end;
+  end;
+end;
+
+function FindCharByOID(oid: Cardinal): TL2Char;
+var
+  i: Integer; cl: TL2List; ch: TL2Char;
+begin
+  Result := nil;
+  cl := Engine.GetCharList();
+  for i := 0 to cl.Count - 1 do
+  begin
+    ch := TL2Char(cl.Items[i]);
+    if ch.OID = oid then
+    begin
+      Result := ch;
+      Exit;
+    end;
+  end;
+end;
+
+function GetNextTrader(): TL2Char;
+var
+  ch, nearby, anywhere, chosen: TL2Char;
+  charList: TL2List;
+  i, j, nearbyCount, totalCount: Integer;
+  dist: Int64;
+  user: TL2Char;
+begin
+  Result := nil;
+  print('Traders to check: ' + IntToStr(charsToCheck.Count));
+
+  user := Engine.GetUser();
+  nearby := nil;
+  anywhere := nil;
+  nearbyCount := 0;
+  totalCount := 0;
+
+  charList := Engine.GetCharList();
+  for i := 0 to charList.Count - 1 do
+  begin
+    ch := TL2Char(charList.Items[i]);
+    if Engine.InZone(ch) then
+      for j := 0 to charsToCheck.Count - 1 do
+        if TL2Char(charsToCheck.Items[j]).OID = ch.OID then
+        begin
+          Inc(totalCount);
+          if Random(totalCount) = 0 then
+            anywhere := ch;
+
+          dist := DistanceSq(ch.X, ch.Y, ch.Z, user.X, user.Y, user.Z);
+          if dist <= SqrI(200) then
+          begin
+            Inc(nearbyCount);
+            if Random(nearbyCount) = 0 then
+              nearby := ch;
+          end;
+          Break;
+        end;
+  end;
+
+  chosen := nearby;
+  if chosen = nil then
+    chosen := anywhere;
+
+  if (chosen = nil) and (charsToCheck.Count > 0) then
+  begin
+    for j := charsToCheck.Count - 1 downto 0 do
+    begin
+      ch := FindCharByOID(TL2Char(charsToCheck.Items[j]).OID);
+      if ch = nil then
+        charsToCheck.Delete(j)
+      else if not Engine.InZone(ch) then
+        charsToCheck.Delete(j);
+    end;
+  end;
+
+  if chosen <> nil then
+  begin
+    for j := charsToCheck.Count - 1 downto 0 do
+      if TL2Char(charsToCheck.Items[j]).OID = chosen.OID then
+      begin
+        charsToCheck.Delete(j);
+        Break;
+      end;
+    Result := chosen;
+  end;
+end;
+
+// ===== Trader interaction =====
+
+procedure TouchTrader(ch: TL2Char);
+begin
+  if ((ch.StoreType = Byte(stPrepareSell)) or (ch.StoreType = Byte(stPrepareBuy)) or
+      (ch.StoreType = Byte(stSell)) or (ch.StoreType = Byte(stBuy)) or
+      (ch.StoreType = Byte(stSellPackage))) then
+  begin
+    Engine.MoveTo(ch.X, ch.Y, ch.Z);
+    print('Moving to trader: ' + ch.Name);
+    Engine.SetTarget(ch);
+    print('Setting target: ' + ch.Name);
+    Engine.Attack(2000 + Random(5001));
+    print('Attacking');
+  end
+  else
+    print('Character ' + ch.Name + ' is not on trade');
+end;
+
+// ===== Packet hook =====
+
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  case ID1 of
+    $A1: ParsePacketSell(Data, Size);
+    $BE: ParsePacketBuy(Data, Size);
+  end;
+  exit;
+end;
+
+// ===== [ADDED] Watcher by nicknames =====
+
+function NickMatches(const charName, nick: string): Boolean;
+begin
+  // substring match, case-insensitive
+  Result := Pos(LowerCase(nick), LowerCase(charName)) > 0;
+end;
+
+procedure ResetWatcher();
+var i: Integer;
+begin
+  for i := 0 to High(WATCHED_NICKS) do watchedSeenOnce[i] := False;
+  watchedLastCheckTs := 0;
+end;
+
+// [ADDED v3] Watch event senders — fire-and-forget over the existing TCP channel
+procedure SendWatchDetected(const nick, charName: string; x, y, z: Integer);
+var json: string;
+begin
+  json := Format(
+    '{"type":"watch_detected","nick":"%s","traderName":"%s","x":%d,"y":%d,"z":%d,"location":"%s"}',
+    [EscapeJson(nick), EscapeJson(charName), x, y, z, Location]
+  );
+  SendJsonToServer(json);
+end;
+
+procedure SendWatchMoving(const nick, charName: string;
+                          fromX, fromY, x, y, z: Integer; pauseMs: Cardinal);
+var json: string;
+begin
+  json := Format(
+    '{"type":"watch_moving","nick":"%s","traderName":"%s","fromX":%d,"fromY":%d,"x":%d,"y":%d,"z":%d,"location":"%s","pauseMs":%d}',
+    [EscapeJson(nick), EscapeJson(charName), fromX, fromY, x, y, z, Location, pauseMs]
+  );
+  SendJsonToServer(json);
+end;
+
+procedure SendWatchClear(const nick, charName: string);
+var json: string;
+begin
+  json := Format(
+    '{"type":"watch_clear","nick":"%s","traderName":"%s"}',
+    [EscapeJson(nick), EscapeJson(charName)]
+  );
+  SendJsonToServer(json);
+end;
+
+// Returns True if any watched nick is moving (XY changed between checks).
+function CheckWatchedMoving(): Boolean;
+var
+  i, j: Integer;
+  cl: TL2List;
+  ch: TL2Char;
+  found: Boolean;
+  charName: string;
+begin
+  Result := False;
+  if (GetTickCount - watchedLastCheckTs) < WATCH_CHECK_INTERVAL_MS then Exit;
+  watchedLastCheckTs := GetTickCount;
+
+  cl := Engine.GetCharList();
+  for i := 0 to High(WATCHED_NICKS) do
+  begin
+    found := False;
+    for j := 0 to cl.Count - 1 do
+    begin
+      ch := TL2Char(cl.Items[j]);
+      charName := ch.Name;
+      if NickMatches(charName, WATCHED_NICKS[i]) then
+      begin
+        found := True;
+        if not watchedSeenOnce[i] then
+        begin
+          watchedLastX[i] := ch.X;
+          watchedLastY[i] := ch.Y;
+          watchedSeenOnce[i] := True;
+          print(Format('[WATCH] %s spotted at (%d,%d) — tracking',
+                       [charName, ch.X, ch.Y]));
+          // [ADDED v3] one-shot "detected" notification
+          SendWatchDetected(WATCHED_NICKS[i], charName, ch.X, ch.Y, ch.Z);
+        end
+        else if (ch.X <> watchedLastX[i]) or (ch.Y <> watchedLastY[i]) then
+        begin
+          print(Format('[ALERT] %s is MOVING! was (%d,%d) now (%d,%d)',
+                       [charName, watchedLastX[i], watchedLastY[i], ch.X, ch.Y]));
+          // [ADDED v3] "moving + pause" notification, then mark global alert state
+          SendWatchMoving(WATCHED_NICKS[i], charName,
+                          watchedLastX[i], watchedLastY[i],
+                          ch.X, ch.Y, ch.Z, WATCH_PAUSE_MS);
+          inWatchAlert         := True;
+          watchedAlertNick     := WATCHED_NICKS[i];
+          watchedAlertCharName := charName;
+          Result := True;
+          Exit;
+        end;
+        Break;
+      end;
+    end;
+    if not found then watchedSeenOnce[i] := False; // out of range — reset
+  end;
+end;
+
+// ===== Scan with stall detector + watcher =====
+
+// [CHANGED] now returns Boolean: True = normal completion, False = aborted by watcher
+function RunSingleScan(): Boolean;
+var
+  chosenMap: string;
+  ch: TL2Char;
+  lastPending, pending: Integer;
+  lastChangeTs: Cardinal;
+  zoneRechecked: Boolean;
+begin
+  Result := True;
+  ResetWatcher();
+
+  chosenMap := PickRandomMap();
+  print('Loading random map: ' + chosenMap);
+  Engine.LoadZone(chosenMap);
+
+  charsToCheck.Clear;
+  SetLength(initialTraderOids, 0);
+  zoneRechecked := False;
+  FindInitialShops();
+
+  lastPending := charsToCheck.Count;
+  lastChangeTs := GetTickCount;
+
+  while True do
+  begin
+    // [ADDED] watcher takes priority
+    if CheckWatchedMoving() then
+    begin
+      Result := False;
+      Exit;
+    end;
+
+    if BuffTime(1204) < 60000 then
+      BuffAltB();
+
+    ch := GetNextTrader();
+    if ch <> nil then
+    begin
+      TrySendTradeShout();
+      TouchTrader(ch);
+    end
+    else
+      SafeSleep(IDLE_SLEEP_MS);
+
+    pending := charsToCheck.Count;
+
+    if (pending = 0) then
+    begin
+      if not zoneRechecked then
+      begin
+        zoneRechecked := True;
+        FindNewShops();
+        pending := charsToCheck.Count;
+        if pending > 0 then
+        begin
+          lastPending := pending;
+          lastChangeTs := GetTickCount;
+          Continue;
+        end;
+      end;
+      print('Scan finished: queues empty.');
+      Break;
+    end;
+
+    if pending <> lastPending then
+    begin
+      lastPending := pending;
+      lastChangeTs := GetTickCount;
+    end
+    else if (GetTickCount - lastChangeTs >= STALL_MS) then
+    begin
+      print(Format('[STALL] No progress for %d ms (pending=%d). Aborting scan.',
+                   [STALL_MS, pending]));
+      Break;
+    end;
+  end;
+end;
+
+// ===== [CHANGED] Character pool — random without repeats until pool drains =====
+
+procedure InitCharPool();
+var i: Integer;
+begin
+  SetLength(charPool, TOTAL_CHARS);
+  for i := 0 to TOTAL_CHARS - 1 do
+    charPool[i] := i;
+  print('Char pool refilled: new round of ' + IntToStr(TOTAL_CHARS) + ' chars');
+end;
+
+function PickFromPool(): Integer;
+var
+  idx, picked, i: Integer;
+begin
+  if Length(charPool) = 0 then InitCharPool();
+  idx := Random(Length(charPool));
+  picked := charPool[idx];
+  for i := idx to High(charPool) - 1 do
+    charPool[i] := charPool[i + 1];
+  SetLength(charPool, Length(charPool) - 1);
+  print(Format('Picked char index %d, %d remaining in pool',
+               [picked, Length(charPool)]));
+  Result := picked;
+end;
+
+// ===== Relog: Restart() → GameStart() =====
+
+function WaitForLoginStage(targetStage: Integer; timeoutMs: Cardinal): Boolean;
+var
+  startTs: Cardinal;
+begin
+  startTs := GetTickCount;
+  Result := False;
+  repeat
+    if Engine.LoginStatus = targetStage then
+    begin
+      Result := True;
+      Exit;
+    end;
+    SafeSleep(250);
+  until (GetTickCount - startTs) >= timeoutMs;
+end;
+
+procedure RelogToAnotherCharacter();
+var
+  ok: Boolean;
+  idx: Integer;
+begin
+  print('Relog: Restart to character select...');
+  ok := Engine.Restart();
+  if not ok then print('[WARN] Restart() returned False');
+
+  if not WaitForLoginStage(2, 20000) then
+    print('[WARN] Did not observe LoginStatus=2 in time; trying GameStart anyway');
+
+  idx := PickFromPool(); // [CHANGED] no-repeat pool selection
+  print('Relog: GameStart with index = ' + IntToStr(idx));
+  ok := Engine.GameStart(idx);
+  if not ok then
+    print('[ERROR] GameStart(' + IntToStr(idx) + ') returned False');
+
+  SafeSleep(5000);
+end;
+
+// ===== MAIN LOOP =====
+
+procedure OneFullCycle();
+var
+  scanOk: Boolean;
+begin
+  // [REMOVED] EnsureAtAnchor27500 — character spawns wherever it logged out
+  Location := 'AutoSpawn';
+
+  // 1) full scan until queues empty / stall / watcher trigger
+  scanOk := RunSingleScan();
+
+  // 2a) [ADDED v3] alert resolved: we WERE in alert, but this scan finished
+  //     normally without re-triggering — character disappeared or stopped.
+  if scanOk and inWatchAlert then
+  begin
+    print(Format('[WATCH] Alert cleared for %s.', [watchedAlertNick]));
+    SendWatchClear(watchedAlertNick, watchedAlertCharName);
+    inWatchAlert         := False;
+    watchedAlertNick     := '';
+    watchedAlertCharName := '';
+  end;
+
+  // 2b) [ADDED] watcher path — wait, logout, long pause, then resume
+  if not scanOk then
+  begin
+    print(Format('[WATCH] Waiting %d ms before logout...',
+                 [WATCH_WAIT_BEFORE_LOGOUT_MS]));
+    SafeSleep(WATCH_WAIT_BEFORE_LOGOUT_MS);
+
+    print('[WATCH] Restart -> character select');
+    Engine.Restart();
+
+    print(Format('[WATCH] Pausing whole script for %d ms (10 minutes)...',
+                 [WATCH_PAUSE_MS]));
+    SafeSleep(WATCH_PAUSE_MS);
+    // After resume RelogToAnotherCharacter will Restart again (no-op at char
+    // select) and GameStart into next pool char. If watcher fires again on
+    // the next scan -> another 10 min pause + another watch_moving sent.
+    // If next scan completes ok -> watch_clear is sent above (2a).
+  end;
+
+  // [REMOVED] ReturnToAnchorNoSkills — no anchor anymore
+
+  // 3) relog to next character from the pool
+  RelogToAnotherCharacter();
+end;
+
+procedure MainLoop();
+begin
+  while True do
+  begin
+    OneFullCycle();
+  end;
+end;
+
+begin
+  Randomize;
+  charsToCheck := TL2List.Create();
+  InitCharPool(); // [ADDED]
+
+  Engine.SendActID(2);
+
+  shoutLastTs := GetTickCount;
+  shoutIntervalMs := RandBetween(120000, 420000);
+
+  MainLoop(); // infinite cycles
+end.

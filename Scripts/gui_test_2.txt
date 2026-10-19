@@ -1,0 +1,21 @@
+uses SysUtils, Classes, Controls, Forms, StdCtrls;
+
+// test 2: units + a class with a click handler
+type
+  THandlers = class
+    procedure BtnClick(Sender: TObject);
+  end;
+
+procedure THandlers.BtnClick(Sender: TObject);
+begin
+  Engine.Msg('[Test2]', 'click', 128);
+end;
+
+var H: THandlers;
+
+begin
+  Engine.Msg('[Test2]', 'start', 128);
+  H := THandlers.Create;
+  Engine.Msg('[Test2]', 'class OK', 128);
+  H.Free;
+end.

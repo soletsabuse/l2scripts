@@ -1,0 +1,6 @@
+uses SysUtils, Classes, Controls, Forms, StdCtrls;
+
+// test 1: only the GUI units
+begin
+  Engine.Msg('[Test1]', 'units OK', 128);
+end.

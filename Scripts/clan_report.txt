@@ -1,0 +1,352 @@
+uses SysUtils, Classes;
+
+// =============================================================================
+// Clan report: collects every player of the chosen clans the bot sees (people come
+// and go - everyone seen stays in the report) and writes a text file next to the
+// script: per clan a short summary by roles, then each class with the nicknames.
+// The file is rewritten every few seconds while something new shows up.
+// =============================================================================
+
+var
+  // clans to collect (case does not matter); [''] = every clan (players without a clan are skipped)
+  CLANS: array of string = ['GhostRiders', 'DeathSentence'];
+
+  REPORT_FILE: string = 'clan_report_out.txt';   // next to the script
+  SAVE_EVERY_MS: integer = 5000;
+
+// ===================== Classes and roles =====================
+var
+  CLS_IDS: array of integer = [
+    2, 3, 5, 6, 8, 9, 12, 13, 14, 16, 17, 20, 21, 23, 24, 27, 28, 30, 33, 34, 36, 37, 40, 41,
+    43, 46, 48, 51, 52, 55, 57,
+    88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107,
+    108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118,
+    127, 128, 129, 130, 131, 132, 133, 134, 135, 136];
+  CLS_NAMES: array of string = [
+    'Gladiator', 'Warlord', 'Paladin', 'Dark Avenger', 'Treasure Hunter', 'Hawkeye', 'Sorcerer',
+    'Necromancer', 'Warlock', 'Bishop', 'Prophet', 'Temple Knight', 'Swordsinger', 'Plainswalker',
+    'Silver Ranger', 'Spellsinger', 'Elemental Summoner', 'Elven Elder', 'Shillien Knight',
+    'Bladedancer', 'Abyss Walker', 'Phantom Ranger', 'Spellhowler', 'Phantom Summoner',
+    'Shillien Elder', 'Destroyer', 'Tyrant', 'Overlord', 'Warcryer', 'Bounty Hunter', 'Warsmith',
+    'Duelist', 'Dreadnought', 'Phoenix Knight', 'Hell Knight', 'Sagittarius', 'Adventurer',
+    'Archmage', 'Soultaker', 'Arcana Lord', 'Cardinal', 'Hierophant', 'Eva''s Templar',
+    'Sword Muse', 'Wind Rider', 'Moonlight Sentinel', 'Mystic Muse', 'Elemental Master',
+    'Eva''s Saint', 'Shillien Templar', 'Spectral Dancer', 'Ghost Hunter', 'Ghost Sentinel',
+    'Storm Screamer', 'Spectral Master', 'Shillien Saint', 'Titan', 'Grand Khavatari',
+    'Dominator', 'Doomcryer', 'Fortune Seeker', 'Maestro',
+    'Berserker', 'Soulbreaker (M)', 'Soulbreaker (F)', 'Arbalester', 'Doombringer', 'Soul Hound (M)',
+    'Soul Hound (F)', 'Trickster', 'Inspector', 'Judicator'];
+  // role of each class above (index into ROLE_NAMES)
+  CLS_ROLES: array of integer = [
+    6, 6, 5, 5, 3, 4, 1, 1, 2, 0, 7, 5, 7, 3, 4, 1, 2, 0, 5, 7, 3, 4, 1, 2,
+    0, 6, 6, 7, 7, 8, 8,
+    6, 6, 5, 5, 4, 3, 1, 1, 2, 0, 7, 5, 7, 3, 4, 1, 2, 0, 5, 7,
+    3, 4, 1, 2, 0, 6, 6, 7, 7, 8, 8,
+    6, 1, 1, 4, 6, 1, 1, 4, 7, 7];
+  ROLE_NAMES: array of string = ['Healers', 'Mages', 'Summoners', 'Daggers', 'Archers', 'Tanks',
+    'Warriors', 'Support', 'Dwarves', 'Other'];
+
+const
+  ROLE_OTHER = 9;
+
+// ===================== Seen players =====================
+var
+  SeenName, SeenClan: array of string;
+  SeenClass: array of integer;
+  Dirty: boolean;
+  LastSave: cardinal;
+
+function ClassIdx(ClassID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to Length(CLS_IDS) - 1 do
+    if CLS_IDS[i] = ClassID then begin result := i; exit; end;
+end;
+
+function ClassName_(ClassID: integer): string;
+var k: integer;
+begin
+  k := ClassIdx(ClassID);
+  if k >= 0 then result := CLS_NAMES[k] else result := 'Class ' + IntToStr(ClassID);
+end;
+
+function ClassRole(ClassID: integer): integer;
+var k: integer;
+begin
+  k := ClassIdx(ClassID);
+  if k >= 0 then result := CLS_ROLES[k] else result := ROLE_OTHER;
+end;
+
+function WantedClan(Clan: string): boolean;
+var c: integer;
+begin
+  result := false;
+  for c := 0 to Length(CLANS) - 1 do begin
+    if (CLANS[c] = '') and (Clan <> '') then begin result := true; exit; end;
+    if (CLANS[c] <> '') and (LowerCase(CLANS[c]) = LowerCase(Clan)) then begin result := true; exit; end;
+  end;
+end;
+
+// remember a player (new one -> chat line; changed class / clan -> updated)
+procedure SeePlayer(Name, Clan: string; ClassID: integer);
+var i, n: integer;
+begin
+  for i := 0 to Length(SeenName) - 1 do
+    if SeenName[i] = Name then begin
+      if (SeenClass[i] <> ClassID) or (SeenClan[i] <> Clan) then begin
+        SeenClass[i] := ClassID;
+        SeenClan[i] := Clan;
+        Dirty := true;
+      end;
+      exit;
+    end;
+  n := Length(SeenName);
+  SetLength(SeenName, n + 1);
+  SetLength(SeenClan, n + 1);
+  SetLength(SeenClass, n + 1);
+  SeenName[n] := Name;
+  SeenClan[n] := Clan;
+  SeenClass[n] := ClassID;
+  Dirty := true;
+  Engine.Msg('[Clan]', Clan + ': ' + Name + ' - ' + ClassName_(ClassID) + '  (total ' + IntToStr(n + 1) + ')', 0);
+end;
+
+procedure Scan();
+var i, Cls: integer;
+  Name, Clan: string;
+begin
+  for i := 0 to CharList.Count - 1 do begin
+    if CharList(i).OID = User.OID then continue;
+    Clan := CharList(i).Clan;
+    if not WantedClan(Clan) then continue;
+    Name := CharList(i).Name;
+    Cls := CharList(i).ClassID;
+    SeePlayer(Name, Clan, Cls);
+  end;
+end;
+
+// ===================== Report =====================
+
+function PadR(S: string; W: integer): string;
+begin
+  result := S;
+  while Length(result) < W do result := result + ' ';
+end;
+
+function PadL(S: string; W: integer): string;
+begin
+  result := S;
+  while Length(result) < W do result := ' ' + result;
+end;
+
+function Line(Ch: string; W: integer): string;
+begin
+  result := '';
+  while Length(result) < W do result := result + Ch;
+end;
+
+// all clans that have someone seen, in the order of the first sighting
+procedure ClanList(L: TStringList);
+var i: integer;
+begin
+  L.Clear;
+  for i := 0 to Length(SeenName) - 1 do
+    if L.IndexOf(SeenClan[i]) < 0 then L.Add(SeenClan[i]);
+end;
+
+procedure WriteClan(Rep: TStringList; Clan: string);
+var i, j, r, n, Total, Cnt: integer;
+  Classes_: array of integer;     // distinct classes of this clan
+  Counts: array of integer;
+  T: integer;
+  Names, Detail: string;
+  NameList: TStringList;
+begin
+  // distinct classes + counts
+  SetLength(Classes_, 0);
+  SetLength(Counts, 0);
+  Total := 0;
+  for i := 0 to Length(SeenName) - 1 do begin
+    if SeenClan[i] <> Clan then continue;
+    Inc(Total);
+    n := -1;
+    for j := 0 to Length(Classes_) - 1 do
+      if Classes_[j] = SeenClass[i] then begin n := j; break; end;
+    if n < 0 then begin
+      n := Length(Classes_);
+      SetLength(Classes_, n + 1);
+      SetLength(Counts, n + 1);
+      Classes_[n] := SeenClass[i];
+      Counts[n] := 0;
+    end;
+    Counts[n] := Counts[n] + 1;
+  end;
+
+  // most players first
+  for i := 0 to Length(Classes_) - 2 do
+    for j := i + 1 to Length(Classes_) - 1 do
+      if Counts[j] > Counts[i] then begin
+        T := Counts[i];  Counts[i] := Counts[j];  Counts[j] := T;
+        T := Classes_[i];  Classes_[i] := Classes_[j];  Classes_[j] := T;
+      end;
+
+  Rep.Add(Line('=', 70));
+  Rep.Add('  CLAN ' + Clan + '   -   ' + IntToStr(Total) + ' players seen');
+  Rep.Add(Line('=', 70));
+  Rep.Add('');
+
+  // summary by roles
+  Rep.Add('  SUMMARY BY ROLE');
+  Rep.Add('  ' + Line('-', 66));
+  for r := 0 to Length(ROLE_NAMES) - 1 do begin
+    Cnt := 0;
+    Detail := '';
+    for j := 0 to Length(Classes_) - 1 do
+      if ClassRole(Classes_[j]) = r then begin
+        Cnt := Cnt + Counts[j];
+        if Detail <> '' then Detail := Detail + ', ';
+        Detail := Detail + ClassName_(Classes_[j]) + ' ' + IntToStr(Counts[j]);
+      end;
+    if Cnt = 0 then continue;
+    Rep.Add('  ' + PadR(ROLE_NAMES[r], 11) + PadL(IntToStr(Cnt), 3) + '   ' + Detail);
+  end;
+  Rep.Add('');
+
+  // classes with nicknames
+  Rep.Add('  BY CLASS');
+  Rep.Add('  ' + Line('-', 66));
+  NameList := TStringList.Create;
+  NameList.Sorted := true;
+  for j := 0 to Length(Classes_) - 1 do begin
+    NameList.Clear;
+    for i := 0 to Length(SeenName) - 1 do
+      if (SeenClan[i] = Clan) and (SeenClass[i] = Classes_[j]) then NameList.Add(SeenName[i]);
+    Names := '';
+    for i := 0 to NameList.Count - 1 do begin
+      if Names <> '' then Names := Names + ', ';
+      Names := Names + NameList[i];
+    end;
+    Rep.Add('  ' + PadR(ClassName_(Classes_[j]) + ' (' + IntToStr(Counts[j]) + ')', 24) + Names);
+  end;
+  NameList.Free;
+  Rep.Add('');
+end;
+
+// classes of one clan ('' = all clans) with counts, most players first -> CntCls / CntNum
+var
+  CntCls, CntNum: array of integer;
+  CntTotal: integer;
+  ChatDone: boolean;
+
+procedure CountClasses(Clan: string);
+var i, j, n, T: integer;
+begin
+  SetLength(CntCls, 0);
+  SetLength(CntNum, 0);
+  CntTotal := 0;
+  for i := 0 to Length(SeenName) - 1 do begin
+    if (Clan <> '') and (SeenClan[i] <> Clan) then continue;
+    Inc(CntTotal);
+    n := -1;
+    for j := 0 to Length(CntCls) - 1 do
+      if CntCls[j] = SeenClass[i] then begin n := j; break; end;
+    if n < 0 then begin
+      n := Length(CntCls);
+      SetLength(CntCls, n + 1);
+      SetLength(CntNum, n + 1);
+      CntCls[n] := SeenClass[i];
+      CntNum[n] := 0;
+    end;
+    CntNum[n] := CntNum[n] + 1;
+  end;
+  for i := 0 to Length(CntCls) - 2 do
+    for j := i + 1 to Length(CntCls) - 1 do
+      if CntNum[j] > CntNum[i] then begin
+        T := CntNum[i];  CntNum[i] := CntNum[j];  CntNum[j] := T;
+        T := CntCls[i];  CntCls[i] := CntCls[j];  CntCls[j] := T;
+      end;
+end;
+
+// end of the file: every class over all clans, "Dominator - 4", most players first
+procedure WriteTotals(Rep: TStringList);
+var i: integer;
+begin
+  CountClasses('');
+  Rep.Add(Line('=', 70));
+  Rep.Add('  TOTAL BY CLASS (all clans)   -   ' + IntToStr(CntTotal) + ' players');
+  Rep.Add(Line('=', 70));
+  for i := 0 to Length(CntCls) - 1 do
+    Rep.Add('  ' + PadR(ClassName_(CntCls[i]), 22) + '- ' + IntToStr(CntNum[i]));
+end;
+
+// script stopped: per clan "Mystic Muse - 11" lines in the bot chat (once)
+procedure ChatReport();
+var CL: TStringList;
+  c, i: integer;
+begin
+  if ChatDone then exit;
+  ChatDone := true;
+  CL := TStringList.Create;
+  ClanList(CL);
+  if CL.Count = 0 then Engine.Msg('[Clan]', 'Nobody from these clans was seen', 128);
+  for c := 0 to CL.Count - 1 do begin
+    CountClasses(CL[c]);
+    Engine.Msg('[Clan]', '===== ' + CL[c] + ' - ' + IntToStr(CntTotal) + ' players =====', 128);
+    for i := 0 to Length(CntCls) - 1 do
+      Engine.Msg('[' + CL[c] + ']', ClassName_(CntCls[i]) + ' - ' + IntToStr(CntNum[i]), 0);
+  end;
+  CL.Free;
+end;
+
+procedure OnFree;
+begin
+  ChatReport();
+end;
+
+procedure SaveReport();
+var Rep, CL: TStringList;
+  c: integer;
+  Path: string;
+begin
+  Rep := TStringList.Create;
+  CL := TStringList.Create;
+  Rep.Add('Clan report, updated ' + FormatDateTime('dd.mm.yyyy hh:nn:ss', Now) +
+    ', players seen: ' + IntToStr(Length(SeenName)));
+  Rep.Add('');
+  ClanList(CL);
+  for c := 0 to CL.Count - 1 do WriteClan(Rep, CL[c]);
+  WriteTotals(Rep);
+  Path := Script.Path + REPORT_FILE;
+  try
+    Rep.SaveToFile(Path);
+  except
+    Engine.Msg('[Clan]', 'Could not write ' + Path, 255);
+  end;
+  CL.Free;
+  Rep.Free;
+end;
+
+// ===================== Main =====================
+var c: integer;
+  ClansText: string;
+
+begin
+  ClansText := '';
+  for c := 0 to Length(CLANS) - 1 do begin
+    if ClansText <> '' then ClansText := ClansText + ', ';
+    if CLANS[c] = '' then ClansText := ClansText + 'any' else ClansText := ClansText + CLANS[c];
+  end;
+  Engine.Msg('[Clan]', 'Collecting clans: ' + ClansText + ' -> ' + Script.Path + REPORT_FILE, 128);
+
+  while Delay(1000) do begin
+    Scan();
+    if Dirty and (GetTickCount - LastSave >= cardinal(SAVE_EVERY_MS)) then begin
+      SaveReport();
+      Dirty := false;
+      LastSave := GetTickCount;
+    end;
+  end;
+  SaveReport();
+  ChatReport();    // script stopped: the summary per clan in the bot chat
+end.

@@ -1,0 +1,37 @@
+uses SysUtils, Classes, Controls, Forms, StdCtrls;
+
+// test 3: a window with a button, created right in the script (no MainProc)
+type
+  THandlers = class
+    procedure BtnClick(Sender: TObject);
+  end;
+
+var
+  H: THandlers;
+  F: TForm;
+  B: TButton;
+
+procedure THandlers.BtnClick(Sender: TObject);
+begin
+  Engine.Msg('[Test3]', 'click', 128);
+end;
+
+begin
+  Engine.Msg('[Test3]', 'start', 128);
+  H := THandlers.Create;
+  F := TForm.Create(nil);
+  Engine.Msg('[Test3]', 'form created', 128);
+  F.Caption := 'Test';
+  F.Width := 300;
+  F.Height := 150;
+  B := TButton.Create(F);
+  B.Parent := F;
+  B.Left := 20;
+  B.Top := 20;
+  B.Caption := 'Click';
+  B.OnClick := H.BtnClick;
+  Engine.Msg('[Test3]', 'button OK', 128);
+  F.Show;
+  Engine.Msg('[Test3]', 'shown, press the button; stop the script to close', 128);
+  while Delay(100) do begin end;
+end.

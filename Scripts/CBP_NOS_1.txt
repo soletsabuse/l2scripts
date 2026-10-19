@@ -5,8 +5,8 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
 
-  SetZone('apostate_ewb_konec.zmap');                      // Library\Zones
-  SetConfig('ewb_spoiler.xml');                     // Library\Configurations
+  SetZone('cbp_nos_1.zmap');                      // Library\Zones
+  SetConfig('cbp_nos_1.xml');                     // Library\Configurations
 
   // watched buff ID + buff bypasses (sent in this order)
   SetBuff(1204, [
@@ -27,8 +27,8 @@ begin
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
   // Uncomment what you need:
   // AddSupply(SOULSHOT_D,               8000, 15000);
-  //AddSupply(SOULSHOT_C,                  16111, 16200);
-  AddSupply(SOULSHOT_B,               8000, 15000);
+  AddSupply(SOULSHOT_C,                  16111, 16200);
+  //AddSupply(SOULSHOT_B,               8000, 15000);
   // AddSupply(SOULSHOT_A,               8000, 15000);
   // AddSupply(SOULSHOT_S,               8000, 15000);
   // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
