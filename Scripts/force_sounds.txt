@@ -17,7 +17,7 @@ const
 var
   // whose targets count: clans of the player the skill is cast ON (case does not matter);
   // [''] = any clan
-  CLANS: array of string = ['HeavenSent', 'DeathSentence', 'Slayers', 'Prozak'];
+  CLANS: array of string = ['HeavenSent', 'DeathSentence', 'Slayers'];
 
   // rules, one column = one rule: the target's class, the skill cast on him, the sound
   // (file in Library\Sounds). Class IDs: Sword Muse 100, Soultaker 95, Spectral Dancer 107.
@@ -36,8 +36,8 @@ var
     'DeathSentence/DoD=dod_ds.wav',
     'Slayers/Noise=noise_slayers.wav',
     'Slayers/DoD=dod_slayers.wav',
-    'Prozak/Noise=noise_prozak.wav',
-    'Prozak/DoD=dod_prozak.wav'
+    'HeavenSent/Noise=noise_prozak.wav',
+    'HeavenSent/DoD=dod_prozak.wav'
   ];
 
   // party chat, short: "Noise Nick [Clan] x2" (x = how many charge him) when the charging starts
