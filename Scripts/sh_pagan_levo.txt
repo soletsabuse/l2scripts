@@ -12,6 +12,7 @@ begin
 end;
 
 begin
+  SetConfig('alarm.xml');
   // ===== our skills, PRIORITY order inside each kind =====
   // AddMySkill(skill ID, kind, param)
   //   KIND_DRAIN  - param = HP %: spammed while our HP is below it
@@ -64,7 +65,7 @@ begin
   // SetSummonBuff(1204, ['book_use?...']);   // buff watched on the summon (0 = same as ours) + extra bypasses
 
   // where to rebuff (no line = right where we are)
-  SetSafePoint(-20379, -53460, -11043);
+  SetSafePoint(-20393, -53451, -11008);
 
   // ===== patrol: no targets -> run these points one by one =====
   // attacked / a mob shows up on the way -> fight it, then run on to the same point

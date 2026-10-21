@@ -1,0 +1,270 @@
+uses SysUtils;
+
+// =============================================================================
+// Force sounds: somebody casts a skill ON a player of the given clans with the given
+// class -> a sound (each rule its own). Example: Battle Force on a Sword Muse = one
+// sound, Spell Force on a Soultaker = another.
+//
+// Write the skill IDs into BATTLE_FORCE_ID / SPELL_FORCE_ID below. A rule with ID 0 never
+// sounds. SHOW_CASTS = true writes every cast of the players nearby to the bot chat
+// ("caster -> target: skill ID") - handy to check an ID.
+// =============================================================================
+
+const
+  BATTLE_FORCE_ID = 426;     // <- write the Battle Force skill ID here
+  SPELL_FORCE_ID  = 427;     // <- write the Spell Force skill ID here
+
+var
+  // whose targets count: clans of the player the skill is cast ON (case does not matter);
+  // [''] = any clan
+  CLANS: array of string = ['HeavenSent', 'DeathSentence', 'Slayers', 'Prozak'];
+
+  // rules, one column = one rule: the target's class, the skill cast on him, the sound
+  // (file in Library\Sounds). Class IDs: Sword Muse 100, Soultaker 95, Spectral Dancer 107.
+  //   rule 1: Battle Force on a Sword Muse, rule 2: Spell Force on a Soultaker,
+  //   rule 3: Battle Force on a Spectral Dancer
+  RULE_CLASS: array of integer = [100, 95, 107];
+  RULE_SKILL: array of integer = [0, 0, 0];    // filled from the constants above at start
+  RULE_SOUND: array of string  = ['alarm (fem).wav', 'boom (fem).wav', 'alarm (fem).wav'];   // any .wav from Library\Sounds
+  RULE_LABEL: array of string  = ['Noise', 'DoD', 'Noise'];   // name in the party chat (and in CLAN_SOUNDS)
+  RULE_TOKEN: array of integer = [1, 2, 1];      // which token (1..4) goes on him, 0 = no token
+
+  // own sound per clan: 'Clan=file.wav' (any force in this clan) or 'Clan/Noise=file.wav' (only that
+  // rule in this clan, by its RULE_LABEL). Looked up: 'Clan/Noise' first, then 'Clan', then RULE_SOUND.
+  CLAN_SOUNDS: array of string = [
+    'DeathSentence/Noise=noise_ds.wav',
+    'DeathSentence/DoD=dod_ds.wav',
+    'Slayers/Noise=noise_slayers.wav',
+    'Slayers/DoD=dod_slayers.wav',
+    'Prozak/Noise=noise_prozak.wav',
+    'Prozak/DoD=dod_prozak.wav'
+  ];
+
+  // party chat, short: "Noise Nick [Clan] x2" (x = how many charge him) when the charging starts
+  // and every time more players join; false = no party chat
+  PARTY_CHAT: boolean = true;
+
+  // tokens: the charged player is targeted for a moment, the token (RULE_TOKEN) is put on him,
+  // then our previous target comes back. Action ID of each token 1..4 (RequestActionUse),
+  // sniffed on this server with token_sniffer.txt
+  TOKEN_ACTION: array of integer = [$4E, $4F, $50, $51];
+
+  // charging of one target is over after this long without casts (ms); a new one sounds again
+  REPEAT_MS: integer = 3000;
+
+  // true = write every cast of the players nearby to the bot chat (to find the skill IDs)
+  SHOW_CASTS: boolean = false;
+
+const
+  SOUND_DIR = '..\Sounds\';
+  POLL_MS   = 100;
+
+const
+  PARTY_CHAT_TYPE = 3;     // chat type: 3 = party
+
+var
+  // charging in progress per (target, rule): last seen time + the force count already reported
+  PlayedOID, PlayedRule, PlayedCount: array of integer;
+  PlayedTime: array of cardinal;
+  // this scan: (target, rule) -> how many players cast the force on him right now
+  HitOID, HitRule, HitCount, HitIdx: array of integer;
+  // SHOW_CASTS: the last cast written per caster (no repeats while the same cast lasts)
+  ShownOID, ShownSkill: array of integer;
+
+function WantedClan(Clan: string): boolean;
+var c: integer;
+begin
+  result := false;
+  for c := 0 to Length(CLANS) - 1 do
+    if (CLANS[c] = '') or (LowerCase(CLANS[c]) = LowerCase(Clan)) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+function CharIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to CharList.Count - 1 do
+    if CharList(i).OID = OID then begin result := i; exit; end;
+end;
+
+// sound for this rule on a player of this clan: 'Clan/LABEL', then 'Clan', then the rule's own
+function SoundFor(Rule: integer; Clan: string): string;
+var i, p: integer;
+  Key, Exact: string;
+begin
+  result := RULE_SOUND[Rule];
+  Exact := LowerCase(Clan + '/' + RULE_LABEL[Rule]);
+  for i := 0 to Length(CLAN_SOUNDS) - 1 do begin
+    p := Pos('=', CLAN_SOUNDS[i]);
+    if p = 0 then continue;
+    Key := LowerCase(Trim(Copy(CLAN_SOUNDS[i], 1, p - 1)));
+    if Key = Exact then begin
+      result := Trim(Copy(CLAN_SOUNDS[i], p + 1, 999));
+      exit;     // the exact one wins
+    end;
+    if Key = LowerCase(Clan) then result := Trim(Copy(CLAN_SOUNDS[i], p + 1, 999));
+  end;
+end;
+
+function HexLE32(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) +
+    IntToHex((V shr 16) and $FF, 2) + IntToHex((V shr 24) and $FF, 2);
+end;
+
+// put token N (1..4) on the player: target him, send the mark, give our previous target back
+procedure PutToken(TargetOID, Token: integer);
+var Prev: integer;
+begin
+  if (Token < 1) or (Token > Length(TOKEN_ACTION)) then exit;
+  Prev := 0;
+  try
+    Prev := User.Target.OID;
+  except
+    Prev := 0;
+  end;
+  Engine.SetTarget(TargetOID);
+  Delay(50);     // the server registers the target before the mark
+  Engine.SendToServer('56' + HexLE32(TOKEN_ACTION[Token - 1]) + '00000000' + '00');   // RequestActionUse
+  Delay(50);
+  if (Prev <> 0) and (Prev <> TargetOID) then Engine.SetTarget(Prev);
+end;
+
+// one more caster charging this target with this rule in the current scan
+procedure AddHit(TargetOID, Rule, TargetIdx: integer);
+var i, n: integer;
+begin
+  for i := 0 to Length(HitOID) - 1 do
+    if (HitOID[i] = TargetOID) and (HitRule[i] = Rule) then begin
+      HitCount[i] := HitCount[i] + 1;
+      exit;
+    end;
+  n := Length(HitOID);
+  SetLength(HitOID, n + 1);
+  SetLength(HitRule, n + 1);
+  SetLength(HitCount, n + 1);
+  SetLength(HitIdx, n + 1);
+  HitOID[n] := TargetOID;
+  HitRule[n] := Rule;
+  HitCount[n] := 1;
+  HitIdx[n] := TargetIdx;
+end;
+
+// charging seen: a new one -> sound + party chat; more forces than reported -> party chat
+procedure Report(TargetOID, Rule, Count, TargetIdx: integer);
+var i, n: integer;
+  IsNew, More: boolean;
+  Name, Clan: string;
+begin
+  n := -1;
+  for i := 0 to Length(PlayedOID) - 1 do
+    if (PlayedOID[i] = TargetOID) and (PlayedRule[i] = Rule) then begin n := i; break; end;
+  if n < 0 then begin
+    n := Length(PlayedOID);
+    SetLength(PlayedOID, n + 1);
+    SetLength(PlayedRule, n + 1);
+    SetLength(PlayedCount, n + 1);
+    SetLength(PlayedTime, n + 1);
+    PlayedOID[n] := TargetOID;
+    PlayedRule[n] := Rule;
+    PlayedCount[n] := 0;
+    PlayedTime[n] := 0;
+  end;
+
+  IsNew := (PlayedCount[n] = 0) or (GetTickCount - PlayedTime[n] >= cardinal(REPEAT_MS));
+  if IsNew then PlayedCount[n] := 0;
+  More := Count > PlayedCount[n];
+  PlayedTime[n] := GetTickCount;
+  if not More then exit;
+  PlayedCount[n] := Count;
+
+  // the player list may have changed (the mark waits a little): find him again by OID
+  if (TargetIdx >= CharList.Count) or (CharList(TargetIdx).OID <> TargetOID) then TargetIdx := CharIdx(TargetOID);
+  if TargetIdx < 0 then exit;
+  Name := CharList(TargetIdx).Name;
+  Clan := CharList(TargetIdx).Clan;
+  Engine.Msg('[Force]', RULE_LABEL[Rule] + ' ' + Name + ' [' + Clan + '] - forces: ' + IntToStr(Count), 255);
+  if IsNew then begin
+    PlaySound(Script.Path + SOUND_DIR + SoundFor(Rule, Clan));
+    PutToken(TargetOID, RULE_TOKEN[Rule]);
+  end;
+  if PARTY_CHAT then Engine.Say(RULE_LABEL[Rule] + ' ' + Name + ' [' + Clan + '] x' + IntToStr(Count), PARTY_CHAT_TYPE, '');
+end;
+
+// SHOW_CASTS: write a cast once (true = new for this caster)
+function NewShown(CasterOID, SkillID: integer): boolean;
+var i, n: integer;
+begin
+  for i := 0 to Length(ShownOID) - 1 do
+    if ShownOID[i] = CasterOID then begin
+      result := ShownSkill[i] <> SkillID;
+      ShownSkill[i] := SkillID;
+      exit;
+    end;
+  n := Length(ShownOID);
+  SetLength(ShownOID, n + 1);
+  SetLength(ShownSkill, n + 1);
+  ShownOID[n] := CasterOID;
+  ShownSkill[n] := SkillID;
+  result := true;
+end;
+
+procedure Scan();
+var i, t, r, SkillID, TargetOID, Cls: integer;
+  CasterName, TargetName, Clan: string;
+begin
+  SetLength(HitOID, 0);
+  SetLength(HitRule, 0);
+  SetLength(HitCount, 0);
+  SetLength(HitIdx, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    SkillID := 0;
+    TargetOID := 0;
+    try
+      if CharList(i).Cast.EndTime > 0 then SkillID := CharList(i).Cast.ID;
+      TargetOID := CharList(i).Target.OID;
+    except
+      SkillID := 0;
+    end;
+
+    if SHOW_CASTS then begin
+      if NewShown(CharList(i).OID, SkillID) and (SkillID > 0) then begin
+        CasterName := CharList(i).Name;
+        TargetName := '-';
+        t := CharIdx(TargetOID);
+        if t >= 0 then TargetName := CharList(t).Name
+        else if TargetOID = User.OID then TargetName := User.Name;
+        Engine.Msg('[Cast]', CasterName + ' -> ' + TargetName + ': skill ' + IntToStr(SkillID), 0);
+      end;
+    end;
+
+    if (SkillID = 0) or (TargetOID = 0) then continue;
+    t := CharIdx(TargetOID);
+    if t < 0 then continue;                      // not on a player we see
+    Clan := CharList(t).Clan;
+    if not WantedClan(Clan) then continue;
+    Cls := CharList(t).ClassID;
+
+    for r := 0 to Length(RULE_SKILL) - 1 do begin
+      if (RULE_SKILL[r] <= 0) or (RULE_SKILL[r] <> SkillID) or (RULE_CLASS[r] <> Cls) then continue;
+      AddHit(TargetOID, r, t);
+    end;
+  end;
+
+  // every charged target: how many force casters on him right now
+  for i := 0 to Length(HitOID) - 1 do
+    Report(HitOID[i], HitRule[i], HitCount[i], HitIdx[i]);
+end;
+
+begin
+  RULE_SKILL[0] := BATTLE_FORCE_ID;
+  RULE_SKILL[1] := SPELL_FORCE_ID;
+  RULE_SKILL[2] := BATTLE_FORCE_ID;
+  Engine.Msg('[Force]', 'Force sounds started, ' + IntToStr(Length(RULE_SKILL)) + ' rules', 128);
+  if (BATTLE_FORCE_ID = 0) or (SPELL_FORCE_ID = 0) then
+    Engine.Msg('[Force]', 'BATTLE_FORCE_ID / SPELL_FORCE_ID not set yet - that rule stays silent', 255);
+  while Delay(POLL_MS) do Scan();
+end.

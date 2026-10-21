@@ -70,6 +70,7 @@ procedure AddMyDebuff(SkillID, RecastMs, MinMobHP: integer);
 procedure AddMyAoe(SkillID, Radius, CastRange: integer);
 procedure SetSpamMs(Ms: integer);
 procedure SetSummon(SummonSkillID: integer);
+procedure SetConfig(Name: string);
 procedure SetBlessing(SkillID: integer);
 procedure AddPetSkill(ActionID, Kind, Param: integer);
 procedure SetPetAttack(MinMobMaxHP: integer);
@@ -106,6 +107,7 @@ const
   MULTISELL_ID      = 7300;
   MULTISELL_OPEN    = '_bbs_multisell?id=7300';
 
+  CONFIG_DIR = '..\Configurations\';   // SetConfig files, relative to Library\Scripts
   BLESS_RETRY_MS = 2000;       // SetBlessing: one cast try per this many ms
   SUMMON_BUFF_TRIES = 5;       // rebuff: the summon still without its buff after this many tries -> give up on it
   SERVER_PATH = true;         // walk to a mob: true = straight at its X/Y/Z (server path), false = our FindPath
@@ -125,7 +127,8 @@ const
 
   RETARGET_MS       = 1000;    // SetTarget the same mob again every N ms (a mob can knock the target off)
   LOS_STEP          = 100;     // "clear line" check: a point of the line to the mob every N units must be in the zone
-  APPROACH_DIST     = 200;     // "Can't see target.": walk to the mob until this close
+  APPROACH_STEP     = 150;     // "Can't see target.": walk this much closer than we stood (again on every new one)
+  APPROACH_MIN      = 50;      //   ... but not closer than this (right next to it)
   APPROACH_MS       = 8000;    // ... but not longer than this
   CANT_SEE_MSG_ID   = 181;     // system message "Can't see target." (laSysMsg P1)
   APPROACH_POINT_MS = 8000;    // max time to reach one path point
@@ -148,6 +151,7 @@ var
   BuffBypasses, SummonBuffBypasses: array of string;
   SummonBuffID: integer;                   // SetSummonBuff: buff watched on the summon (0 = same as ours)
   SummonBuffSkipUntil: cardinal;
+  ConfigName: string;                      // SetConfig: bot config loaded at start (Library\Configurations)
   BlessSkill: integer;                     // SetBlessing: a buff that survives the summon's death (Noblesse 1323)
   LastBlessTry: cardinal;           // gave up buffing the summon: its buff is not checked until then
   HasSafePoint: boolean;
@@ -183,6 +187,8 @@ var
   ClusterActive, ClusterFormatWarned: boolean;
   ApproachOID: integer;                    // "Can't see target." -> walking to this mob
   ApproachUntil: cardinal;
+  ApproachDist: integer;                   // walk until this close to ApproachOID
+  LastApproachOID: integer;                // the mob of the last approach (same mob -> closer again)
   CantSeeFlag: boolean;                    // set by NecroOnAction on the "Can't see target." system message
   LastPetAttack, LastPetSkill, LastSummonTry: cardinal;
   PetLast: array of cardinal;     // last use of each summon skill
@@ -291,6 +297,11 @@ end;
 procedure SetSummon(SummonSkillID: integer);
 begin
   SummonSkill := SummonSkillID;
+end;
+
+procedure SetConfig(Name: string);
+begin
+  ConfigName := Name;
 end;
 
 procedure SetBlessing(SkillID: integer);
@@ -1471,7 +1482,8 @@ end;
 
 // ===================== "Can't see target." =====================
 // The server says the target is behind a wall: walk to it on a FindPath path (fighting
-// whoever hits us on the way) until we are within APPROACH_DIST, max APPROACH_MS.
+// whoever hits us on the way) APPROACH_STEP closer than we stood, max APPROACH_MS; the same
+// mob "can't see" again -> another APPROACH_STEP closer, down to APPROACH_MIN.
 
 // the bot game event, forwarded from the script's OnAction: system message 181 = "Can't see target."
 // Called from the bot's event thread (in parallel with the main loop): only set a flag here -
@@ -1650,7 +1662,16 @@ var OID, UX, UY, UZ, k: integer;
   NoTargetMsg: boolean;
 begin
   Engine.Msg('[Necro]', 'Necro started', 128);
-  Engine.FaceControl(0, false);   // the script fights, the interface stays OFF
+  // bot config (SetConfig): only event notifications, NO fighting in it - the script fights.
+  // Its notifications work only with the interface ON, so with a config it is switched on;
+  // without one the interface stays OFF
+  if ConfigName <> '' then begin
+    Engine.Msg('[Necro]', 'LoadConfig: ' + Script.Path + CONFIG_DIR + ConfigName + ', interface ON', 128);
+    Engine.LoadConfig(Script.Path + CONFIG_DIR + ConfigName);
+    Delay(500);
+    Engine.FaceControl(0, true);
+  end else
+    Engine.FaceControl(0, false);
 
   // defaults for whatever the script did not set
   if SpamMs <= 0 then SpamMs := 100;
@@ -1716,19 +1737,27 @@ begin
 
     // "Can't see target." -> walk to that mob (FindPath), fighting whoever hits us on the way
     if CantSeeTarget() and (CurTarget <> 0) then begin
+      // APPROACH_STEP closer than we stand now; the same mob again -> closer than last time too
+      k := MobDist(CurTarget);
+      if (CurTarget = LastApproachOID) and (ApproachDist < k) then k := ApproachDist;
+      ApproachDist := k - APPROACH_STEP;
+      if ApproachDist < APPROACH_MIN then ApproachDist := APPROACH_MIN;
       ApproachOID := CurTarget;
+      LastApproachOID := CurTarget;
       ApproachUntil := GetTickCount + APPROACH_MS;
       ClusterActive := false;
-      Engine.Msg('[Target]', 'Can''t see the target, walking to it', 0);
+      Engine.Msg('[Target]', 'Can''t see the target, walking closer (to ' + IntToStr(ApproachDist) + ')', 0);
     end;
     if ApproachOID <> 0 then begin
       if (NpcIdx(ApproachOID) < 0) or NpcList(NpcIdx(ApproachOID)).Dead or
-         (GetTickCount > ApproachUntil) or (MobDist(ApproachOID) <= APPROACH_DIST) then begin
+         (GetTickCount > ApproachUntil) or (MobDist(ApproachOID) <= ApproachDist) then begin
         ApproachOID := 0;      // there / gone / too long: back to the normal fight
         ClusterActive := false;
       end else begin
-        OID := PickLowestHP(true);   // somebody hits us on the way -> kill him first
-        if OID <> 0 then FightTarget(OID) else FollowPathTo(ApproachOID);
+        // somebody ELSE hits us on the way -> kill him first; the hidden mob itself hitting us
+        // does not stop the walk (that was the "cast into the wall" loop)
+        OID := PickLowestHP(true);
+        if (OID <> 0) and (OID <> ApproachOID) then FightTarget(OID) else FollowPathTo(ApproachOID);
         continue;
       end;
     end;

@@ -12,6 +12,10 @@ begin
 end;
 
 begin
+  // bot config loaded at start (file in Library\Configurations, e.g. only event notifications,
+  // no fighting - the script fights itself); remove the line = no config
+  SetConfig('alarm.xml');
+
   // ===== our skills, PRIORITY order inside each kind =====
   // AddMySkill(skill ID, kind, param)
   //   KIND_DRAIN  - param = HP %: spammed while our HP is below it
@@ -74,7 +78,7 @@ begin
    ]);
 
   // where to rebuff (no line = right where we are)
-  SetSafePoint(-12422, -53471, -11046);
+  SetSafePoint(-12397, -53569, -11073);
 
   // ===== patrol: no targets -> run these points one by one =====
   // attacked / a mob shows up on the way -> fight it, then run on to the same point

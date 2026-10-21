@@ -5,7 +5,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('lgnsalam', 'ASD123qwe');
+  SetLogin('SUMqwer', 'ASD123qwe');
 
   SetZone('coal_silence.zmap');                      // Library\Zones
   SetConfig('coal_silence.xml');                     // Library\Configurations

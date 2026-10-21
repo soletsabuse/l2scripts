@@ -12,6 +12,10 @@ begin
 end;
 
 begin
+  // bot config loaded at start (file in Library\Configurations, e.g. only event notifications,
+  // no fighting - the script fights itself); remove the line = no config
+  // SetConfig('necro_events.xml');
+
   // ===== our skills, PRIORITY order inside each kind =====
   // AddMySkill(skill ID, kind, param)
   //   KIND_DRAIN  - param = HP %: spammed while our HP is below it

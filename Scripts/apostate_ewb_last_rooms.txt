@@ -42,7 +42,7 @@ begin
   // AddSupply(CURSED_BONE,              100, 500);
   AddSupply(MANA_DRUG,                   100, 100);
   // AddSupply(MANA_POTION,              10, 50);
-  // AddSupply(HEALING_POTION,           10, 50);
+  AddSupply(HEALING_POTION,           100, 100);
 
   RunFarm();
 end.
