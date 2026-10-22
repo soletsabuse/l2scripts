@@ -30,6 +30,9 @@ begin
   AddMySkill(1341, KIND_NUKE,  6500);       // Wind Vortex
   AddMySkill(1239, KIND_NUKE,   0);       // Death Spike
   AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
+  // AddMyPbAoe(skill ID, radius, min mobs) - AoE around US: only when ready and at least
+  // min mobs are within radius of us (put your skill ID and its radius)
+  AddMyPbAoe(1417, 200, 3);
 
   AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
@@ -82,7 +85,7 @@ begin
   // ===== supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max =====
   AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
   AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
-  //AddSupply(CURSED_BONE,              10000, 20000);
+  AddSupply(SPIRIT_ORE,              10000, 20000);
   AddSupply(MANA_DRUG,                300, 500);
 
   RunNecro();

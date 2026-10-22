@@ -36,6 +36,8 @@ const
   KIND_NUKE   = 1;   // damage: always spammed (the one that reloads first); summon: PARAM = interval ms
   KIND_DEBUFF = 2;   // PARAM = ms before casting it again on the SAME mob
   KIND_DRAIN  = 3;   // PARAM = HP %: only when HP is below it (ours / the summon's)
+  KIND_PBAOE  = 5;   // AddMyPbAoe: AoE around US - PARAM = radius, only when ready and enough mobs
+                     //   are within that radius of us (AddMyPbAoe MinMobs)
   KIND_AOE    = 4;   // PARAM = radius around the target (0 = 400): only when ready and at least
                      //   AOE_MIN_MOBS mobs (target included) are in that radius - no spam
 
@@ -67,6 +69,7 @@ procedure SetPatrol(Points: array of integer);
 procedure SetPatrolRange(Range: integer);
 procedure AddMySkill(SkillID, Kind, Param: integer);
 procedure AddMyDebuff(SkillID, RecastMs, MinMobHP: integer);
+procedure AddMyPbAoe(SkillID, Radius, MinMobs: integer);
 procedure AddMyAoe(SkillID, Radius, CastRange: integer);
 procedure SetSpamMs(Ms: integer);
 procedure SetSummon(SummonSkillID: integer);
@@ -139,6 +142,7 @@ var
   MySkillID, MySkillKind, MySkillParam: array of integer;
   MySkillMinHP: array of integer;          // AddMyDebuff: cast only on mobs with more HP than this
   MySkillCastRange: array of integer;      // AddMyAoe: cast only when the target is this close (0 = any)
+  MySkillMinMobs: array of integer;        // AddMyPbAoe: at least this many mobs around us
   SpamMs: integer;
   SummonSkill: integer;
   PetSkillID, PetSkillKind, PetSkillParam: array of integer;
@@ -267,11 +271,13 @@ begin
   SetLength(MySkillParam, n + 1);
   SetLength(MySkillMinHP, n + 1);
   SetLength(MySkillCastRange, n + 1);
+  SetLength(MySkillMinMobs, n + 1);
   MySkillID[n] := SkillID;
   MySkillKind[n] := Kind;
   MySkillParam[n] := Param;
   MySkillMinHP[n] := 0;
   MySkillCastRange[n] := 0;
+  MySkillMinMobs[n] := 0;
 end;
 
 // AoE nuke: Radius around the target (0 = AOE_RADIUS); cast only when the target is within
@@ -280,6 +286,15 @@ procedure AddMyAoe(SkillID, Radius, CastRange: integer);
 begin
   AddMySkill(SkillID, KIND_AOE, Radius);
   MySkillCastRange[Length(MySkillCastRange) - 1] := CastRange;
+end;
+
+// AoE around us (point blank): cast only when ready and at least MinMobs alive mobs are within
+// Radius of us (MinMobs 0 = 3)
+procedure AddMyPbAoe(SkillID, Radius, MinMobs: integer);
+begin
+  if MinMobs <= 0 then MinMobs := 3;
+  AddMySkill(SkillID, KIND_PBAOE, Radius);
+  MySkillMinMobs[Length(MySkillMinMobs) - 1] := MinMobs;
 end;
 
 // debuff with an HP threshold: cast only on mobs with more than MinMobHP (absolute HP)
@@ -552,6 +567,24 @@ begin
   end;
 end;
 
+// alive mobs within Radius of us
+function MobsAroundMe(Radius: integer): integer;
+var i, UX, UY, NX, NY: integer;
+  DX, DY: double;
+begin
+  result := 0;
+  UX := User.X;
+  UY := User.Y;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead or IsIgnored(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    DX := NX - UX;
+    DY := NY - UY;
+    if Sqrt(DX * DX + DY * DY) <= Radius then Inc(result);
+  end;
+end;
+
 function BestOfKind(Kind, OID: integer): integer;
 var k: integer;
   Left, BestLeft: cardinal;
@@ -569,12 +602,14 @@ begin
     else if Kind = KIND_AOE then
       Ok := ((MySkillCastRange[k] <= 0) or (MobDist(OID) <= MySkillCastRange[k])) and   // target in cast range
             (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS)
+    else if Kind = KIND_PBAOE then
+      Ok := MobsAroundMe(MySkillParam[k]) >= MySkillMinMobs[k]
     else
       Ok := true;
     if not Ok then continue;
     Left := SkillLeft(MySkillID[k]);
     // debuffs and AoE: only when the reuse is over, no spam
-    if ((Kind = KIND_DEBUFF) or (Kind = KIND_AOE)) and (Left > 0) then continue;
+    if ((Kind = KIND_DEBUFF) or (Kind = KIND_AOE) or (Kind = KIND_PBAOE)) and (Left > 0) then continue;
     if Left < BestLeft then begin   // strict "<": ties keep the earlier (higher priority) skill
       BestLeft := Left;
       result := k;
@@ -608,6 +643,7 @@ begin
       PendTime := GetTickCount;
     end;
   end;
+  if k < 0 then k := BestOfKind(KIND_PBAOE, OID);  // enough mobs around us and ready
   if k < 0 then k := BestOfKind(KIND_AOE, OID);    // enough mobs around the target and ready
   if k < 0 then k := BestOfKind(KIND_NUKE, OID);
 
