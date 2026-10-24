@@ -25,8 +25,9 @@ begin
   //   and the target closer than cast range (0 = any distance)
   // AddMyDebuff(skill ID, recast ms, min mob HP) - a debuff cast only on mobs with more HP than that
   AddMySkill(1234, KIND_DRAIN,  85);      // Vampiric Claw, HP < 70 %
+  AddMySkill(1343, KIND_DRAIN,  70);       // Vortex Dark
   AddMySkill(1074, KIND_DEBUFF, 6000);   // debuff, again on the same mob after 30 sec
-  AddMySkill(1343, KIND_NUKE,  6500);       // Vortex Dark
+  
   AddMySkill(1341, KIND_NUKE,  6500);       // Wind Vortex
   AddMySkill(1239, KIND_NUKE,   0);       // Death Spike
   AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
@@ -52,10 +53,10 @@ begin
   //SetPetAttack(-1);
 
   // ===== targets: only inside the zone active in the bot (no zone -> radius around the start) =====
-  SetTargetRange(800);   // new targets / current target only this close
-  SetAggroRange(800);    // mobs on us / the summon only this close
-  SetFreeRadius(800);    // no zone in the bot: farm this close to the start point
-  SetCastRange(600);     // our skills reach this far: a target farther away -> walk closer first
+  SetTargetRange(900);   // new targets / current target only this close
+  SetAggroRange(900);    // mobs on us / the summon only this close
+  SetFreeRadius(900);    // no zone in the bot: farm this close to the start point
+  SetCastRange(900);     // our skills reach this far: a target farther away -> walk closer first
 
   // extra names to never target (other players' summons, chests... are skipped by default)
   // AddIgnoreName('Some Mob');

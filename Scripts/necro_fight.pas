@@ -93,6 +93,7 @@ const
   PET_SKILL_GAP     = 1000;    // at least N ms between two summon skills
   DEBUFF_CONFIRM_MS = 3000;    // a debuff cast counts as landed if it went into reuse within this
   AOE_RADIUS        = 400;     // KIND_AOE default radius around the target
+  SKILL_LOCK_MS     = 1000;    // debuff: not pressed again this long after it was sent
   AOE_MIN_MOBS      = 3;       // KIND_AOE: at least this many mobs (target included) in the radius
   SUMMON_RETRY_MS   = 3000;    // summon pressed, still no summon -> press again after this
   SUMMON_APPEAR_MS  = 10000;   // rebuff: wait this long for the summon to appear before buffing
@@ -143,6 +144,7 @@ var
   MySkillMinHP: array of integer;          // AddMyDebuff: cast only on mobs with more HP than this
   MySkillCastRange: array of integer;      // AddMyAoe: cast only when the target is this close (0 = any)
   MySkillMinMobs: array of integer;        // AddMyPbAoe: at least this many mobs around us
+  MySkillSent: array of cardinal;          // drain / debuff: when it was sent (no resend while it casts)
   SpamMs: integer;
   SummonSkill: integer;
   PetSkillID, PetSkillKind, PetSkillParam: array of integer;
@@ -272,12 +274,14 @@ begin
   SetLength(MySkillMinHP, n + 1);
   SetLength(MySkillCastRange, n + 1);
   SetLength(MySkillMinMobs, n + 1);
+  SetLength(MySkillSent, n + 1);
   MySkillID[n] := SkillID;
   MySkillKind[n] := Kind;
   MySkillParam[n] := Param;
   MySkillMinHP[n] := 0;
   MySkillCastRange[n] := 0;
   MySkillMinMobs[n] := 0;
+  MySkillSent[n] := 0;
 end;
 
 // AoE nuke: Radius around the target (0 = AOE_RADIUS); cast only when the target is within
@@ -608,8 +612,12 @@ begin
       Ok := true;
     if not Ok then continue;
     Left := SkillLeft(MySkillID[k]);
-    // debuffs and AoE: only when the reuse is over, no spam
-    if ((Kind = KIND_DEBUFF) or (Kind = KIND_AOE) or (Kind = KIND_PBAOE)) and (Left > 0) then continue;
+    // drains, debuffs and AoE: only when the reuse is over, no spam (nukes keep the async spam)
+    if (Kind <> KIND_NUKE) and (Left > 0) then continue;
+    // debuff just sent: it is casting, the reuse is not there yet - do not press it again.
+    // A drain is NOT locked: while it is ready and HP is low it is spammed instead of the nukes
+    // (a nuke sent meanwhile would replace its cast), until it goes into reuse
+    if (Kind = KIND_DEBUFF) and (GetTickCount - MySkillSent[k] < SKILL_LOCK_MS) then continue;
     if Left < BestLeft then begin   // strict "<": ties keep the earlier (higher priority) skill
       BestLeft := Left;
       result := k;
@@ -647,8 +655,10 @@ begin
   if k < 0 then k := BestOfKind(KIND_AOE, OID);    // enough mobs around the target and ready
   if k < 0 then k := BestOfKind(KIND_NUKE, OID);
 
-  if k >= 0 then
-    Engine.DUseSkill(MySkillID[k], false, false)   // no waiting: fires as soon as it can
+  if k >= 0 then begin
+    if MySkillKind[k] = KIND_DEBUFF then MySkillSent[k] := GetTickCount;
+    Engine.DUseSkill(MySkillID[k], false, false);  // no waiting: fires as soon as it can
+  end
   else if Length(MySkillID) = 0 then
     Engine.Attack(300);
 end;
