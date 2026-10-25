@@ -5,7 +5,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('usasalam', 'ASD123qwe');
+  SetLogin('lwnsalam', 'ASD123qwe');
 
   SetZone('eab1.zmap');                      // Library\Zones
   SetConfig('EAB.xml');                     // Library\Configurations
@@ -61,8 +61,8 @@ begin
   // Uncomment what you need:
   // AddSupply(SOULSHOT_D,               8000, 15000);
   // AddSupply(SOULSHOT_C,                  16111, 16200);
-   AddSupply(SOULSHOT_B,               5000, 10000);
-  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_B,               5000, 10000);
+   AddSupply(SOULSHOT_A,               8000, 15000);
   // AddSupply(SOULSHOT_S,               8000, 15000);
   // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
   // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);

@@ -12,10 +12,6 @@ begin
 end;
 
 begin
-  // bot config loaded at start (file in Library\Configurations, e.g. only event notifications,
-  // no fighting - the script fights itself); remove the line = no config
-  SetConfig('alarm.xml');
-
   // ===== our skills, PRIORITY order inside each kind =====
   // AddMySkill(skill ID, kind, param)
   //   KIND_DRAIN  - param = HP %: spammed while our HP is below it
@@ -25,15 +21,11 @@ begin
   //   and the target closer than cast range (0 = any distance)
   // AddMyDebuff(skill ID, recast ms, min mob HP) - a debuff cast only on mobs with more HP than that
   AddMySkill(1234, KIND_DRAIN,  85);      // Vampiric Claw, HP < 70 %
-  AddMySkill(1343, KIND_DRAIN,  70);       // Vortex Dark
   AddMySkill(1074, KIND_DEBUFF, 6000);   // debuff, again on the same mob after 30 sec
-  
+  AddMySkill(1343, KIND_NUKE,  6500);       // Vortex Dark
   AddMySkill(1341, KIND_NUKE,  6500);       // Wind Vortex
   AddMySkill(1239, KIND_NUKE,   0);       // Death Spike
   AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
-  // AddMyPbAoe(skill ID, radius, min mobs) - AoE around US: only when ready and at least
-  // min mobs are within radius of us (put your skill ID and its radius)
-  AddMyPbAoe(1417, 200, 3);
 
   AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
@@ -53,10 +45,10 @@ begin
   //SetPetAttack(-1);
 
   // ===== targets: only inside the zone active in the bot (no zone -> radius around the start) =====
-  SetTargetRange(900);   // new targets / current target only this close
-  SetAggroRange(900);    // mobs on us / the summon only this close
-  SetFreeRadius(900);    // no zone in the bot: farm this close to the start point
-  SetCastRange(900);     // our skills reach this far: a target farther away -> walk closer first
+  SetTargetRange(800);   // new targets / current target only this close
+  SetAggroRange(800);    // mobs on us / the summon only this close
+  SetFreeRadius(800);    // no zone in the bot: farm this close to the start point
+  SetCastRange(600);     // our skills reach this far: a target farther away -> walk closer first
 
   // extra names to never target (other players' summons, chests... are skipped by default)
   // AddIgnoreName('Some Mob');
@@ -72,7 +64,7 @@ begin
   // SetSummonBuff(1204, ['book_use?...']);   // buff watched on the summon (0 = same as ours) + extra bypasses
 
   // where to rebuff (no line = right where we are)
-  //SetSafePoint(-20364, -53432, -11000);
+  // SetSafePoint(177072, -78171, -3256);
 
   // ===== patrol: no targets -> run these points one by one =====
   // attacked / a mob shows up on the way -> fight it, then run on to the same point
@@ -86,7 +78,7 @@ begin
   // ===== supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max =====
   AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
   AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
-  AddSupply(SPIRIT_ORE,              10000, 20000);
+  //AddSupply(CURSED_BONE,              10000, 20000);
   AddSupply(MANA_DRUG,                300, 500);
 
   RunNecro();
