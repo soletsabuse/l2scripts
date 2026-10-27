@@ -186,6 +186,8 @@ const
   SP_IGNORE_MS      = 30000;    // spoil farm: a skipped mob is not taken again for this long
   SP_SPOIL_TRIES    = 3;        // spoil farm: spoil casts on one mob before giving up on the spoil
   SP_FORCE_MS       = 3000;     // spoil farm: a mob hitting us we cannot get next to this long -> hit it from here
+  SP_STUCK_MS       = 4000;     // spoil farm: running to a mob but not moving this long -> skip it
+  SP_NODMG_MS       = 12000;    // spoil farm: mob HP does not drop this long -> skip it (even if it "hits" us)
   SP_SWEEP_TRIES    = 3;        // spoil farm: sweep casts on one corpse
   SP_PICKUP_RANGE   = 500;      // spoil farm: pick up drops this close after a kill
 
@@ -1250,10 +1252,10 @@ begin
     BestD := 999999;
     for i := 0 to NpcList.Count - 1 do begin
       if NpcList(i).Dead or IsIgnoredNpc(i) then continue;
+      if SpIgnored(NpcList(i).OID) then continue;
       if Aggro then begin
-        if not SpOnUs(i) then continue;          // hitting us: taken even if it was skipped
+        if not SpOnUs(i) then continue;
       end else begin
-        if SpIgnored(NpcList(i).OID) then continue;
         if not SpWhitelisted(i) then continue;
       end;
       NX := NpcList(i).X;
@@ -1381,13 +1383,20 @@ begin
 end;
 
 // kill one mob to the end. Rebuffing = called by the rebuff (farm paused): only death / return
-// stop it. Cannot get to it for SP_APPROACH_MS -> ignore it for SP_IGNORE_MS
+// stop it. Skipped for SP_IGNORE_MS: cannot get to it for SP_APPROACH_MS, stuck on the way for
+// SP_STUCK_MS, or its HP does not drop for SP_NODMG_MS (unreachable / stale "attacks us" flag)
 procedure SpKillMob(OID: integer; Rebuffing: boolean);
-var Idx, MX, MY, MZ: integer;
-  FarSince: cardinal;
+var Idx, MX, MY, MZ, HP, LastHP, UX, UY, LastUX, LastUY, Other: integer;
+  FarSince, HPSince, MovedSince: cardinal;
   Force: boolean;
+  DX, DY: double;
 begin
   FarSince := 0;
+  LastHP := -1;
+  HPSince := GetTickCount;
+  LastUX := User.X;
+  LastUY := User.Y;
+  MovedSince := GetTickCount;
   while true do begin
     if User.Dead or NeedReturn then exit;
     if (not Rebuffing) and AoeMustStop() then exit;
@@ -1400,15 +1409,63 @@ begin
     MX := NpcList(Idx).X;
     MY := NpcList(Idx).Y;
     MZ := NpcList(Idx).Z;
+
+    // our mob does not fight us, but another one does -> switch to it (our mob is not skipped,
+    // it is taken again after the fight)
+    if not SpOnUs(Idx) then begin
+      Other := SpPickTarget(true);
+      if (Other <> 0) and (Other <> OID) then begin
+        SpTarget := 0;
+        exit;
+      end;
+    end;
+
+    // HP does not drop -> we cannot hurt it (unreachable, or it does not really fight us)
+    // (counted only while we are next to it: running to it is not "no damage")
+    HP := NpcList(Idx).CurHP;
+    if (HP <> LastHP) or (SpDist(Idx) > SpRange) then begin
+      LastHP := HP;
+      HPSince := GetTickCount;
+    end;
+    if GetTickCount - HPSince >= SP_NODMG_MS then begin
+      Engine.Msg('[Spoil]', 'No damage on ' + NpcList(Idx).Name + ', skipping it for a while', 0);
+      SpIgnore(OID);
+      Engine.CancelTarget;
+      SpTarget := 0;
+      exit;
+    end;
+
+    // are we really moving?
+    UX := User.X;
+    UY := User.Y;
+    DX := UX - LastUX;
+    DY := UY - LastUY;
+    if Sqrt(DX * DX + DY * DY) > 30 then begin
+      LastUX := UX;
+      LastUY := UY;
+      MovedSince := GetTickCount;
+    end;
+
     Force := false;
     if SpDist(Idx) > SpRange then begin
-      if FarSince = 0 then FarSince := GetTickCount;
+      if FarSince = 0 then begin
+        FarSince := GetTickCount;
+        MovedSince := GetTickCount;
+      end;
       if SpOnUs(Idx) then begin
-        // it hits us: never dropped; cannot get next to it -> hit it from here
-        Force := GetTickCount - FarSince >= SP_FORCE_MS;
-      end else if GetTickCount - FarSince >= SP_APPROACH_MS then begin
+        // it hits us -> it is reachable: keep running to it, no skip for being stuck
+        // (only a safety limit of 2 x SP_APPROACH_MS for a stale "attacks us" flag)
+        if GetTickCount - FarSince >= 2 * SP_APPROACH_MS then begin
+          Engine.Msg('[Spoil]', 'Cannot get to ' + NpcList(Idx).Name + ' (aggro), skipping it for a while', 0);
+          SpIgnore(OID);
+          SpTarget := 0;
+          exit;
+        end;
+      end else if (GetTickCount - FarSince >= SP_APPROACH_MS) or
+                  (GetTickCount - MovedSince >= SP_STUCK_MS) then begin
         Engine.Msg('[Spoil]', 'Cannot get to ' + NpcList(Idx).Name + ', skipping it for a while', 0);
         SpIgnore(OID);
+        SpTarget := 0;
         exit;
       end;
     end else
@@ -1434,10 +1491,18 @@ var OID: integer;
 begin
   while Delay(200) do begin
     if AoeMustStop() or TreeBusy then continue;
-    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then continue;   // rebuff first
+    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then begin
+      // rebuff first: no new mobs, but what hits us is killed
+      OID := SpPickTarget(true);
+      if OID <> 0 then SpKillMob(OID, false);
+      continue;
+    end;
     OID := SpPickTarget(false);
     if OID = 0 then begin
-      if HasPatrol() then PatrolStep() else AoeRunToSpot();   // no mobs: patrol / back to the spot start
+      // no mobs: safe point (SetSafePoint) / patrol / back to the spot start
+      if HasSafePoint then MoveWait(SafeX, SafeY, SafeZ)
+      else if HasPatrol() then PatrolStep()
+      else AoeRunToSpot();
       continue;
     end;
     SpKillMob(OID, false);
@@ -1792,6 +1857,13 @@ end;
 
 // ===================== Clear combat (rebuff) =====================
 
+// mobs on us for ClearCombat (spoil mode: only those SpKillAggro would take)
+function CombatAggro(): boolean;
+begin
+  if SpoilEnabled then result := SpPickTarget(true) <> 0
+  else result := HaveAgroMobs();
+end;
+
 // Fights off everything that attacks us and leaves combat.
 // Farm is turned OFF only when nobody hits us; if a mob appears again, farm goes back ON.
 function ClearCombat(): boolean;
@@ -1803,7 +1875,7 @@ begin
     if User.Dead or NeedReturn then exit;
 
     // 1) kill everything that is on us (profile mode: the profile kills them, AoE mode: the script)
-    if HaveAgroMobs() then begin
+    if CombatAggro() then begin
       Engine.Msg('[Rebuff]', 'Mobs on me, killing them', 128);
       if AoeEnabled then begin
         FarmOff();          // no new pulls, just kill what is on us
@@ -1817,7 +1889,7 @@ begin
       end else begin
         FarmOn();
         Wait := 0;
-        while HaveAgroMobs() and (Wait < 220) do begin
+        while CombatAggro() and (Wait < 220) do begin
           if User.Dead or NeedReturn then exit;
           Delay(555); Inc(Wait);
         end;
@@ -1827,13 +1899,13 @@ begin
     // 2) nobody on us now: stop farm and wait for the combat flag to drop
     FarmOff();
     Wait := 0;
-    while User.InCombat and (not HaveAgroMobs()) and (Wait < 40) do begin
+    while User.InCombat and (not CombatAggro()) and (Wait < 40) do begin
       if User.Dead or NeedReturn then exit;
       Delay(555); Inc(Wait);
     end;
 
     // 3) somebody hit us again -> back to killing (farm is switched on in step 1)
-    if HaveAgroMobs() then begin
+    if CombatAggro() then begin
       Inc(Rounds);
       continue;
     end;
