@@ -7,16 +7,16 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  // SetLogin('login', 'password');
+   SetLogin('GGUsiebanie', 'ASD123qwe');
 
   SetZone('tanor_walk_1.zmap');                                    // Library\Zones
-  SetConfig('tanor_dmp.xml');                                      // Library\Configurations
+  //SetConfig('tanor_dmp.xml');                                      // Library\Configurations
   SetTeleport('_bbs_teleport?id=203&telTownIdList=4&fromtown=6');  // Aden gatekeeper -> spot
 
   // watched buff ID + buff bypasses (sent in this order)
   SetBuff(1204, [
     '_bbs_buffer_show',
-    'book_use?name=1&pre=0&target=Player'
+    'book_use?name=s&pre=0&target=Player'
   ]);
 
   // teleport landing -> inside the zone (x, y, z per line)
@@ -42,7 +42,7 @@ begin
   // SetSafePoint(x, y, z);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
-  // SetExpOff(true);
+   SetExpOff(true);
 
   // alerts: private messages + death + champions are ON by default
   // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
@@ -51,12 +51,12 @@ begin
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
   // AddSupply(SOULSHOT_D,               8000, 15000);
   // AddSupply(SOULSHOT_C,               8000, 15000);
-  // AddSupply(SOULSHOT_B,               8000, 15000);
+   AddSupply(SOULSHOT_B,               5000, 15000);
   // AddSupply(SOULSHOT_A,               8000, 15000);
   // AddSupply(SOULSHOT_S,               8000, 15000);
-  // AddSupply(MANA_DRUG,                50, 100);
+   AddSupply(MANA_DRUG,                100, 400);
   // AddSupply(MANA_POTION,              10, 50);
-  // AddSupply(HEALING_POTION,           10, 50);
+   AddSupply(HEALING_POTION,           150, 500);
 
   RunFarm();
 end.

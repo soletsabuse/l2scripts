@@ -52,6 +52,7 @@ begin
   SetAggroRange(800);    // mobs on us / the summon only this close
   SetFreeRadius(800);    // no zone in the bot: farm this close to the start point
   SetCastRange(600);     // our skills reach this far: a target farther away -> walk closer first
+  SetHeightRange(400);   // mobs higher / lower than us by more than this are never targeted (0 = any)
 
   // extra names to never target (other players' summons, chests... are skipped by default)
   // AddIgnoreName('Some Mob');

@@ -80,6 +80,7 @@ procedure SetPetAttack(MinMobMaxHP: integer);
 procedure SetTargetRange(Range: integer);
 procedure SetAggroRange(Range: integer);
 procedure SetFreeRadius(Range: integer);
+procedure SetHeightRange(Z: integer);
 procedure SetCastRange(Range: integer);
 procedure AddIgnoreName(Name: string);
 procedure RunNecro();
@@ -114,6 +115,7 @@ const
   CONFIG_DIR = '..\Configurations\';   // SetConfig files, relative to Library\Scripts
   BLESS_RETRY_MS = 2000;       // SetBlessing: one cast try per this many ms
   SUMMON_BUFF_TRIES = 5;       // rebuff: the summon still without its buff after this many tries -> give up on it
+  MOVE_BY_CLICK = true;        // moves as a mouse-click packet (server path); false = the bot's DMoveTo
   SERVER_PATH = true;         // walk to a mob: true = straight at its X/Y/Z (server path), false = our FindPath
   PATROL_REISSUE_MS = 1500;   // patrol: repeat DMoveTo every N ms while running to the point
   PATROL_WAIT_MIN   = 3000;    // patrol: stand at a reached point a random time between these (ms)
@@ -151,7 +153,9 @@ var
   PetAttackMinMaxHP: integer;
   PetAttackSet: boolean;
   TargetRange, AggroRange, FreeRadius: integer;
-  MaxCastRange: integer;                   // SetCastRange: farther than this -> walk closer first (DUseSkill does not walk)
+  MaxCastRange: integer;
+  HeightRange: integer;                    // SetHeightRange: mobs higher / lower than this are not taken (0 = any)
+  HeightSet: boolean;                   // SetCastRange: farther than this -> walk closer first (DUseSkill does not walk)
   IgnoreNames: array of string;   // lower case
   BuffID: integer;                         // SetBuff: watched buff (0 = no rebuff)
   BuffBypasses, SummonBuffBypasses: array of string;
@@ -360,6 +364,13 @@ procedure SetFreeRadius(Range: integer);
 begin
   FreeRadius := Range;
 end;
+// mobs more than Z above / below us are never targeted (other floors); 0 = no limit
+procedure SetHeightRange(Z: integer);
+begin
+  HeightRange := Z;
+  HeightSet := true;
+end;
+
 procedure SetCastRange(Range: integer);
 begin
   MaxCastRange := Range;
@@ -408,6 +419,23 @@ begin
             IntToHex((Value shr 16) and $FF, 2) + IntToHex((Value shr 24) and $FF, 2);
 end;
 
+// every move of the script (non-blocking). MOVE_BY_CLICK: the same packet the client sends on a
+// mouse click (MoveBackwardToLocation 0F: target X Y Z, our X Y Z, 1 = by mouse) - the server
+// builds the path around walls itself, like for a click. false = the bot's DMoveTo
+procedure MoveServer(X, Y, Z: integer);
+var UX, UY, UZ: integer;
+begin
+  if not MOVE_BY_CLICK then begin
+    Engine.DMoveTo(X, Y, Z);
+    exit;
+  end;
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  Engine.SendToServer('0F' + HexLE32(X) + HexLE32(Y) + HexLE32(Z) +
+    HexLE32(UX) + HexLE32(UY) + HexLE32(UZ) + HexLE32(1));
+end;
+
 function NpcIdx(OID: integer): integer;
 var i: integer;
 begin
@@ -416,12 +444,20 @@ begin
     if NpcList(i).OID = OID then begin result := i; exit; end;
 end;
 
+// the mob's height is close to ours (SetHeightRange): mobs on another floor are not taken
+function HeightOk(Z: integer): boolean;
+begin
+  result := (HeightRange <= 0) or (Abs(Z - User.Z) <= HeightRange);
+end;
+
 // no zone: a circle of FreeRadius - around the start point, or around US when we patrol
 // (patrol takes us away from the start, the mobs there must still count)
 function InFarmArea(X, Y, Z: integer): boolean;
 var DX, DY: double;
   CX, CY: integer;
 begin
+  result := false;
+  if not HeightOk(Z) then exit;    // another floor
   if UseRadius then begin
     if Length(PatrolPoints) >= 3 then begin
       CX := User.X;
@@ -762,7 +798,7 @@ begin
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
-  result := User.DistTo(NX, NY, NZ) <= AggroRange;
+  result := (User.DistTo(NX, NY, NZ) <= AggroRange) and HeightOk(NZ);
 end;
 
 // the straight line from us to the point stays inside the zone (checked every LOS_STEP):
@@ -844,7 +880,7 @@ begin
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
   // busy with us: keep it wherever it is (no zone check)
-  if MobOnUs(i) and (User.DistTo(NX, NY, NZ) <= AggroRange) then begin
+  if MobOnUs(i) and (User.DistTo(NX, NY, NZ) <= AggroRange) and HeightOk(NZ) then begin
     result := true;
     exit;
   end;
@@ -1186,6 +1222,9 @@ function SummonBuffLow(): boolean;
 var ID: integer;
 begin
   result := false;
+  // only a summon of ours from the script (SetSummon / SetSummonBuff): whatever else the bot
+  // lists as a pet (SH, agathion...) is not buffed and not watched
+  if (SummonSkill <= 0) and (Length(SummonBuffBypasses) = 0) then exit;
   if not HaveSummon() then exit;
   if GetTickCount < SummonBuffSkipUntil then exit;   // gave up on it a moment ago
   ID := SummonBuffID;
@@ -1216,7 +1255,7 @@ begin
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
-  result := User.DistTo(NX, NY, NZ) <= AggroRange;
+  result := (User.DistTo(NX, NY, NZ) <= AggroRange) and HeightOk(NZ);
 end;
 
 // lowest absolute HP among the mobs that hit us; 0 = nobody
@@ -1282,7 +1321,7 @@ begin
       continue;
     end;
     if (LastMove = 0) or (GetTickCount - LastMove >= PATROL_REISSUE_MS) then begin
-      Engine.DMoveTo(SafeX, SafeY, SafeZ);
+      MoveServer(SafeX, SafeY, SafeZ);
       LastMove := GetTickCount;
     end;
     Delay(SpamMs);
@@ -1309,6 +1348,10 @@ var OID, Tries: integer;
   Started: cardinal;
 begin
   Engine.Msg('[Rebuff]', '=== Buff is low: fight off, safe point, summon, buff, supplies ===', 128);
+  if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then
+    Engine.Msg('[Rebuff]', 'My buff ' + IntToStr(BuffID) + ': ' + IntToStr(BuffTime(BuffID) div 1000) + ' sec left', 0);
+  if SummonBuffLow() then
+    Engine.Msg('[Rebuff]', 'The summon''s buff is low', 0);
 
   // kill the mobs on us and run to the safe point at once (no waiting for the combat stance);
   // without a safe point we stay here
@@ -1478,7 +1521,7 @@ begin
       TX := NpcList(MI).X;
       TY := NpcList(MI).Y;
       TZ := NpcList(MI).Z;
-      Engine.DMoveTo(TX, TY, TZ);
+      MoveServer(TX, TY, TZ);
       LastClusterMove := GetTickCount;
     end;
     exit;
@@ -1506,7 +1549,7 @@ begin
     if MI >= 0 then MZ := NpcList(MI).Z;
   end;
   if (LastClusterMove = 0) or (GetTickCount - LastClusterMove >= PATROL_REISSUE_MS) then begin
-    Engine.DMoveTo(ClusterX[ClusterIdx], ClusterY[ClusterIdx], MZ);
+    MoveServer(ClusterX[ClusterIdx], ClusterY[ClusterIdx], MZ);
     LastClusterMove := GetTickCount;
   end;
 end;
@@ -1628,7 +1671,7 @@ begin
       Engine.Msg('[Patrol]', 'No targets, running to point ' + IntToStr(PatrolIdx + 1) + '/' + IntToStr(n), 0);
       LogMobsAround();
     end;
-    Engine.DMoveTo(TX, TY, TZ);
+    MoveServer(TX, TY, TZ);
     PatrolLeg := true;       // on the way: new mobs only within PatrolRange (kept through fights)
     PatrolActive := true;
     LastPatrolMove := GetTickCount;
@@ -1725,6 +1768,7 @@ begin
   if AggroRange <= 0 then AggroRange := 900;
   if FreeRadius <= 0 then FreeRadius := 900;
   if MaxCastRange <= 0 then MaxCastRange := 600;
+  if not HeightSet then HeightRange := 400;
   if PatrolRange <= 0 then PatrolRange := 200;
   if not PetAttackSet then PetAttackMinMaxHP := -1;   // summon melee off unless SetPetAttack
   AddDefaultIgnoreNames();
@@ -1748,7 +1792,12 @@ begin
       k := ZoneY;
       if OID > UX then OID := OID + 100 else if OID < UX then OID := OID - 100;
       if k > UY then k := k + 100 else if k < UY then k := k - 100;
-      Engine.MoveTo(OID, k, UZ);
+      MoveServer(OID, k, UZ);
+      ZoneX := 0;
+      while (User.DistTo(OID, k, UZ) > 100) and (ZoneX < 50) do begin   // up to 5 sec to get in
+        Delay(100);
+        Inc(ZoneX);
+      end;
     end;
   end;
 

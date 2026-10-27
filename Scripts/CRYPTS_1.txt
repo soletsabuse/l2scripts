@@ -5,7 +5,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('dufssss', 'ASD123qwe');
+  SetLogin('EYRqwer', 'ASD123qwe');
 
   SetZone('crypts_1.zmap');                      // Library\Zones
   SetConfig('crypts.xml');                     // Library\Configurations

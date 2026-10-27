@@ -1,0 +1,48 @@
+uses SysUtils;
+
+// Move sniffer: logs only the movement packets the client sends (MoveBackwardToLocation 0F),
+// decoded: target X Y Z, origin X Y Z and the last number (1 = by mouse, 0 = by keyboard).
+// Click somewhere on the ground - that is the real click packet. Then run the farm script and
+// compare: its moves (MOVE_BY_CLICK) must look the same.
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+    (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+function ToHex(Data: Pointer; Size: integer): string;
+var i: integer;
+begin
+  result := '';
+  for i := 0 to Size - 1 do
+    result := result + IntToHex(RdByte(Data, i), 2);
+end;
+
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var Line: string;
+begin
+  if ID1 <> $0F then exit;
+  Line := 'size=' + IntToStr(Size);
+  if Size >= 24 then
+    Line := Line + '  to ' + IntToStr(RdInt(Data, 0)) + ' ' + IntToStr(RdInt(Data, 4)) + ' ' +
+      IntToStr(RdInt(Data, 8)) + '  from ' + IntToStr(RdInt(Data, 12)) + ' ' +
+      IntToStr(RdInt(Data, 16)) + ' ' + IntToStr(RdInt(Data, 20));
+  if Size >= 28 then Line := Line + '  mode ' + IntToStr(RdInt(Data, 24));
+  Line := Line + '  hex=' + ToHex(Data, Size);
+  Engine.Msg('[Move]', Line, 128);
+end;
+
+begin
+  Engine.SendActID(2);   // enable packet hooks (same as token_sniffer)
+  Engine.Msg('[Move]', 'Move sniffer started: click on the ground', 128);
+  Delay(-1);
+end.

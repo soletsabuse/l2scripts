@@ -1,0 +1,69 @@
+uses SysUtils;
+uses SpotFarmSpoil in 'spot_farm_spoil.pas';
+
+// EV spoil (pathfinding). Spoiler WITHOUT the interface, single mobs, no packs:
+// run to the mob with the SERVER path (mouse-click packet) before every hit / skill,
+// act only right next to it -> spoil -> attack -> sweep -> pick up the drop.
+// Every move (path to the spot, safe point, drop) goes through the server path too:
+// the location is crooked and hilly.
+// Only data here, all logic is in spot_farm_spoil.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  // SetLogin('login', 'password');
+
+  // zone file in Library\Zones ('' = the zone that is active in the bot)
+  SetZone('ev_steel_top.zmap');
+  //SetConfig('xxx.xml');                                            // Library\Configurations
+  // Aden gatekeeper -> spot (no SetTeleport and no SetPath = stay mode: farm where started)
+  SetTeleport('_bbs_teleport?id=86&fromtown=6');
+  // double teleport: after the Aden one run to NPC 30233 and send these bypasses one after another
+  SetSecondTeleport(30233, [
+    'teleport_request',
+    'teleport_3984829728_3_57_1209025338_1'
+  ]);
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line), walked with the server path
+  SetPath([
+    125653, 62474, -3847,
+    125867, 60905, -3777,
+    125952, 59907, -3744,
+    125076, 58883, -3764,
+    124305, 58629, -3740,
+    123991, 57754, -3538,
+    124231, 55527, -3444
+
+   ]);
+
+  // single-mob spoil farm: spoil skill, sweep skill, [attack skills] ([0] = plain attack),
+  // [mob IDs] ([0] = any mob in the zone), act only this close to the mob
+  SetSpoilFarm(254, 42, [0], [20592], 100);
+
+  // no mobs in sight -> walk these points (inside the zone)
+  // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  // SetSafePoint(x, y, z);
+
+  // weapon to put back on after a disarm (no line = the weapon in hands at start)
+  // SetWeapon(itemID);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+
+  // alerts: private messages + death + champions are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  AddSupply(SOULSHOT_B,               5000, 15000);
+  AddSupply(MANA_DRUG,                100, 400);
+  AddSupply(HEALING_POTION,           150, 500);
+
+  RunFarm();
+end.
