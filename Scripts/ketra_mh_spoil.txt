@@ -1,0 +1,71 @@
+uses SysUtils;
+uses SpotFarmSpoil in 'spot_farm_spoil.pas';
+
+// the bot sends game events only to the script itself - pass them on to the library
+// (needed for "spoil activated": no second spoil on a spoiled mob); do not remove
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  SpoilOnAction(Action, P1, P2);
+end;
+
+// Ketra MH spoil (pathfinding), copy of ev_spoil_pathfinding. Spoiler WITHOUT the interface,
+// single mobs, no packs: run to the mob with the SERVER path (mouse-click packet) before every
+// hit / skill, act only right next to it -> spoil -> attack -> sweep -> pick up the drop.
+// Every move (path to the spot, safe point, drop) goes through the server path too.
+// Only data here, all logic is in spot_farm_spoil.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  SetLogin('DCPspoil1', 'ASD123qwe');
+
+  // zone file in Library\Zones ('' = the zone that is active in the bot)
+  SetZone('KETRA_MH_1.zmap');
+  SetConfig('alarm.xml');                                            // Library\Configurations
+  // Aden gatekeeper -> spot (no SetTeleport and no SetPath = stay mode: farm where started)
+  // SetTeleport('_bbs_teleport?id=...&fromtown=6');
+  // double teleport: after the Aden one run to this NPC and send these bypasses one after another
+  // SetSecondTeleport(npcID, [
+  //   'bypass1',
+  //   'bypass2'
+  // ]);
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // own buffs: the buff is gone -> cast the skill on self (one line per buff)
+  AddSelfBuff(360, 0);           // 0 = the buff has the same ID as the skill
+  //AddSelfBuff(skillID, buffID);      // the skill gives a buff with another ID
+
+  // teleport landing -> inside the zone (x, y, z per line), walked with the server path
+  //SetPath([
+  //]);
+
+  // single-mob spoil farm: spoil skill, sweep skill, [attack skills] ([0] = plain attack),
+  // [mob IDs] ([0] = any mob in the zone), act only this close to the mob
+  SetSpoilFarm(254, 42, [0], [21326], 100);
+
+  // no mobs in sight -> walk these points (inside the zone)
+  // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // no mobs -> stand here; rebuff here too (no line = buff where you stand after the mobs are dead)
+  SetSafePoint(135692, -69743, -3218);
+
+  // weapon to put back on after a disarm (no line = the weapon in hands at start)
+  // SetWeapon(itemID);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+
+  // alerts: private messages + death + champions are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  AddSupply(SOULSHOT_A,               5000, 15000);
+  AddSupply(MANA_DRUG,                100, 400);
+  AddSupply(HEALING_POTION,           150, 500);
+
+  RunFarm();
+end.

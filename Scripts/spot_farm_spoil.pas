@@ -33,6 +33,8 @@ unit SpotFarmSpoil;
 //     SetSpoilFarm(254, 42, [0], [0], 100);  // optional: single mobs WITHOUT the interface: run to the mob with
 //                                          //   the server path before every hit, act only within 100 of it;
 //                                          //   spoil, sweep, attack skills ([0] = plain attack), mob IDs ([0] = any)
+//     AddSelfBuff(1068, 0);                // optional, any number: buff gone -> cast this skill on self
+//                                          //   (2nd param = buff ID to watch, 0 = same as the skill)
 //     SetSecondTeleport(30233, ['teleport_request', 'teleport_...']);  // optional: after the Aden
 //                                          //   teleport run to this NPC and send these bypasses one after another
 //   Every move of this library goes as a mouse-click packet: the server builds the path (hills, walls).
@@ -93,6 +95,8 @@ procedure SetTreeMobs(BowID, MeleeID, BowRange: integer);
 procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, MobIDs: array of integer);
 procedure SetSpoilFarm(SpoilSkill, SweepSkill: integer; SkillIDs, MobIDs: array of integer; Range: integer);
 procedure SetSecondTeleport(NpcID: integer; Bypasses: array of string);
+procedure AddSelfBuff(SkillID, BuffID: integer);
+procedure SpoilOnAction(Action: TL2Action; P1, P2: cardinal);
 procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
 procedure SetCasterFarm(MobIDs: array of integer);
 procedure SetSummon(SummonSkillID, RenewPercent: integer);
@@ -189,6 +193,9 @@ const
   SP_STUCK_MS       = 4000;     // spoil farm: running to a mob but not moving this long -> skip it
   SP_NODMG_MS       = 12000;    // spoil farm: mob HP does not drop this long -> skip it (even if it "hits" us)
   SP_SWEEP_TRIES    = 3;        // spoil farm: sweep casts on one corpse
+  SP_SPOIL_WAIT_MS  = 2500;     // spoil farm: after a spoil cast wait this long for "spoil activated"
+  SPOIL_OK_MSG_ID   = 612;      // system message "The spoil condition has been activated."
+  SPOIL_DONE_MSG_ID = 357;      // system message "It has already been spoiled." 
   SP_PICKUP_RANGE   = 500;      // spoil farm: pick up drops this close after a kill
 
 // ===================== Spot data (filled by the spot script) =====================
@@ -245,8 +252,12 @@ var
   SpIgnTime: array[0..15] of cardinal;
   SpIgnHead: integer;
   SpWasSpoiled: boolean;          // the current target was seen spoiled while alive -> sweep it
+  SpoilMsgFlag: boolean;          // set by SpoilOnAction: "spoil activated" / "already spoiled"
+  SpLastSysOID: cardinal;         // newest system chat message we have looked at
   SecondNpcID: integer;           // SetSecondTeleport: NPC after the Aden teleport (0 = none)
   SecondBypasses: array of string;
+  SelfBuffSkill: array of integer;   // AddSelfBuff: skill to cast on self ...
+  SelfBuffID: array of integer;      // ... when this buff is gone
 
 // ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
   CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
@@ -381,6 +392,17 @@ begin
       SpMobIDs[Length(SpMobIDs) - 1] := MobIDs[i];
     end;
   SpoilEnabled := true;
+end;
+
+// self buff: the buff BuffID is gone -> cast SkillID (BuffID = 0 -> the buff has the skill's ID)
+procedure AddSelfBuff(SkillID, BuffID: integer);
+var n: integer;
+begin
+  n := Length(SelfBuffSkill);
+  SetLength(SelfBuffSkill, n + 1);
+  SetLength(SelfBuffID, n + 1);
+  SelfBuffSkill[n] := SkillID;
+  if BuffID > 0 then SelfBuffID[n] := BuffID else SelfBuffID[n] := SkillID;
 end;
 
 // double teleport: after the Aden gatekeeper teleport run to NPC NpcID (it is near the landing)
@@ -1286,6 +1308,37 @@ begin
   result := Round(Sqrt(DX * DX + DY * DY));
 end;
 
+// the bot game event, forwarded from the script's OnAction. Called from the bot's event thread:
+// only set a flag here (no arrays, no chat messages)
+procedure SpoilOnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  if (Action = laSysMsg) and ((P1 = SPOIL_OK_MSG_ID) or (P1 = SPOIL_DONE_MSG_ID)) then
+    SpoilMsgFlag := true;
+end;
+
+// "spoil activated" / "already spoiled" arrived since the last call: the event flag
+// (SpoilOnAction), or a new line in the system chat history
+function SpSpoilMsg(): boolean;
+var i: integer;
+  M: TChatMessage;
+  T: string;
+begin
+  result := SpoilMsgFlag;
+  SpoilMsgFlag := false;
+  try
+    for i := 0 to History.Count(mtSystem) - 1 do begin
+      M := History.GetMessage(i, mtSystem);
+      if M.OID <= SpLastSysOID then continue;
+      SpLastSysOID := M.OID;
+      T := LowerCase(M.Text);
+      if (Pos('spoil condition has been activated', T) > 0) or
+         (Pos('already been spoiled', T) > 0) then result := true;
+    end;
+  except
+    // history not available: the event flag above is enough
+  end;
+end;
+
 // one step on the mob: too far -> run to it (server path); right next to it (or Force) ->
 // spoil / skill / hit
 procedure SpFightStep(OID: integer; Force: boolean);
@@ -1312,15 +1365,27 @@ begin
     SpTarget := OID;
     SpSpoilTries := 0;
     SpWasSpoiled := false;
+    SpSpoilMsg();                    // old messages belong to the previous mob
     Delay(50);
   end;
   if NpcList(Idx).Sweepable then SpWasSpoiled := true;   // spoiled -> sweep it when it dies
+  if SpSpoilMsg() then SpWasSpoiled := true;
 
-  // spoil until it is spoiled (max SP_SPOIL_TRIES casts)
-  if (SpSpoilSkill > 0) and (not NpcList(Idx).Sweepable) and (SpSpoilTries < SP_SPOIL_TRIES) and
+  // spoil once: never again after "spoil activated" (max SP_SPOIL_TRIES casts if it fails)
+  if (SpSpoilSkill > 0) and (not SpWasSpoiled) and (SpSpoilTries < SP_SPOIL_TRIES) and
      (SpSkillLeft(SpSpoilSkill) = 0) then begin
     Engine.UseSkill(SpSpoilSkill);
     Inc(SpSpoilTries);
+    // wait for the result of the cast before anything else (no second spoil on a spoiled mob)
+    for k := 1 to SP_SPOIL_WAIT_MS div 100 do begin
+      Delay(100);
+      if SpSpoilMsg() then begin
+        SpWasSpoiled := true;
+        break;
+      end;
+      Idx := SpMobIdx(OID);
+      if (Idx < 0) or NpcList(Idx).Dead then break;
+    end;
     exit;
   end;
 
@@ -1506,6 +1571,27 @@ begin
       continue;
     end;
     SpKillMob(OID, false);
+  end;
+end;
+
+// ===================== Self buffs (AddSelfBuff) =====================
+// Every second: a watched buff is gone and its skill is out of reuse -> cast the skill on self.
+// Not while travelling / recovering / dead.
+
+procedure SelfBuff_Thread();
+var i, SkillID, ID: integer;
+begin
+  while Delay(1000) do begin
+    if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then continue;
+    for i := 0 to Length(SelfBuffSkill) - 1 do begin
+      SkillID := SelfBuffSkill[i];
+      ID := SelfBuffID[i];
+      if BuffTime(ID) > 0 then continue;          // still on us
+      if SpSkillLeft(SkillID) > 0 then continue;  // reuse
+      Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
+      Engine.UseSkill(SkillID);
+      Delay(1500);
+    end;
   end;
 end;
 
@@ -3301,6 +3387,8 @@ begin
   if TreeEnabled then Script.NewThread(@TreeWatch_Thread);
   if AoeEnabled then Script.NewThread(@AoeFarm_Thread);
   if SpoilEnabled then Script.NewThread(@SpoilFarm_Thread);
+  if Length(SelfBuffSkill) > 0 then Script.NewThread(@SelfBuff_Thread);
+  if SpoilEnabled then SpSpoilMsg();   // old system messages are not events
   if CasterEnabled then begin
     if CasterRange <= 0 then CasterRange := DEFAULT_TARGET_RANGE;
     Script.NewThread(@CasterFarm_Thread);

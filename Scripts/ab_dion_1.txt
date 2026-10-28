@@ -5,7 +5,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('UWOqwer', 'ASD123qwe');
+  SetLogin('JICqwer', 'ASD123qwe');
 
   SetZone('ab_dion_1.zmap');                                       // Library\Zones
   SetConfig('ab_dion.xml');                                        // Library\Configurations
@@ -19,9 +19,9 @@ begin
 
   // teleport landing -> inside the zone (x, y, z per line)
   SetPath([
-    15119, 141726, -2722,
-    18420, 141300, -3292,
-    19254, 141240, -3355,
+    14645, 140710, -3016,
+    16722, 140886, -3033;
+    18772, 141137, -3355,
     19833, 141273, -3342,
     21352, 141099, -3518,
     23025, 141749, -3352,

@@ -1,6 +1,13 @@
 uses SysUtils;
 uses SpotFarmSpoil in 'spot_farm_spoil.pas';
 
+// the bot sends game events only to the script itself - pass them on to the library
+// (needed for "spoil activated": no second spoil on a spoiled mob); do not remove
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  SpoilOnAction(Action, P1, P2);
+end;
+
 // EV spoil (pathfinding). Spoiler WITHOUT the interface, single mobs, no packs:
 // run to the mob with the SERVER path (mouse-click packet) before every hit / skill,
 // act only right next to it -> spoil -> attack -> sweep -> pick up the drop.
@@ -30,16 +37,8 @@ begin
   ]);
 
   // teleport landing -> inside the zone (x, y, z per line), walked with the server path
-  SetPath([
-    125653, 62474, -3847,
-    125867, 60905, -3777,
-    125952, 59907, -3744,
-    125076, 58883, -3764,
-    124305, 58629, -3740,
-    123991, 57754, -3538,
-    124231, 55527, -3444
-
-   ]);
+  //SetPath([
+   //]);
 
   // single-mob spoil farm: spoil skill, sweep skill, [attack skills] ([0] = plain attack),
   // [mob IDs] ([0] = any mob in the zone), act only this close to the mob
@@ -49,7 +48,7 @@ begin
   // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
 
   // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
-  // SetSafePoint(x, y, z);
+  SetSafePoint(124069, 54884, -3724);
 
   // weapon to put back on after a disarm (no line = the weapon in hands at start)
   // SetWeapon(itemID);

@@ -1,0 +1,21 @@
+uses SysUtils;
+
+// Test: does the bot show "spoiled" on a LIVE mob? Take a mob in target, spoil it, watch the chat.
+// To test IsSpoiled: uncomment the marked line - "Undeclared identifier" = the bot has no such property.
+
+var i, OID: integer;
+  S: string;
+begin
+  while Delay(1000) do begin
+    if User.Target = nil then continue;
+    OID := User.Target.OID;
+    for i := 0 to NpcList.Count - 1 do
+      if NpcList(i).OID = OID then begin
+        S := 'Sweepable=' + IntToStr(Ord(NpcList(i).Sweepable));
+        // S := S + ' IsSpoiled=' + IntToStr(Ord(NpcList(i).IsSpoiled));   // <- test line
+        if NpcList(i).Dead then S := S + ' (dead)';
+        Engine.Msg('[SpoilTest]', NpcList(i).Name + ': ' + S, 0);
+        break;
+      end;
+  end;
+end.
