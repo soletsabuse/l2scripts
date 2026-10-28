@@ -1,0 +1,48 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// CBP NOS 1. Only data here, all logic is in spot_farm.pas.
+
+begin
+
+  SetZone('APOSTATE_1.zmap');                      // Library\Zones
+  SetConfig('worship_cbp.xml');                     // Library\Configurations
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line)
+
+  // where to stand while rebuffing on the spot (remove the line = buff where you stand)
+  SetSafePoint(-16680, -250409, -8191);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+
+  // standing still 3 sec with no target -> run to the farthest patrol point (stops when the profile takes a target)
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // Uncomment what you need:
+  // AddSupply(SOULSHOT_D,               8000, 15000);
+  //AddSupply(SOULSHOT_C,                  16111, 16200);
+   AddSupply(SOULSHOT_B,               8000, 15000);
+  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_S,               8000, 15000);
+  // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_B,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
+  // AddSupply(BEAST_SOULSHOT,           2000, 5000);
+  // AddSupply(BEAST_BLESSED_SPIRITSHOT, 2000, 5000);
+  //AddSupply(SPIRIT_ORE,               100, 500);
+  // AddSupply(CURSED_BONE,              100, 500);
+  AddSupply(MANA_DRUG,                   100, 100);
+  // AddSupply(MANA_POTION,              10, 50);
+  AddSupply(HEALING_POTION,           100, 100);
+
+  RunFarm();
+end.
