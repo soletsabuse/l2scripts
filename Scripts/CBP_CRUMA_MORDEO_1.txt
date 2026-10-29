@@ -17,7 +17,7 @@ begin
   // teleport landing -> inside the zone (x, y, z per line)
 
   // where to stand while rebuffing on the spot (remove the line = buff where you stand)
-  SetSafePoint(24010, 118763, -12112);
+  SetSafePoint(24107, 118777, -12112);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
