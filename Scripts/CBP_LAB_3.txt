@@ -5,7 +5,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-  SetLogin('EHPdddd', 'ASD123qwe');
+  SetLogin('EFXdddd', 'ASD123qwe');
 
   SetZone('LAB_1.zmap');                      // Library\Zones
   SetConfig('cbp_lab.xml');                     // Library\Configurations
