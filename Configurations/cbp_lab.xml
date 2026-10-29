@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <BasicSettings>
-  <General Active="true" AutoAtk="true" AutoHeal="true" AutoBuff="true" AutoEvent="true" AutoScript="false" AutoScriptPath="" FRange1="0" FRange2="600" FAutoMove="false" Performance="1" Performance2="2" FastNuke="false" MTarget="false" BuffBypass0="" BuffBypass1="" BuffBypass2="" BuffBypass3="" BuffBypass4="" HotPauseScript="true" AutoDB="true" AutoDBAll="false"/>
+  <General Active="false" AutoAtk="true" AutoHeal="true" AutoBuff="true" AutoEvent="true" AutoScript="false" AutoScriptPath="" FRange1="0" FRange2="600" FAutoMove="false" Performance="1" Performance2="2" FastNuke="false" MTarget="false" BuffBypass0="" BuffBypass1="" BuffBypass2="" BuffBypass3="" BuffBypass4="" HotPauseScript="true" AutoDB="true" AutoDBAll="false"/>
   <SelfHeal/>
   <Relax SkillUse="false" SkillName="" minHPUse="false" minHP="40" minMPUse="false" minMP="20" maxHPUse="false" maxHP="100" maxMpUse="false" maxMP="100" PauseUse="false" PauseV1="1" PauseV2="3" Pos1Use="false" Pos2Use="false" Pos3Use="false" Pos1X="0" Pos1Y="0" Pos1Z="0" Pos2X="0" Pos2Y="0" Pos2Z="0" Pos3X="0" Pos3Y="0" Pos3Z="0" RelaxParty="false" RelaxPartyV="" RelaxPartyV2="30" RelaxPartyV3="100" PartyStandAtk="true" SitTarg="false" SitTargV="5"/>
   <Death Resp="false" RespType="0" WaitResp="false" WaitRespV1="60" WaitRespV2="30" WaitFight="false" WaitFightV="10"/>
