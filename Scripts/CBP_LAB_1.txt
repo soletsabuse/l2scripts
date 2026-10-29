@@ -1,0 +1,68 @@
+uses SysUtils;
+uses SpotFarm in 'spot_farm.pas';
+
+// CBP NOS 1. Only data here, all logic is in spot_farm.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  SetLogin('EHPdddd', 'ASD123qwe');
+
+  SetZone('LAB_1.zmap');                      // Library\Zones
+  SetConfig('cbp_lab.xml');                     // Library\Configurations
+  SetTeleport('_bbs_teleport?id=148&fromtown=6'); // Aden gatekeeper -> spot
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // teleport landing -> inside the zone (x, y, z per line)
+  SetPath([
+    113831, -109198, -870,
+    113854, -109489, -880,
+    112886, -109992, -882,
+    111976, -111517, -1034,
+    111548, -112108, -1191,
+    110851, -113079, -1804,
+    109446, -113667, -2123,
+    109089, -114169, -2249,
+    108011, -115496, -2817
+  ]);
+
+  // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
+  
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(true);
+  SetChampionAlert(0);
+  // alerts are ON by default (values below); uncomment a line only to change it
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; 0 = off
+  // SetPrivateAlert(true);             // private messages; false = off
+  // SetPlayerSound('player.wav');      // file in Library\Sounds; '' = no sound
+  // SetPrivateSound('private.wav');    // file in Library\Sounds; '' = no sound
+  // SetAlertBlink(true);              // blink the game window in the taskbar; false = off
+  // SetTelegram('api key from the Adrenaline cabinet');
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  // Uncomment what you need:
+  // AddSupply(SOULSHOT_D,               8000, 15000);
+  // AddSupply(SOULSHOT_C,                  16111, 16200);
+   AddSupply(SOULSHOT_B,               5000, 10000);
+  // AddSupply(SOULSHOT_A,               8000, 15000);
+  // AddSupply(SOULSHOT_S,               8000, 15000);
+  // AddSupply(BLESSED_SPIRITSHOT_D,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_C,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_B,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_A,     2000, 5000);
+  // AddSupply(BLESSED_SPIRITSHOT_S,     2000, 5000);
+  // AddSupply(BEAST_SOULSHOT,           2000, 5000);
+  // AddSupply(BEAST_BLESSED_SPIRITSHOT, 2000, 5000);
+  //AddSupply(SPIRIT_ORE,               100, 500);
+  // AddSupply(CURSED_BONE,              100, 500);
+  AddSupply(MANA_DRUG,                   50, 100);
+  // AddSupply(MANA_POTION,              10, 50);
+  // AddSupply(HEALING_POTION,           10, 50);
+
+  RunFarm();
+end.

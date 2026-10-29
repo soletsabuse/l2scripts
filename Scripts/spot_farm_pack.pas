@@ -108,6 +108,9 @@ procedure SetPackFarm(PackSize, MassSpoilSkill, MassSweepSkill: integer; MobIDs:
 procedure AddCorner(X, Y, Z: integer);
 procedure SetPackDagger(DaggerID, FatMaxHP: integer);
 procedure SetPackTap(WeaponID, Range: integer);
+procedure SetPackTapAlways(Enable: boolean);
+procedure SetCornerRadius(Radius: integer);
+procedure SetZRange(Range: integer);
 procedure SpoilOnAction(Action: TL2Action; P1, P2: cardinal);
 procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
 procedure SetCasterFarm(MobIDs: array of integer);
@@ -321,7 +324,13 @@ var
   PkDaggerOn: boolean;            // the dagger is on for a fat mob: the disarm guard leaves it
   PkTapWeapon, PkTapRange, PkTapMain: integer;   // SetPackTap: weapon to tap with, from how far; farm weapon
   PkTapOn: boolean;               // the tap weapon is (being) put on: the disarm guard leaves it
-  PkTapUseAt: cardinal;
+  PkTapAlways: boolean;           // SetPackTapAlways: every pull mob is tapped, no body pull
+  PkSafeReady: boolean;           // pack farm, rebuff due: we stand at the safe point, mobs dead, out of combat
+  PkZRange: integer;              // SetZRange: pack farm takes mobs only this far up / down from us (0 = any)
+  PkCornerR: integer;             // SetCornerRadius: at the corner fight mobs this far from the point (0 = only in hit range)
+  PkWearID: integer;              // PkWear: the weapon being put on now
+  PkWearUseAt, PkWearRefAt: cardinal;   // PkWear: last UseItem / last inventory request
+  PkWearOK: boolean;              // PkWear: PkWearID is on (seen in a fresh inventory)
   PkCorpseSince: cardinal;
   PkLX, PkLY: integer;            // our position at the last real move (wall check)
   PkMovedAt: cardinal;
@@ -524,6 +533,26 @@ begin
   PkTapWeapon := WeaponID;
   PkTapRange := Range;
   if PkTapRange <= 0 then PkTapRange := PK_HIT_RANGE;
+end;
+
+// SetPackTap weapon pulls EVERY mob: run to PkTapRange, one hit, next mob (no running past it)
+procedure SetPackTapAlways(Enable: boolean);
+begin
+  PkTapAlways := Enable;
+end;
+
+// at the corner: run to and hit pack mobs up to Radius from the corner point (0 = stand in the
+// corner, hit only what comes within PK_HIT_RANGE)
+// pack farm: pull and fight only mobs at most Range up / down from us (0 = no limit)
+procedure SetZRange(Range: integer);
+begin
+  PkZRange := Range;
+end;
+
+procedure SetCornerRadius(Radius: integer);
+begin
+  PkCornerR := Radius;
+  if PkCornerR < 0 then PkCornerR := 0;
 end;
 
 // self buff: the buff BuffID is gone -> cast SkillID (BuffID = 0 -> the buff has the skill's ID)
@@ -1061,10 +1090,17 @@ end;
 // Profile mode: the bot interface (FaceControl) farms.
 // AoE mode (SetAoeFarm): the interface stays OFF, AoeFarm_Thread farms; ON/OFF = unpause/pause it.
 
+// script modes farm by themselves: the interface is ON only for the SetConfig profile, which must
+// be an alarm one (AutoAtk / AutoMove / PickUp off, only events: player / chat sounds)
+function ScriptMode(): boolean;
+begin
+  result := AoeEnabled or CasterEnabled or SpoilEnabled or PackEnabled;
+end;
+
 procedure FarmOn();
 begin
-  if AoeEnabled or CasterEnabled or SpoilEnabled or PackEnabled then begin
-    Engine.FaceControl(0, false);
+  if ScriptMode() then begin
+    Engine.FaceControl(0, ConfigName <> '');
     FarmPaused := false;
   end else
     Engine.FaceControl(0, true);
@@ -1073,6 +1109,7 @@ end;
 procedure FarmOff();
 begin
   FarmPaused := true;
+  if ScriptMode() and (ConfigName <> '') then exit;   // the alarm profile keeps running
   Engine.FaceControl(0, false);
 end;
 
@@ -2736,7 +2773,7 @@ end;
 
 procedure AltB_Rebuff_Thread();
 var
-  Fails: integer;
+  Fails, Tries: integer;
   SuppliesDone: boolean;
 begin
   Fails := 0;
@@ -2754,6 +2791,19 @@ begin
       Engine.Msg('[Rebuff]', 'Buff is low, preparing to rebuff...', 0);
 
       // --- safe point set: interface OFF, run there, fight back there until out of combat ---
+      if OnSpot and HasSafePoint and PackEnabled then begin
+        // pack farm: the pack thread runs to the safe point and kills what follows there (splash,
+        // mass spoil, sweep); we wait until it is clear there, then the interface is off for the buff
+        Tries := 0;
+        while (not PkSafeReady) and (not User.Dead) and (not NeedReturn) and (Tries < 600) do begin
+          Delay(100);
+          Inc(Tries);
+        end;
+        if User.Dead or NeedReturn then continue;
+        if PkSafeReady then FarmOff()
+        else if not SafePointClear() then continue;   // the pack thread did not make it in 60 s
+        Delay(500);
+      end else
       if OnSpot and HasSafePoint then begin
         if not SafePointClear() then continue;   // died / going back via Aden
         Delay(500);
@@ -3109,6 +3159,14 @@ begin
   result := Sqrt(DX * DX + DY * DY);
 end;
 
+// SetZRange: the mob height is close enough to ours
+function PkZOk(Z: integer): boolean;
+var UZ: integer;
+begin
+  UZ := User.Z;
+  result := (PkZRange <= 0) or (Abs(Z - UZ) <= PkZRange);
+end;
+
 // wall check: a new run starts now
 procedure PkMoveReset();
 begin
@@ -3388,6 +3446,7 @@ begin
       NY := NpcList(i).Y;
       NZ := NpcList(i).Z;
       if not InFarmArea(NX, NY, NZ) then continue;
+      if not PkZOk(NZ) then continue;  // SetZRange: another floor / a ledge
       D := PkDist(NX, NY);
       if D > MaxDist then continue;
       if (Pass = 1) and (D <= PK_TOUCH * 2) then continue;   // just touched and still next to us: no use
@@ -3431,6 +3490,47 @@ begin
   end;
 end;
 
+// puts weapon W on without blocking (called every tick); true = it is on. The "equipped" flag of
+// the bot inventory is NOT trusted until the server resent the inventory: it stays stale (the
+// farm weapon still "on" while the knife is in hands), and a 2nd UseItem of a weapon that is
+// already on takes it OFF. So: fresh inventory -> not on -> UseItem -> 1 s -> fresh inventory ->
+// still not on -> UseItem again (the first one was swallowed by an attack animation)
+function PkWear(W: integer): boolean;
+var T: cardinal;
+begin
+  result := false;
+  T := GetTickCount;
+  if PkWearID <> W then begin          // a new swap: ask the server what is in hands now
+    PkWearID := W;
+    PkWearOK := false;
+    PkWearUseAt := 0;
+    Engine.SendToServer(INVENTORY_PACKET);   // no Delay: the answer comes while we run / hit
+    PkWearRefAt := T;
+    exit;
+  end;
+  if PkWearOK then begin
+    result := true;
+    exit;
+  end;
+  if T - PkWearRefAt < 800 then exit;  // waiting for the fresh inventory
+  if PkWearRefAt > PkWearUseAt then begin
+    // the inventory is fresher than our last UseItem: it tells the truth
+    if IsEquipped(W) then begin
+      PkWearOK := true;
+      result := true;
+      exit;
+    end;
+    if PkWearUseAt > 0 then
+      Engine.Msg('[Weapon]', 'Item ' + IntToStr(W) + ' still not on, using it again', 0);
+    Engine.UseItem(W);
+    PkWearUseAt := T;
+    exit;
+  end;
+  if T - PkWearUseAt < 1000 then exit;
+  Engine.SendToServer(INVENTORY_PACKET);     // did the UseItem work?
+  PkWearRefAt := T;
+end;
+
 // SetPackTap: the tap weapon is in hands (puts it on, the farm weapon is remembered first)
 function PkTapReady(): boolean;
 var W: integer;
@@ -3438,25 +3538,29 @@ begin
   if not PkTapOn then begin
     PkTapMain := WeaponID;             // the weapon in hands at start (or SetWeapon)
     if PkTapMain <= 0 then PkTapMain := PkCurrentWeapon();
-    PkTapOn := true;
-    PkTapUseAt := 0;
+    PkTapOn := true;                   // the disarm guard leaves the weapons to us from now on
+    if PkTapMain = PkTapWeapon then
+      Engine.Msg('[Weapon]', 'Farm weapon = tap weapon ' + IntToStr(PkTapMain) +
+        ' (started with it in hands?) - put SetWeapon(farm weapon ID) into the script', 128)
+    else
+      Engine.Msg('[Weapon]', 'Pull: tap weapon ' + IntToStr(PkTapWeapon) + ', farm weapon ' +
+        IntToStr(PkTapMain) + ' after it', 0);
   end;
   W := PkTapWeapon;
-  result := IsEquipped(W);
-  if (not result) and ((PkTapUseAt = 0) or (GetTickCount - PkTapUseAt >= 1500)) then begin
-    Engine.UseItem(W);                 // not twice in a row: a 2nd use would take it off
-    PkTapUseAt := GetTickCount;
-  end;
+  result := PkWear(W);
 end;
 
-// the pull is over: the farm weapon back
+// the pull is over: the farm weapon back, without blocking (called every tick of the fight).
+// PkTapOn stays on until it really is in hands, so the disarm guard does not swap at the same time
 procedure PkTapRestore();
 var W: integer;
 begin
   if not PkTapOn then exit;
   W := PkTapMain;
-  if (W > 0) and (not IsEquipped(W)) then Engine.UseItem(W);
-  PkTapOn := false;                    // the disarm guard checks it from now on
+  if (W <= 0) or PkWear(W) then begin
+    PkTapOn := false;
+    Engine.Msg('[Weapon]', 'Farm weapon ' + IntToStr(W) + ' is on', 0);
+  end;
 end;
 
 // SetPackTap: this pull mob is to be tapped - we ran past it PK_TAP_AFTER_MS ago and it did not
@@ -3466,6 +3570,10 @@ var Slot: integer;
 begin
   result := false;
   if PkTapWeapon <= 0 then exit;
+  if PkTapAlways then begin
+    result := true;                    // every mob is pulled by a hit
+    exit;
+  end;
   Slot := PkTouchSlot(OID);
   if (Slot >= 0) and (GetTickCount - PkTouchAt[Slot] >= PK_TAP_AFTER_MS) then result := true;
   if (Cnt = 0) and (NearSince > 0) and (GetTickCount - NearSince >= PK_TOUCH_WAIT_MS) then result := true;
@@ -3698,7 +3806,7 @@ end;
 // a mob of the pack we fight: alive, on us, within PK_FIGHT_RANGE, not a shooter. Skipped
 // (wall) mobs count too: once the pack is at the corner it is finished, not left for a new pull
 function PkFightMob(i: integer): boolean;
-var Atk, Tgt, NX, NY, OID: integer;
+var Atk, Tgt, NX, NY, NZ, OID: integer;
 begin
   result := false;
   if NpcList(i).Dead then exit;
@@ -3714,7 +3822,8 @@ begin
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
-  result := PkDist(NX, NY) <= PK_FIGHT_RANGE;
+  NZ := NpcList(i).Z;
+  result := (PkDist(NX, NY) <= PK_FIGHT_RANGE) and PkZOk(NZ);
 end;
 
 // all mobs under the last mass spoil answered "spoiled": exactly those (taken at the cast) are
@@ -3827,7 +3936,7 @@ end;
 // catches more. 0 = nobody within MaxReach
 function PkBestTarget(CurOID, MaxReach: integer): integer;
 var i, j, UX, UY, NX, NY, MX, MY, Score, BestScore, CurScore: integer;
-  AX, AY, BX, BY, LA, LB, Tie, BestTie, CosLim: double;
+  AX, AY, BX, BY, LA, LB, Tie, BestTie, CosLim, QX, QY: double;
 begin
   result := 0;
   UX := User.X;
@@ -3844,6 +3953,13 @@ begin
     AY := NY - UY;
     LA := Sqrt(AX * AX + AY * AY);
     if LA > MaxReach then continue;
+    if (PkCorner >= 0) and (PkCornerR > 0) and (LA > PK_HIT_RANGE) then begin
+      // SetCornerRadius: run only to mobs inside the corner zone, never to a wall-stuck one
+      QX := NX - PkCX;
+      QY := NY - PkCY;
+      if Sqrt(QX * QX + QY * QY) > PkCornerR then continue;
+      if SpIgnored(NpcList(i).OID) then continue;
+    end;
     if LA > PK_SPLASH_RANGE then begin
       Score := 0;
       Tie := LA;                       // out of the splash: the nearest first
@@ -4010,9 +4126,10 @@ begin
     Running := false;
     PkCheckShooters();
     if PkCountFight() = 0 then break;  // the pack is dead
+    PkTapRestore();                    // the farm weapon back after the pull (until it is on)
 
     // the pack is down, a fat one is left -> dagger
-    if (PkDaggerID > 0) and (not PkDaggerOn) and PkOnlyFatLeft() then begin
+    if (PkDaggerID > 0) and (not PkDaggerOn) and (not PkTapOn) and PkOnlyFatLeft() then begin
       Main := WeaponID;                // the farm weapon (in hands at start / SetWeapon)
       if Main <= 0 then Main := PkCurrentWeapon();
       if (Main > 0) and (Main <> PkDaggerID) then begin
@@ -4024,7 +4141,7 @@ begin
       end;
     end;
 
-    if PkCorner >= 0 then Reach := PK_HIT_RANGE else Reach := 999999;
+    if (PkCorner >= 0) and (PkCornerR <= 0) then Reach := PK_HIT_RANGE else Reach := 999999;
     NewOID := PkBestTarget(OID, Reach);
     if NewOID = 0 then begin
       // corner, nobody within the hit yet: stand in the corner, they come to us
@@ -4053,7 +4170,8 @@ begin
     TX := NpcList(Idx).X;
     TY := NpcList(Idx).Y;
 
-    // no corner, target farther than the hit -> run to it by the server path (Attack runs straight)
+    // no corner / inside the corner zone, target farther than the hit -> run to it by the server
+    // path (Attack runs straight)
     if PkDist(TX, TY) > PK_HIT_RANGE then begin
       if (not WasRunning) or (OID <> RunOID) then PkMoveReset();
       Running := true;
@@ -4144,11 +4262,39 @@ begin
   while Delay(PK_TICK_MS) do begin
     if AoeMustStop() or TreeBusy then continue;
     if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then begin
-      // rebuff first: no new pulls, only what hits us
-      if PkCountAggro() > 0 then begin
-        PkCorner := -1;
-        PkFight();
+      // rebuff first: no new pulls. Safe point set -> run there (server path, the mobs on us come
+      // along), the safe point is the corner: finish them there, then the rebuff thread buffs
+      if not HasSafePoint then begin
+        PkSafeReady := false;
+        if PkCountAggro() > 0 then begin
+          PkCorner := -1;
+          PkFight();
+        end;
+        continue;
       end;
+      PkTapRestore();
+      if PkDist(SafeX, SafeY) > PK_REACH * 2 then begin
+        PkSafeReady := false;
+        Engine.Msg('[Pack]', 'Rebuff due, running to the safe point', 0);
+        MoveExact(SafeX, SafeY, SafeZ, PK_REACH);
+        continue;
+      end;
+      if PkCountAggro() > 0 then begin
+        PkSafeReady := false;
+        PkCorner := 0;                 // the safe point is the corner of this fight
+        PkCX := SafeX;
+        PkCY := SafeY;
+        PkCZ := SafeZ;
+        PkFight();
+        PkCorner := -1;
+        continue;
+      end;
+      PkSafeReady := (not User.InCombat) and (not PkTapOn);   // the rebuff thread waits for this
+      continue;
+    end;
+    PkSafeReady := false;
+    if PkTapOn and (PkCountAggro() = 0) and (not PkTapAlways) then begin
+      PkTapRestore();                  // the farm weapon goes back on before a pull without the tap
       continue;
     end;
     PkPull();

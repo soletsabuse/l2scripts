@@ -1,0 +1,87 @@
+uses SysUtils;
+uses SpotFarmPack in 'spot_farm_pack.pas';
+
+// the bot sends game events only to the script itself - pass them on to the library; do not remove
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  SpoilOnAction(Action, P1, P2);
+end;
+
+// Ketra MH packs. Spoiler WITHOUT the interface: body pull a pack with the SERVER path, run to the
+// nearest corner point (AddCorner) so the pack stacks up, mass spoil, auto attack switching the
+// target so the splash hits as many mobs as possible, mass sweep, pick up, next pack.
+// A fat mob (champion) left alone -> dagger, then the main weapon back.
+// Only data here, all logic is in spot_farm_pack.pas.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  SetLogin('DCPspoil1', 'ASD123qwe');
+
+  // zone file in Library\Zones ('' = the zone that is active in the bot)
+  SetZone('IT_RED_2.zmap');
+  SetConfig('alarm.xml');                                            // Library\Configurations
+  // Aden gatekeeper -> spot (no SetTeleport and no SetPath = stay mode: farm where started)
+  // SetTeleport('_bbs_teleport?id=...&fromtown=6');
+  // double teleport: after the Aden one run to this NPC and send these bypasses one after another
+  // SetSecondTeleport(npcID, [
+  //   'bypass1',
+  //   'bypass2'
+  // ]);
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // own buffs: the buff is gone -> cast the skill on self (one line per buff)
+  AddSelfBuff(421, 0);
+  //AddSelfBuff(360, 0);           // 0 = the buff has the same ID as the skill
+  //AddSelfBuff(skillID, buffID);      // the skill gives a buff with another ID
+
+  // teleport landing -> inside the zone (x, y, z per line), walked with the server path
+  //SetPath([
+  //]);
+
+  // pack farm: pack size, mass spoil skill, mass sweep skill, [mob IDs] ([0] = any mob in the zone)
+  SetPackFarm(15, 302, 444, []);
+
+  // corner points: after the pull we run to the nearest one (within 25) and the pack stacks there
+  AddCorner(185885, -81186, -5954);
+  
+  // dagger for a fat mob left alone: dagger item ID, MaxHP above this = fat (0 = champion limit)
+  //SetPackDagger(236, 50000);
+
+  // mob that does not aggro from the run past it: hit it once with this weapon from this distance,
+  // then run on at once (farm with the weapon that was in hands at start)
+  SetWeapon(305);
+  SetPackTap(8800, 150);
+  // true = pull EVERY mob with a hit of the SetPackTap weapon (no running past it)
+  SetPackTapAlways(true);
+
+  // corner zone: hit pack mobs up to this far from the corner point, running to them
+  // (no line / 0 = stand in the corner and hit only what comes close)
+  SetCornerRadius(80);
+
+  // no mobs in sight -> walk these points (inside the zone)
+  // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // no mobs -> stand here; rebuff here too (no line = buff where you stand after the mobs are dead)
+  SetSafePoint(185983, -81190, -5952);
+
+  // main weapon to put back on after a disarm (no line = the weapon in hands at start)
+  // SetWeapon(itemID);
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(false);
+
+  // alerts: private messages + death + champions are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  AddSupply(SOULSHOT_A,               5000, 15000);
+  AddSupply(MANA_DRUG,                100, 400);
+  AddSupply(HEALING_POTION,           150, 500);
+
+  RunFarm();
+end.

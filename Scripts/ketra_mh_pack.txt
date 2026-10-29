@@ -55,9 +55,18 @@ begin
   // mob that does not aggro from the run past it: hit it once with this weapon from this distance,
   // then run on at once (farm with the weapon that was in hands at start)
   // SetPackTap(itemID, 600);
+  // true = pull EVERY mob with a hit of the SetPackTap weapon (no running past it)
+  // SetPackTapAlways(true);
+
+  // corner zone: hit pack mobs up to this far from the corner point, running to them
+  // (no line / 0 = stand in the corner and hit only what comes close)
+  // SetCornerRadius(200);
 
   // no mobs in sight -> walk these points (inside the zone)
   // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // pull / fight only mobs at most this far up or down from us (no line / 0 = any height)
+  // SetZRange(200);
 
   // no mobs -> stand here; rebuff here too (no line = buff where you stand after the mobs are dead)
   SetSafePoint(178447, -116799, -3592);

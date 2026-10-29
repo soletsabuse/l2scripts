@@ -68,7 +68,7 @@ begin
   // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
 
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
-  AddSupply(SOULSHOT_B,               5000, 15000);
+  AddSupply(SOULSHOT_A,               5000, 15000);
   AddSupply(MANA_DRUG,                100, 400);
   AddSupply(HEALING_POTION,           150, 500);
 
