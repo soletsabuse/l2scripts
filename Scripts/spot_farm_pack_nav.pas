@@ -286,6 +286,7 @@ const
   PK_SPOIL_FIRST_MS = 600;      // pack farm: auto attack this long before the 1st mass spoil
   PK_SPOIL_GAP_MS   = 1500;     // pack farm: at least this long between mass spoils
   PK_FIGHT_RANGE    = 700;      // pack farm: a mob on us this close belongs to the pack being fought (stragglers too)
+  PK_ROOM_ENTRY     = 600;      // rooms: aggro this close outside the room polygon (its entry) -> pull the room
   PK_ROOM_NEAR      = 520;      // rooms: this close to a room polygon = at the room (its spots go 500 out)
   PK_ROOM_LOOK_MS   = 60000;    // rooms, nothing to farm: a room not seen this long -> go and look at it
   PK_LEAD_B         = 300;      // the way in to a farm spot: the leg before the turn at the corner
@@ -1637,7 +1638,7 @@ begin
   result := false;
   if NpcList(i).Dead then exit;
   AtkOID := NpcList(i).AtkOID;
-  TargetOID := NpcList(i).Target.OID;
+  TargetOID := PullMobTarget(i);
   if (AtkOID <> User.OID) and (TargetOID <> User.OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
@@ -1931,12 +1932,7 @@ begin
   result := false;
   if NpcList(i).Dead then exit;
   Atk := NpcList(i).AtkOID;
-  Tgt := 0;
-  try
-    Tgt := NpcList(i).Target.OID;
-  except
-    Tgt := 0;
-  end;
+  Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
@@ -4139,16 +4135,12 @@ function PkFightMob(i: integer): boolean;
 var Atk, Tgt, NX, NY, NZ, OID: integer;
 begin
   result := false;
+  if i >= NpcList.Count then exit;     // the list got shorter while we walk it
   if NpcList(i).Dead then exit;
   OID := NpcList(i).OID;
   if PkIsShooter(OID) then exit;
   Atk := NpcList(i).AtkOID;
-  Tgt := 0;
-  try
-    Tgt := NpcList(i).Target.OID;
-  except
-    Tgt := 0;
-  end;
+  Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
@@ -4837,6 +4829,7 @@ end;
 procedure PkRoomTick();
 var n, cur, UX, UY, UZ, AX, AY, k: integer;
   MS: string;
+  Near: boolean;
 begin
   RoomUpdate();
   if (PkDebug >= 2) and ((PkRoomsAt = 0) or (GetTickCount - PkRoomsAt > 15000)) then begin
@@ -4845,12 +4838,31 @@ begin
   end;
   if PkCountAggro() > 0 then begin
     cur := PkRoomSel - 1;
+    // a fight began in a room we only ran through (another room was the goal): this room is ours now
+    UX := User.X;
+    UY := User.Y;
+    for k := 0 to RoomCount() - 1 do
+      if (k <> cur) and RoomInside(k, UX, UY) and (RoomMode(k) <> FARM_SINGLE) then begin
+        Engine.Msg('[Room]', 'Aggro in room ' + RoomName(k) + ' on the way - farming it now', 0);
+        PkRoomSet(k);
+        PkRoomWaiting := false;
+        cur := k;
+        break;
+      end;
     if cur >= 0 then begin
       AX := RoomAnchorX(cur);
       AY := RoomAnchorY(cur);
     end;
-    // a pack room near: these come along, the pull below takes the rest of the room first
-    if not ((cur >= 0) and (RoomMode(cur) <> FARM_SINGLE) and (PkDist(AX, AY) < 1500)) then begin
+    // a pack room and we are in it / at its spot / at its entry (just before it) / near its middle:
+    // these come along, the pull below takes the rest of the room
+    Near := false;
+    if (cur >= 0) and (RoomMode(cur) <> FARM_SINGLE) then begin
+      UX := User.X;
+      UY := User.Y;
+      Near := PkAtRoom(cur) or (RoomDist(cur, UX, UY) <= PK_ROOM_ENTRY) or (PkDist(AX, AY) < 1500);
+    end;
+    if Near then PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us at room ' + RoomName(cur) + ' - they come along, pulling the room');
+    if not Near then begin
       PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us (far from the room / one by one) - fight here');
       PkCorner := -1;
       PkFight();

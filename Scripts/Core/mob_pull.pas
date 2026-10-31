@@ -39,6 +39,7 @@ procedure PullIgnoreID(ID: integer);             // never pull / count / fight m
 procedure PullSetStop(Stop: boolean);            // true = end the pull at once (farm paused, return...)
 function PullRun(): integer;                     // the pull; result = mobs on us (0 = nothing to pull)
 function PullIsAggro(i: integer): boolean;       // NpcList(i) is on us (shooters / ignored do not count)
+function PullMobTarget(i: integer): integer;     // OID of whom NpcList(i) targets, 0 = none / gone
 function PullCountAggro(): integer;
 function PullIsShooter(OID: integer): boolean;    // the mob is on the ignore list (PullIgnoreID) / a skipped champion
 procedure PullSkipChampions(MinMaxHP: integer);   // mobs with MaxHP above this: never pulled / fought (0 = off)
@@ -675,21 +676,29 @@ procedure PullCheckShooters();
 begin
 end;
 
+// whom the mob targets. The list changes in the bot's own thread while we walk it: the index may be
+// past its end now and the target object may be gone - no exception (a try round .Target.OID broke
+// the script with "Invalid pointer operation"): the object is taken once and checked for nil
+function PullMobTarget(i: integer): integer;
+var T: TL2Live;
+begin
+  result := 0;
+  if (i < 0) or (i >= NpcList.Count) then exit;
+  T := NpcList(i).Target;
+  if T <> nil then result := T.OID;
+end;
+
 function PullIsAggro(i: integer): boolean;
 var Atk, Tgt, NX, NY, OID: integer;
 begin
   MpInit();
   result := false;
+  if i >= NpcList.Count then exit;
   if NpcList(i).Dead then exit;
   OID := NpcList(i).OID;
   if MpSkippedHard(OID) or PullIsShooter(OID) then exit;
   Atk := NpcList(i).AtkOID;
-  Tgt := 0;
-  try
-    Tgt := NpcList(i).Target.OID;
-  except
-    Tgt := 0;
-  end;
+  Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
