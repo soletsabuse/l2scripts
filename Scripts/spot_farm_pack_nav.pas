@@ -3340,17 +3340,20 @@ begin
       Engine.Msg('[Rebuff]', 'Buff is low, preparing to rebuff...', 0);
 
       // --- safe point set: interface OFF, run there, fight back there until out of combat ---
-      if OnSpot and HasSafePoint and PackEnabled then begin
-        // pack farm: the pack thread runs to the safe point and kills what follows there (splash,
-        // mass spoil, sweep); we wait until it is clear there, then the interface is off for the buff
+      if OnSpot and PackEnabled then begin
+        // pack farm: the pack thread runs to the safe point (none: stays) and kills what follows there
+        // (splash, mass spoil, sweep); we wait until it is clear, then the farm is off for the buff.
+        // Up to 3 min: a big pack takes long, the farm is never paused in the middle of it
         Tries := 0;
-        while (not PkSafeReady) and (not User.Dead) and (not NeedReturn) and (Tries < 600) do begin
+        while (not PkSafeReady) and (not User.Dead) and (not NeedReturn) and (Tries < 1800) do begin
           Delay(100);
           Inc(Tries);
         end;
         if User.Dead or NeedReturn then continue;
         if PkSafeReady then FarmOff()
-        else if not SafePointClear() then continue;   // the pack thread did not make it in 60 s
+        else if HasSafePoint then begin
+          if not SafePointClear() then continue;   // the pack thread did not make it in 60 s
+        end else if not ClearCombat() then continue;
         Delay(500);
       end else
       if OnSpot and HasSafePoint then begin
@@ -4991,11 +4994,17 @@ begin
       // rebuff first: no new pulls. Safe point set -> run there (server path, the mobs on us come
       // along), the safe point is the corner: finish them there, then the rebuff thread buffs
       if not HasSafePoint then begin
-        PkSafeReady := false;
+        // no safe point: finish what is on us right here (the pack fight), then tell the rebuff
+        // thread it may buff - it never pauses the farm in the middle of the pack
+        PkTapRestore();
         if PkCountAggro() > 0 then begin
+          PkSafeReady := false;
           PkCorner := -1;
           PkFight();
+          PkPickup();
+          continue;
         end;
+        PkSafeReady := (not User.InCombat) and (not PullTapActive());
         continue;
       end;
       PkTapRestore();
