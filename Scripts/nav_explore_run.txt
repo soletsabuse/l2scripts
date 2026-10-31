@@ -1,0 +1,17 @@
+uses SysUtils;
+uses NavExplore in 'Core\nav_explore.pas';
+
+// Lidar scan of a zone (Core\nav_explore.pas). Stand inside the zone, no mobs on you, start.
+// Scan area = the OUTER contour of the zone + 200 (cut-outs too). The grid goes to
+// Library\Nav\<grid file> (saved as it goes, a new start goes on from it). Then:
+//   nav_view.html: open the grid, fill the rooms (bucket), save -> SetNavGrid('<grid file>').
+
+begin
+  // FAST: straight rows and columns every 200 units, only the obstacles are felt (minutes).
+  // zone file in Library\Zones ('' = take the zone active in the bot right now), grid file in Library\Nav,
+  // cell, row spacing
+  ExploreRows('EXPLORE_TEST_1.zmap', 'EXPLORE_TEST_1.navgrid', 32, 200);
+
+  // SLOW but complete: feels every cell next to the walls (hours on a big zone)
+  // ExploreZone('EXPLORE_TEST_1.zmap', 'EXPLORE_TEST_1.navgrid', 32);
+end.

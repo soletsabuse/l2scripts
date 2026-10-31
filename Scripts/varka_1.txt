@@ -44,7 +44,7 @@ begin
   //]);
 
   // pack farm: pack size, mass spoil skill, mass sweep skill, [mob IDs] ([0] = any mob in the zone)
-  SetPackFarm(20, 302, 444, []);
+  SetPackFarm(15, 302, 444, []);
 
   // corner points: after the pull we run to the nearest one (within 25) and the pack stacks there
   AddCorner(120799, -44688, -2800);
@@ -54,10 +54,10 @@ begin
 
   // mob that does not aggro from the run past it: hit it once with this weapon from this distance,
   // then run on at once (farm with the weapon that was in hands at start)
-  SetWeapon(4858);
-  SetPackTap(4778, 100);
+  SetWeapon(5634);
+  SetPackTap(5634, 100);
   // true = pull EVERY mob with a hit of the SetPackTap weapon (no running past it)
-  SetPackTapAlways(true);
+  SetPackTapAlways(false);
 
   // corner zone: hit pack mobs up to this far from the corner point, running to them
   // (no line / 0 = stand in the corner and hit only what comes close)

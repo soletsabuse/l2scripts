@@ -1,0 +1,20 @@
+uses SysUtils;
+uses NavTrace in 'Core\nav_trace.pas';
+
+// Wall trace (Core\nav_trace.pas): run right up against the walls / pillars (slide along them),
+// the script writes a point every 12 units. Control - the PARTY chat (#..., no party needed):
+//   r = record, p = pause, u = delete the last stroke, s = status, h = help
+// Starts paused. File: Library\Nav\<name> (saved every 2 s, a new start adds to it).
+// Then in Library\Nav\nav_view.html: open the file -> "Штрихи → сетка" -> "Заливка" inside the rooms
+// -> save .navgrid (SetNavGrid in the farm script) or "Сетку → зону" -> save .zmap.
+
+// the bot gives packets only to the script itself: pass them on (the party chat menu); do not remove
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  TraceOnCliPacket(ID1, ID2, Data, Size);
+end;
+
+begin
+  // file in Library\Nav, a point every N units of the run
+  TraceRecord('CRUMA_1.navtrace', 12);
+end.

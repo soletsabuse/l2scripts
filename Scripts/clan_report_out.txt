@@ -1,42 +1,95 @@
-Clan report, updated 18.10.2026 20:38:37, players seen: 52
+Clan report, updated 31.10.2026 20:27:36, players seen: 106
 
 ======================================================================
-  CLAN Slayers   -   52 players seen
+  CLAN DeathSentence   -   66 players seen
 ======================================================================
 
   SUMMARY BY ROLE
   ------------------------------------------------------------------
-  Healers     19   Cardinal 19
-  Mages       15   Mystic Muse 11, Soultaker 3, Archmage 1
-  Archers      5   Sagittarius 4, Moonlight Sentinel 1
-  Warriors     5   Dreadnought 4, Destroyer 1
-  Support      8   Dominator 5, Sword Muse 2, Spectral Dancer 1
+  Healers     19   Cardinal 18, Shillien Saint 1
+  Mages       19   Mystic Muse 9, Soultaker 4, Archmage 4, Storm Screamer 2
+  Daggers      1   Adventurer 1
+  Archers      5   Sagittarius 5
+  Warriors     8   Dreadnought 6, Titan 1, Grand Khavatari 1
+  Support     13   Dominator 8, Spectral Dancer 3, Sword Muse 2
+  Dwarves      1   Fortune Seeker 1
 
   BY CLASS
   ------------------------------------------------------------------
-  Cardinal (19)           Alpina, botting, Cannavis, Carnefici, Celery, Doom, ExtraLong, Fate, hacking, Lanaya, MAZDA, MiniCooper, Mute, NorthernLights, Predatori, Ruin, scripting, Sterminatori, Trainwreck
-  Mystic Muse (11)        Chaos, Destruction, LemonHaze, Mimosa, napping, peeing, pooping, SilverHazE, Terror, Void, yapping
-  Dominator (5)           Chrysler, dominating, GreenCracK, Omen, Pickle
-  Sagittarius (4)         Diavoli, Massacratori, Predoni, Vendicatori
-  Dreadnought (4)         Lexus, PineappleExpress, Rum, Tatra
-  Soultaker (3)           Dread, dumping, PurpleHaze
-  Sword Muse (2)          Audi, Distruttori
-  Spectral Dancer (1)     VOLVO
-  Moonlight Sentinel (1)  Psychodori
-  Destroyer (1)           Bugatti
-  Archmage (1)            LUXEwF
+  Cardinal (18)           Alesandro, Bourbon, Cognac, Gecko, Jaegermeister, KimJongBoom, Lagertha, Liv, Mute, Narwhal, Quokka, Rhea, Serenity, Stillness, StroKing, WeedKing, YETY, Yrsa
+  Mystic Muse (9)         Armadillo, Atomic, ErNe, Harlequin, MidgetSpinner, Okapi, SeaEvil, Vasilica, Weasel
+  Dominator (8)           BeeQueen, EasyR, Exasa, Manhattan, Marvel, Oblivion, Odin, Pickle
+  Dreadnought (6)         Diversij4, Eagle, Hush, Quiet, Rum, Tequila
+  Sagittarius (5)         BlinKing, DeathKing, GodKing, JungleKing, RiceKing
+  Soultaker (4)           Adele, CottonFieldOwner, Frida, Ocelot
+  Archmage (4)            egil, Freydis, Hrefna, Solveig
+  Spectral Dancer (3)     Eclipse, JackDaniels, Whisper
+  Sword Muse (2)          AperolSpritz, TheKing
+  Storm Screamer (2)      Kamar, ValakuAkbar
+  Shillien Saint (1)      ILikeMen
+  Titan (1)               SmallButFat
+  Fortune Seeker (1)      Patootie
+  Grand Khavatari (1)     r4pe
+  Adventurer (1)          ipragma
 
 ======================================================================
-  TOTAL BY CLASS (all clans)   -   52 players
+  CLAN GhostRiders   -   40 players seen
 ======================================================================
-  Cardinal              - 19
+
+  SUMMARY BY ROLE
+  ------------------------------------------------------------------
+  Healers      3   Cardinal 3
+  Mages       18   Storm Screamer 8, Soultaker 6, Mystic Muse 2, Archmage 2
+  Summoners    1   Elemental Master 1
+  Daggers      2   Adventurer 1, Treasure Hunter 1
+  Archers      2   Sagittarius 1, Phantom Ranger 1
+  Tanks        1   Shillien Templar 1
+  Warriors     6   Duelist 3, Dreadnought 3
+  Support      2   Doomcryer 1, Spectral Dancer 1
+  Dwarves      5   Fortune Seeker 3, Maestro 2
+
+  BY CLASS
+  ------------------------------------------------------------------
+  Storm Screamer (8)      Adzik, AFROULA, Arwena, BeznaTotala, DarkDesire, MarKoJR, ooo, Sk3ng
+  Soultaker (6)           Assis, eXtreme, G1ntarinis, Nagas, Nexus, Trooll
+  Cardinal (3)            hentai, Meki, morawaxd
+  Duelist (3)             NyXuS, Shark, TluczekDoMiesa
+  Fortune Seeker (3)      PyxeL, ToKill, vezlys
+  Dreadnought (3)         Swaldi, Tosiek, Ultraviolence
+  Mystic Muse (2)         CantSee, Kylo
+  Maestro (2)             Heniek, NuTuBlGerasBober
+  Archmage (2)            Tia, VoreasGR
+  Sagittarius (1)         Essex
+  Doomcryer (1)           STUPIDORC
+  Adventurer (1)          Bahamut
+  Shillien Templar (1)    KANIBAAL
+  Spectral Dancer (1)     BardaitiS
+  Treasure Hunter (1)     GlupiaPizda
+  Phantom Ranger (1)      OverPower
+  Elemental Master (1)    Mika
+
+======================================================================
+  TOTAL BY CLASS (all clans)   -   106 players
+======================================================================
+  Cardinal              - 21
   Mystic Muse           - 11
-  Dominator             - 5
-  Sagittarius           - 4
-  Dreadnought           - 4
-  Soultaker             - 3
+  Soultaker             - 10
+  Storm Screamer        - 10
+  Dreadnought           - 9
+  Dominator             - 8
+  Archmage              - 6
+  Sagittarius           - 6
+  Spectral Dancer       - 4
+  Fortune Seeker        - 4
+  Duelist               - 3
   Sword Muse            - 2
-  Spectral Dancer       - 1
-  Moonlight Sentinel    - 1
-  Destroyer             - 1
-  Archmage              - 1
+  Maestro               - 2
+  Adventurer            - 2
+  Titan                 - 1
+  Doomcryer             - 1
+  Grand Khavatari       - 1
+  Shillien Saint        - 1
+  Shillien Templar      - 1
+  Treasure Hunter       - 1
+  Phantom Ranger        - 1
+  Elemental Master      - 1

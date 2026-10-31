@@ -1,0 +1,133 @@
+uses SysUtils;
+
+// Test: party chat as a script menu (packets only, no Engine.Say).
+// 1. Start the script.
+// 2. Write anything in the GENERAL chat (e.g. "hello") - the server echoes it back: the script
+//    logs the incoming chat packet (4A) to learn its layout on this server.
+// 3. Write in the PARTY chat (#text), ONE per message, best out of a party:  !a  then  !b  then  !c
+//    - each sends a fake party message from "Menu" to the client (sender object 0 / ours / made up).
+//    Tell which of them appeared in the party chat.
+// 4. Write in the party chat a normal text (no "!") - check it still goes out as usual
+//    (outgoing chat is blocked by the script and sent again by it, "!" commands are not sent).
+// All lines go to the bot's Messages window, [ChatT].
+
+const
+  NAME = 'Menu';
+
+var
+  LastIn: string;          // hex payload of the last incoming chat packet (for !d)
+
+function BytesToHex(Data: Pointer; Size: integer): string;
+var i: integer;
+  P: Pointer;
+begin
+  result := '';
+  P := Data;
+  for i := 0 to Size - 1 do begin
+    result := result + IntToHex(PByte(P)^, 2);
+    Inc(Cardinal(P), 1);
+  end;
+end;
+
+function RdByte(Data: Pointer; Ofs: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Ofs);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Ofs: integer): integer;
+begin
+  result := RdByte(Data, Ofs) or (RdByte(Data, Ofs + 1) shl 8) or (RdByte(Data, Ofs + 2) shl 16) or
+            (RdByte(Data, Ofs + 3) shl 24);
+end;
+
+// UTF-16 string ending with 0000 at Ofs; NextOfs = offset right after it (global, no var params)
+var NextOfs: integer;
+function RdStr(Data: Pointer; Ofs, Size: integer): string;
+var c: integer;
+begin
+  result := '';
+  NextOfs := Ofs;
+  while NextOfs + 1 < Size do begin
+    c := RdByte(Data, NextOfs) or (RdByte(Data, NextOfs + 1) shl 8);
+    NextOfs := NextOfs + 2;
+    if c = 0 then exit;
+    result := result + Chr(c);
+  end;
+end;
+
+function HexS(S: string): string;
+var i, c: integer;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    c := Ord(S[i]);
+    result := result + IntToHex(c and $FF, 2) + IntToHex((c shr 8) and $FF, 2);
+  end;
+  result := result + '0000';
+end;
+
+function HexD(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) + IntToHex((V shr 16) and $FF, 2) +
+            IntToHex((V shr 24) and $FF, 2);
+end;
+
+procedure Fake(Variant: string);
+var H: string;
+begin
+  // CreatureSay 4A on this server: objectId, chat type (3 = party), name, -1, text
+  if Variant = 'a' then          // sender object 0 (nobody)
+    H := '4A' + HexD(0) + HexD(3) + HexS(NAME) + HexD(-1) + HexS('menu test A')
+  else if Variant = 'b' then     // sender = our own object
+    H := '4A' + HexD(User.OID) + HexD(3) + HexS(NAME) + HexD(-1) + HexS('menu test B')
+  else if Variant = 'c' then     // some made-up object
+    H := '4A' + HexD(12345678) + HexD(3) + HexS(NAME) + HexD(-1) + HexS('menu test C')
+  else begin                     // the last real incoming chat packet, sent back as it is
+    if LastIn = '' then begin
+      Engine.Msg('[ChatT]', 'No incoming chat packet yet - write in the general chat first', 255);
+      exit;
+    end;
+    H := '4A' + LastIn;
+  end;
+  Engine.Msg('[ChatT]', 'Fake ' + Variant + ' -> client: ' + H, 0);
+  Engine.SendToClient(H);
+end;
+
+// outgoing (client -> server)
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var Text, Hex: string;
+  T: integer;
+begin
+  if ID1 <> $49 then exit;
+  Hex := BytesToHex(Data, Size);
+  Text := RdStr(Data, 0, Size);
+  T := -1;
+  if NextOfs + 3 < Size then T := RdInt(Data, NextOfs);
+  Engine.Msg('[ChatT]', 'OUT type=' + IntToStr(T) + ' text="' + Text + '" hex=' + Hex, 0);
+  if (Length(Text) >= 2) and (Text[1] = '!') then begin
+    Fake(LowerCase(Copy(Text, 2, 1)));  // a command: not sent to the server
+    exit;
+  end;
+  Engine.SendToServer('49' + Hex);      // a normal message: out as it was
+end;
+
+// incoming (server -> client)
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var Hex: string;
+begin
+  if ID1 <> $4A then exit;
+  Hex := BytesToHex(Data, Size);
+  LastIn := Hex;
+  Engine.Msg('[ChatT]', 'IN 4A obj=' + IntToStr(RdInt(Data, 0)) + ' type=' + IntToStr(RdInt(Data, 4)) +
+    ' size=' + IntToStr(Size) + ' hex=' + Hex, 0);
+end;
+
+begin
+  Engine.SendActID(2);                                // packet hooks on
+  Engine.BlockPacket($49, 0, False, Cardinal(-1));    // outgoing chat: we send it again ourselves
+  Engine.Msg('[ChatT]', 'Started. 1) write "hello" in the general chat  2) in the party chat: !a !b !c !d', 128);
+  Delay(-1);
+end.

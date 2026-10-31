@@ -1,0 +1,58 @@
+uses SysUtils;
+uses NavMove in 'Core\nav_move.pas';
+
+// Test of Core\nav_move.pas: stand in the zone, start - the character runs to every point in turn
+// (behind a wall -> along the map graph) and says in chat how each run went. Put your own points:
+// copy them from nav_view.html (coords bottom right) or from the bot.
+
+const
+  ZONE = 'CRUMA_MORDEO_1.zmap';
+
+var
+  PX, PY, PZ: array of integer;
+  n: integer;
+
+procedure AddPoint(X, Y, Z: integer);
+begin
+  SetLength(PX, n + 1);
+  SetLength(PY, n + 1);
+  SetLength(PZ, n + 1);
+  PX[n] := X;
+  PY[n] := Y;
+  PZ[n] := Z;
+  Inc(n);
+end;
+
+var i, X, Y, Z: integer;
+  T: cardinal;
+  S: string;
+
+begin
+  NavSetZone(ZONE);
+  // NavSetGrid('CRUMA_MORDEO_1.navgrid');   // or the lidar grid
+  NavBuild();
+
+  // the 4 corners and the safe point of cruma_ab_1
+  n := 0;
+  AddPoint(23962, 118963, -12112);
+  AddPoint(23011, 120372, -12112);
+  AddPoint(22862, 116927, -12112);
+  AddPoint(23953, 118438, -12112);
+  AddPoint(24075, 118687, -12112);
+
+  for i := 0 to n - 1 do begin
+    X := PX[i];
+    Y := PY[i];
+    Z := PZ[i];
+    if NavSeeFromUs(X, Y) then S := 'in sight' else S := 'behind a wall';
+    Engine.Msg('[Test]', 'Run ' + IntToStr(i + 1) + '/' + IntToStr(n) + ' to ' + IntToStr(X) + ', ' +
+      IntToStr(Y) + ' (' + S + ')', 128);
+    T := GetTickCount;
+    if NavMoveTo(X, Y, Z, 50) then
+      Engine.Msg('[Test]', '  OK in ' + IntToStr((GetTickCount - T) div 1000) + ' s', 128)
+    else
+      Engine.Msg('[Test]', '  FAILED after ' + IntToStr((GetTickCount - T) div 1000) + ' s', 255);
+    Delay(1000);
+  end;
+  Engine.Msg('[Test]', 'Done', 128);
+end.

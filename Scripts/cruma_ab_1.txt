@@ -1,5 +1,5 @@
 uses SysUtils;
-uses SpotFarmPack in 'spot_farm_pack.pas';
+uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
 
 // the bot sends game events only to the script itself - pass them on to the library; do not remove
 procedure OnAction(Action: TL2Action; P1, P2: cardinal);
@@ -7,18 +7,21 @@ begin
   SpoilOnAction(Action, P1, P2);
 end;
 
-// Ketra MH packs. Spoiler WITHOUT the interface: body pull a pack with the SERVER path, run to the
-// nearest corner point (AddCorner) so the pack stacks up, mass spoil, auto attack switching the
-// target so the splash hits as many mobs as possible, mass sweep, pick up, next pack.
-// A fat mob (champion) left alone -> dagger, then the main weapon back.
-// Only data here, all logic is in spot_farm_pack.pas.
+// Cruma packs. Spoiler WITHOUT the interface: body pull a pack (Core\mob_pull.pas) in the area of the
+// nav grid, run to the nearest corner point (AddCorner) so the pack stacks up, mass spoil, auto attack
+// switching the target so the splash hits as many mobs as possible, mass sweep, pick up, next pack.
+// Runs by the map (Core\nav_move.pas): the graph is built from the nav grid at start, a point behind
+// a wall is reached along it. Only data here, the logic is in spot_farm_pack_nav.pas + Core.
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
   //SetLogin('DCPspoil1', 'ASD123qwe');
 
-  // zone file in Library\Zones ('' = the zone that is active in the bot)
+  // zone file in Library\Zones ('' = the zone that is active in the bot): "are we on the spot"
   SetZone('CRUMA_MORDEO_1.zmap');
+  // nav grid (Library\Nav, painted in nav_view.html): the map for runs AND the pull area -
+  // mobs are pulled only on its walkable cells
+  SetNavGrid('CRUMA_MORDEO_1.navgrid');
   SetConfig('alarm.xml');                                            // Library\Configurations
   // Aden gatekeeper -> spot (no SetTeleport and no SetPath = stay mode: farm where started)
   // SetTeleport('_bbs_teleport?id=...&fromtown=6');
@@ -44,7 +47,43 @@ begin
   //]);
 
   // pack farm: pack size, mass spoil skill, mass sweep skill, [mob IDs] ([0] = any mob in the zone)
-  SetPackFarm(15, 302, 444, [20215]);
+  SetPackFarm(8, 302, 444, [20215]);
+  // farm mode: FARM_PACK = pull a pack -> round a corner (default); FARM_SINGLE = run over the
+  // location and kill the mobs one by one where they stand (patrol when none near); FARM_AUTO =
+  // many free mobs near -> a pack round a corner, few -> one by one
+  // no line: FARM_PACK, or FARM_ROOMS by itself when the nav map has rooms (drawn in nav_view.html)
+  // SetFarmMode(FARM_PACK);
+  // rooms: another player in the room this many seconds -> leave it (0 = at once, -1 = never mind) [60]
+  // SetRoomPlayers(60);
+  // SetPull('single_range', 3000);     // one by one: mobs farther than this (by the way) are not taken
+  // SetPull('pack_density', 0);        // auto: this many free mobs within 1500 -> a pack [0 = half the pack]
+  // SetPull('overshoot', 150);         // running at a mob, click this far past it (no stops) [150]
+  // mobs never pulled / not fought (archers that shoot from their place...): IDs
+  // SetPullIgnore([12345, 67890]);
+
+  // pull range: with a pack behind us free mobs farther than this from us are not taken [0 = any]
+  SetPull('pull_range', 3000);
+  // a pack mob farther than this from us loses us: stop and zigzag until it catches up [0 = off]
+  SetPull('leash_range', 1000);       // the most lagging pack mob farther than 85% of this ->
+                                       // zigzag across the way to it until it is back under 60%
+  // SetPull('zig', 180);               // zigzag: this far to each side [180]
+
+  // fight round a wall corner found on the nav map (the pack runs round it and bunches up),
+  // corners within this distance; none found -> the AddCorner points below
+  SetAutoCorner(600);
+  // perfect farm spots marked with #f in nav_trace_run (F lines of this file in Library\Nav): taken
+  // first when one fits the pack (it does not see the spot, no run through it), else the corner above
+  SetFarmSpots('CRUMA_MORDEO_1.navtrace');
+
+  // pull tuning (Core\mob_pull.pas, defaults in brackets) - uncomment to change:
+  // SetPull('touch', 120);             // this close to a free mob = it should aggro [120]
+  // SetPull('touch_wait_ms', 800);     // nobody on us, next to a mob this long without aggro -> hit it [800]
+  // SetPull('extra_range', 300);       // pack full: still take free mobs this close on the way [300]
+  // SetPull('min_hp', 50);             // HP % below this -> pull ends [50]
+  // SetPull('nogain_ms', 15000);       // no new aggro this long -> pull ends [15000]
+  // SetPull('max_ms', 60000);          // max time of one pull [60000]
+  // SetPull('pack_mult', 2);           // this many packs on us -> pull ends at once [2]
+  // SetPull('grid_tol', 48);           // a mob this close to a walkable cell still counts [48]
 
   // corner points: after the pull we run to the nearest one (within 25) and the pack stacks there
   AddCorner(23962, 118963, -12112);

@@ -1,0 +1,82 @@
+uses SysUtils;
+uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
+
+// the bot sends game events only to the script itself - pass them on to the library; do not remove
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  SpoilOnAction(Action, P1, P2);
+end;
+
+// MOS rooms. Spoiler WITHOUT the interface, by the rooms of the nav map MOS_1.navgrid (drawn in
+// Library\Nav\nav_view.html: rooms, farm spots, the safe point): the room with the most mobs expected
+// is farmed empty (pack round a corner / one by one - as set for the room), then the next; nowhere
+// enough mobs -> waits in the best room. Character / fight settings as in it_red_2.
+// Only data here, the logic is in spot_farm_pack_nav.pas + Core.
+
+begin
+  // account: log in at start and after a disconnect (remove the line = no auto login)
+  SetLogin('DCPspoil1', 'ASD123qwe');
+
+  // zone file in Library\Zones: "are we on the spot"
+  SetZone('MOS_1.zmap');
+  // nav map (Library\Nav): runs, the pull area, the rooms, the farm spots and the safe point
+  SetNavGrid('MOS_1.navgrid');
+  SetConfig('alarm.xml');                                            // Library\Configurations
+
+  // watched buff ID + buff bypasses (sent in this order)
+  SetBuff(1204, [
+    '_bbs_buffer_show',
+    'book_use?name=s&pre=0&target=Player'
+  ]);
+
+  // own buffs: the buff is gone -> cast the skill on self (one line per buff)
+  AddSelfBuff(421, 0);
+
+  // pack farm: pack size, mass spoil skill, mass sweep skill, [mob IDs] - the MOS mobs as in mos_1
+  SetPackFarm(6, 302, 444, [22126]);
+  // farm by the rooms of the nav map (A..E with their own minimum / mode / priority)
+  SetFarmMode(FARM_ROOMS);
+  // only mobs on our floor (as in mos_1)
+  SetZRange(300);
+  // mobs never pulled / not fought (archers that shoot from their place...): IDs
+  // SetPullIgnore([12345, 67890]);
+
+  // the farm weapon (put back after the tap and after a disarm)
+  SetWeapon(5634);
+  // the tap weapon and its range; every mob is pulled with a hit of it (no running past)
+  SetPackTap(8800, 150);
+  SetPackTapAlways(true);
+
+  // fight round the corner: hit pack mobs up to this far from the spot, running to them
+  SetCornerRadius(80);
+  // no farm spot of the room fits the pack -> look for a corner on the map this far
+  SetAutoCorner(600);
+
+  // debug: 0 = quiet, 1 = a [State] line on every change, 2 = also a table of the rooms every 15 s
+  SetDebug(2);
+
+  // rooms: another player in the room this many seconds -> leave it (0 = at once, -1 = never mind) [60]
+  SetRoomPlayers(60);
+
+  // pull tuning (Core\mob_pull.pas, defaults in brackets) - uncomment to change:
+  // SetPull('pull_range', 3000);       // with a pack behind us free mobs farther than this are not taken [0 = any]
+  // SetPull('leash_range', 900);       // the most lagging pack mob farther than 85% of this -> zigzag [0 = off]
+  // SetPull('single_range', 3000);     // one by one: mobs farther than this (by the way) are not taken
+  // SetPull('overshoot', 150);         // running at a mob, click this far past it (no stops) [150]
+  // SetPull('touch', 120);             // this close to a free mob = it should aggro [120]
+  // SetPull('min_hp', 50);             // HP % below this -> pull ends [50]
+  // SetPull('nogain_ms', 15000);       // no new aggro this long -> pull ends [15000]
+
+  // XP gain off (exp?state=off): true = no XP, false = normal XP
+  SetExpOff(false);
+
+  // alerts: private messages + death + champions are ON by default
+  // SetPlayerAlert(2000);              // player (not party/clan) closer than N; default 0 = off
+
+  // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
+  AddSupply(SOULSHOT_A,               5000, 15000);
+  AddSupply(MANA_DRUG,                100, 400);
+  AddSupply(HEALING_POTION,           150, 500);
+
+  RunFarm();
+end.

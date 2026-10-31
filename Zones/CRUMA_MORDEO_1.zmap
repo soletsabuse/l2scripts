@@ -2,24 +2,21 @@
 <zone>
 	<ExternalPoly>
 		<points>
-			<point x="22098" y="116483"/>
-			<point x="24430" y="116416"/>
-			<point x="24457" y="120865"/>
-			<point x="22058" y="120758"/>
+			<point x="23738" y="116416"/>
+			<point x="24418" y="116416"/>
+			<point x="24418" y="117736"/>
+			<point x="24458" y="117736"/>
+			<point x="24458" y="120856"/>
+			<point x="22058" y="120776"/>
+			<point x="22098" y="116496"/>
+			<point x="22338" y="116496"/>
+			<point x="22338" y="116456"/>
+			<point x="23738" y="116456"/>
 		</points>
 	</ExternalPoly>
 	<InternalPolies>
 		<poly>
-			<points>
-				<point x="22807" y="116666"/>
-				<point x="23053" y="116666"/>
-				<point x="23053" y="118331"/>
-				<point x="23971" y="118323"/>
-				<point x="23963" y="119107"/>
-				<point x="23030" y="119114"/>
-				<point x="23023" y="120554"/>
-				<point x="22807" y="120562"/>
-			</points>
+			<points/>
 		</poly>
 	</InternalPolies>
 </zone>

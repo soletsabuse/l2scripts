@@ -1,0 +1,894 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Навмеш</title>
+<style>
+  :root { --bg: #0d1014; --panel: #171c22; --panel2: #1e252d; --line: #2a333d; --text: #dfe5ec; --muted: #8a96a3; --accent: #4fb3ff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.4 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
+  #bar { position: absolute; top: 0; left: 0; right: 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--line); z-index: 2; }
+  #bar b { font-size: 14px; margin-right: 6px; }
+  .sep { width: 1px; height: 22px; background: var(--line); }
+  button, label.btn, input[type=number] { background: var(--panel2); color: var(--text); border: 1px solid #34404c;
+    border-radius: 6px; padding: 5px 10px; font: inherit; }
+  button, label.btn { cursor: pointer; } button:hover, label.btn:hover { border-color: var(--accent); }
+  button.on { background: #1d3a55; border-color: var(--accent); }
+  button.primary { background: #23507a; border-color: var(--accent); }
+  input[type=number] { width: 60px; }
+  input[type=range] { width: 110px; }
+  .muted { color: var(--muted); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+  #levels { display: flex; gap: 4px; }
+  #levels button { padding: 3px 7px; font-size: 12px; }
+  #info { position: absolute; left: 16px; bottom: 12px; right: 16px; color: var(--muted); font-size: 12px; z-index: 2;
+    background: #0d1014cc; padding: 6px 10px; border-radius: 6px; pointer-events: none; }
+  #info .warn { color: #ffb03b; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  #rooms { position: absolute; right: 12px; top: 96px; width: 330px; max-height: 60%; overflow-y: auto; z-index: 2;
+    background: #171c22ee; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: none; }
+  #rooms h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+  #rooms .r { display: flex; gap: 4px; align-items: center; margin: 4px 0; padding: 3px; border-radius: 6px; }
+  #rooms .r.sel { background: #1d3a55; }
+  #rooms input, #rooms select { background: var(--panel2); color: var(--text); border: 1px solid #34404c; border-radius: 5px;
+    padding: 3px 5px; font: inherit; }
+  #rooms input.n { width: 48px; } #rooms input.m, #rooms input.p { width: 44px; }
+  #rooms .x { padding: 2px 7px; }
+  #rooms .muted { font-size: 11px; }
+  /* ===== settings view ===== */
+  #cfg { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; overflow-y: auto; background: var(--bg); z-index: 4; display: none; padding: 16px 16px 40px; }
+  #cfg .head, #cfg .grid { max-width: 1440px; margin: 0 auto; }
+  #cfg .head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 14px; }
+  #cfg .head h1 { font-size: 18px; margin: 0 8px 0 0; font-weight: 600; }
+  #cfg .head .sp { flex: 1; }
+  #cfg .chips { display: flex; flex-wrap: wrap; gap: 6px; max-width: 1440px; margin: 0 auto 14px; }
+  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .chip.ok { border-color: #2e6b4a; color: #8be3b2; } .chip.warn { border-color: #7a5a1c; color: #ffcf70; }
+  #cfg .grid { columns: 400px; column-gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 10px; break-inside: avoid; margin-bottom: 14px; }
+  .card h2 { margin: 0; font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card h2 .ic { width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; background: #1d3a55; font-size: 14px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+  .fld { display: grid; grid-template-columns: 160px 1fr; gap: 3px 12px; align-items: center; padding: 7px 0 7px 8px; border-top: 1px solid #222a33; border-left: 2px solid transparent; }
+  .fld.set { border-left-color: var(--accent); }
+  .fld > label { color: #c7d0d9; }
+  .fld .h { grid-column: 2; color: var(--muted); font-size: 11.5px; }
+  .fld input[type=text], .fld input[type=password], .fld input[type=number], .fld select, .fld textarea, .rw input, .rw select {
+    width: 100%; background: var(--panel2); color: var(--text); border: 1px solid #34404c; border-radius: 6px; padding: 5px 8px; font: inherit; }
+  .fld textarea { resize: vertical; min-height: 54px; font-family: Consolas, monospace; font-size: 12px; }
+  .fld input:focus, .fld select:focus, .fld textarea:focus, .rw input:focus, .rw select:focus { outline: none; border-color: var(--accent); }
+  .fld input::placeholder, .rw input::placeholder { color: #5d6875; }
+  .tg { position: relative; width: 38px; height: 22px; display: inline-block; }
+  .tg input { opacity: 0; width: 0; height: 0; }
+  .tg span { position: absolute; inset: 0; background: #34404c; border-radius: 22px; cursor: pointer; transition: .15s; }
+  .tg span::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #dfe5ec; border-radius: 50%; transition: .15s; }
+  .tg input:checked + span { background: #2f7bbf; } .tg input:checked + span::before { transform: translateX(16px); }
+  .rows { display: flex; flex-direction: column; gap: 5px; }
+  .rw { display: grid; gap: 5px; align-items: center; }
+  .rw .x, .addrow { padding: 3px 8px; }
+  .addrow { justify-self: start; font-size: 12px; }
+  details.adv { margin-top: 6px; } details.adv summary { cursor: pointer; color: var(--muted); padding: 6px 0; font-size: 12px; }
+  #scriptBox { position: absolute; inset: 0; background: #000a; z-index: 6; display: none; place-items: center; padding: 16px; }
+  #scriptBox > div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; width: min(760px, 100%); }
+  #scriptBox textarea { width: 100%; height: 340px; background: #0b0e12; color: #cfe3ff; border: 1px solid var(--line); border-radius: 6px;
+    font: 12px/1.5 Consolas, monospace; padding: 10px; resize: vertical; }
+  #scriptBox .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  @media (max-width: 520px) { #cfg .grid { columns: 1; } .fld { grid-template-columns: 1fr; } .fld .h { grid-column: 1; } }
+  #toast { position: absolute; top: 96px; left: 50%; transform: translateX(-50%); background: #23507a;
+    padding: 6px 12px; border-radius: 6px; display: none; z-index: 3; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <b>Навмеш</b>
+  <button id="open">Открыть…</button><input id="file" type="file" accept=".zmap,.navtrace,.navgrid,.txt" multiple hidden>
+  <button id="save" class="primary">Сохранить .navgrid</button>
+  <button id="cfgBtn">⚙ Настройки</button>
+  <span class="sep"></span>
+  <button data-color="good"><span class="sw" style="background:#3ddc84"></span>Проход</button>
+  <button data-color="bad"><span class="sw" style="background:#ff5d6c"></span>Стена</button>
+  <span class="sep"></span>
+  <button data-tool="brush">🖌 Кисть</button>
+  <button data-tool="fill">🪣 Заливка</button>
+  <button data-tool="route"><span class="sw" style="background:#ff9f1c"></span>Путь A→B</button>
+  <span class="sep"></span>
+  <button data-tool="room">▱ Комната</button>
+  <button data-tool="spot"><span class="sw" style="background:#c792ea"></span>Точка фарма</button>
+  <button data-tool="safe"><span class="sw" style="background:#4fb3ff"></span>Сейф</button>
+  <button data-tool="node" title="своя точка графа: бот бегает и через неё"><span class="sw" style="background:#ffffff"></span>Нода</button>
+  <span class="muted">кисть</span><input id="brush" type="range" min="1" max="100" value="1"><span id="brushV" class="muted">1</span>
+  <label class="muted"><input id="byTrace" type="checkbox" checked> заливка до линий пробега</label>
+  <button id="regen" class="primary">Перегенерить навмеш</button>
+  <button id="undo">↶</button>
+  <span class="sep"></span>
+  <span class="muted">клетка</span><input id="cell" type="number" value="4" min="2" step="2">
+  <span class="muted">карта</span><span id="levels"></span>
+  <span class="muted">сдвиг</span><input id="cdx" type="number" value="0" step="16"><input id="cdy" type="number" value="0" step="16">
+</div>
+<canvas id="cv"></canvas>
+<div id="info">Открой зону .zmap (Library\Zones) — она станет начальным навмешем; пробег .navtrace — голубая линия-ориентир;
+  скрипт .txt — его углы и сейф-поинт. Выбери цвет «Проход» / «Стена» и крась «Кистью» или «Заливкой» (клик внутри фигуры,
+  как в пейнте; линии пробега — стенки-помощники), потом «Перегенерить навмеш» и проверь «Путь A→B».
+  «Комната» — клики по углам, Enter / клик в первый угол — закрыть, тянуть угол — двигать; настройки комнат — панель справа.
+  «Точка фарма» — клик ставит, клик по точке убирает. «Сейф» — клик. «Нода» — своя точка графа (клик ставит / убирает). «⚙ Настройки» — настройки скрипта фарма.
+  Всё сохраняется в .navgrid.
+  Колесо — масштаб, правая кнопка или Пробел — двигать, Ctrl+Z — отмена.</div>
+<div id="rooms"></div>
+<div id="cfg"></div>
+<div id="scriptBox"><div>
+  <b>Скрипт для бота</b> <span class="muted">— положи в Library\Scripts как .txt; все настройки он берёт из .navgrid</span>
+  <textarea id="scriptText" readonly spellcheck="false"></textarea>
+  <div class="row"><button id="scriptCopy" class="primary">Скопировать</button><button id="scriptClose">Закрыть</button></div>
+</div></div>
+<div id="toast"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const cv = $('cv'), ctx = cv.getContext('2d'), TILE = 32768;
+let zone = null, strokes = [], seeds = [], grid = null, graph = null, gridImg = null;
+let fname = 'map';
+let scale = 0.004, ox = 0, oy = 0, dpr = 1, level = '', tool = 'brush', color = 'good', route = { a: null, b: null, path: null };
+let history = [], mouse = null, leak = null;
+let unodes = [];                                   // own graph nodes ("N x y")
+let rooms = [], spots = [], safe = null, roomDraw = null, roomDrag = null, selRoom = -1;   // map extras
+const ROOM_COL = ['#ffd166', '#5ee6ff', '#ff9f1c', '#c792ea', '#3ddc84', '#ff5d6c', '#4fb3ff', '#f78fb3'];
+const tiles = {};
+const W = () => cv.clientWidth, H = () => cv.clientHeight;
+const sx = x => x * scale + ox, sy = y => y * scale + oy, wx = p => (p - ox) / scale, wy = p => (p - oy) / scale;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function toast(m) { const t = $('toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', 2800); }
+function inPoly(p, pts) { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const a = pts[i], b = pts[j];
+  if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c; } return c; }
+
+// ===== grid: 1 = walkable, 0 = not =====
+function newGrid(x0, y0, x1, y1, cell) {
+  return { x0: Math.floor(x0 / cell) * cell - cell * 4, y0: Math.floor(y0 / cell) * cell - cell * 4, cell,
+    w: Math.ceil((x1 - x0) / cell) + 9, h: Math.ceil((y1 - y0) / cell) + 9, z: 0, f: null };
+}
+function gridFromZone() {
+  const cell = +$('cell').value || 4, xs = zone.outer.map(p => p[0]), ys = zone.outer.map(p => p[1]);
+  const g = newGrid(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys), cell);
+  g.f = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    const p = [g.x0 + cx * cell + cell / 2, g.y0 + cy * cell + cell / 2];
+    g.f[cy * g.w + cx] = inPoly(p, zone.outer) && !zone.inner.some(h => inPoly(p, h)) ? 1 : 0;
+  }
+  return g;
+}
+// painting outside the grid: the grid grows
+function ensure(x, y) {
+  const cell = +$('cell').value || 4;
+  if (!grid) { grid = newGrid(x - 500, y - 500, x + 500, y + 500, cell); grid.f = new Uint8Array(grid.w * grid.h); }
+  const g = grid, pad = g.cell * 20;
+  let nx0 = g.x0, ny0 = g.y0, nx1 = g.x0 + g.w * g.cell, ny1 = g.y0 + g.h * g.cell;
+  if (x - pad < nx0) nx0 = Math.floor((x - pad - g.x0) / g.cell) * g.cell + g.x0;
+  if (y - pad < ny0) ny0 = Math.floor((y - pad - g.y0) / g.cell) * g.cell + g.y0;
+  if (x + pad > nx1) nx1 = x + pad;
+  if (y + pad > ny1) ny1 = y + pad;
+  if (nx0 === g.x0 && ny0 === g.y0 && nx1 <= g.x0 + g.w * g.cell && ny1 <= g.y0 + g.h * g.cell) return;
+  const w = Math.ceil((nx1 - nx0) / g.cell), h = Math.ceil((ny1 - ny0) / g.cell), f = new Uint8Array(w * h);
+  const dx = (g.x0 - nx0) / g.cell, dy = (g.y0 - ny0) / g.cell;
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) f[(cy + dy) * w + cx + dx] = g.f[cy * g.w + cx];
+  grid = { ...g, x0: nx0, y0: ny0, w, h, f }; gridImg = null;
+}
+function paint(p) {
+  ensure(p[0], p[1]);
+  const g = grid, r = +$('brush').value, v = color === 'good' ? 1 : 2;
+  const cx = Math.floor((p[0] - g.x0) / g.cell), cy = Math.floor((p[1] - g.y0) / g.cell);
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (dx * dx + dy * dy > r * r) continue;
+    const ax = cx + dx, ay = cy + dy; if (ax < 0 || ay < 0 || ax >= g.w || ay >= g.h) continue;
+    g.f[ay * g.w + ax] = v;
+  }
+  gridImg = null; graph = null; route.path = null;
+}
+// paint bucket. Cells: 0 = nothing / not scanned, 1 = walkable, 2 = wall. "Walkable" from an empty
+// cell spreads over empty and walkable cells and stops at walls and (if on) the run lines - a room
+// with scanned rows in it is filled whole; "wall" from an empty cell fills only empty cells (inside a
+// pillar). From a cell of the other colour: that colour's area is repainted. The cells under the
+// lines next to the fill get it too
+function fillAt(p) {
+  ensure(p[0], p[1]);
+  const g = grid, n = g.w * g.h, v = color === 'good' ? 1 : 2;
+  const start = Math.floor((p[1] - g.y0) / g.cell) * g.w + Math.floor((p[0] - g.x0) / g.cell);
+  const v0 = g.f[start];
+  if (v0 === v) { toast('Тут уже ' + (v === 1 ? 'проход' : 'стена')); return; }
+  const through = c => v0 === 0 && v === 1 ? g.f[c] !== 2 : g.f[c] === v0;
+  // run lines as walls for the fill: the lines, stroke ends closer than 64 joined, then made 1 cell
+  // thicker all round - no slipping through between points or across a diagonal
+  const thin = new Uint8Array(n), line = new Uint8Array(n);
+  if ($('byTrace').checked) {
+    const mark = (a, b) => { const k = Math.trunc(dist(a, b) / (g.cell / 3)) + 1;
+      for (let j = 0; j <= k; j++) { const x = a[0] + (b[0] - a[0]) * j / k, y = a[1] + (b[1] - a[1]) * j / k;
+        const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+        if (cx >= 0 && cy >= 0 && cx < g.w && cy < g.h) thin[cy * g.w + cx] = 1; } };
+    strokes.forEach((s, si) => {
+      for (let i = 0; i + 1 < s.length; i++) mark(s[i], s[i + 1]);
+      for (const e of [0, s.length - 1]) { let best = null, bd = 64;
+        strokes.forEach((o, oi) => o.forEach((q, qi) => { if (oi === si && Math.abs(qi - e) < 15) return;
+          const d = dist(s[e], q); if (d < bd) { bd = d; best = q; } }));
+        if (best) mark(s[e], best); }
+    });
+    for (let c = 0; c < n; c++) if (thin[c]) { const x = c % g.w;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const ax = x + dx, e = c + dy * g.w + dx;
+        if (ax >= 0 && ax < g.w && e >= 0 && e < n) line[e] = 1; } }
+  }
+  if (line[start]) { toast('Клик прямо на линии пробега — кликни внутри фигуры'); return; }
+  const seen = new Uint8Array(n), list = [], q = [start]; seen[start] = 1; let edge = false;
+  while (q.length) {
+    const c = q.pop(); list.push(c); const x = c % g.w, y = (c - x) / g.w;
+    if (x === 0 || y === 0 || x === g.w - 1 || y === g.h - 1) edge = true;
+    for (const nb of [x < g.w - 1 ? c + 1 : -1, x > 0 ? c - 1 : -1, c + g.w, c - g.w])
+      if (nb >= 0 && nb < n && !seen[nb] && through(nb) && !line[nb]) { seen[nb] = 1; q.push(nb); }
+  }
+  if (edge) {                          // out of the figure: nothing is filled, the leak is shown
+    leak = { cells: list, until: Date.now() + 3000 }; draw(); setTimeout(draw, 3100);
+    toast('Фигура не замкнута — заливка ушла наружу (оранжевое). Закрой щель кистью и залей снова');
+    return;
+  }
+  snapshot();
+  for (const c of list) g.f[c] = v;
+  for (let c = 0; c < n; c++) if (line[c] && through(c)) { const x = c % g.w;
+    if ((x < g.w - 1 && seen[c + 1]) || (x > 0 && seen[c - 1]) || (c + g.w < n && seen[c + g.w]) || (c - g.w >= 0 && seen[c - g.w])) g.f[c] = v; }
+  gridImg = null; graph = null; route.path = null; draw(); infoLine();
+}
+function snapshot() { if (!grid) return; history.push({ ...grid, f: grid.f.slice() }); if (history.length > 40) history.shift(); }
+function undo() { if (!history.length) return; grid = history.pop(); gridImg = null; graph = null; route.path = null; draw(); }
+
+// ===== graph: the bot's algorithm (Core\nav_move.pas) =====
+function regen() {
+  if (!grid) { toast('Нет навмеша: открой зону или покрась «Проход»'); return; }
+  // as the bot: corners and lines by the real map (a narrow passage never vanishes); a corner node is
+  // moved off the wall by up to 40 units where there is room
+  const g = grid, safe = g.f.map(v => v === 1 ? 1 : 0);
+  const R = Math.max(1, Math.floor((40 + Math.floor(g.cell / 2)) / g.cell));
+  const sc = (cx, cy) => cx >= 0 && cy >= 0 && cx < g.w && cy < g.h && safe[cy * g.w + cx];
+  const nodes = unodes.map(p => [p[0], p[1]]), own = nodes.length;
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) { if (!safe[cy * g.w + cx]) continue;
+    for (let k = 0; k < 4; k++) { const dx = k % 2 === 0 ? 1 : -1, dy = k < 2 ? 1 : -1;
+      if (sc(cx + dx, cy + dy) || !sc(cx + dx, cy) || !sc(cx, cy + dy)) continue;
+      let px = cx, py = cy;
+      for (let j = 1; j <= R; j++) {
+        if (sc(cx - dx * j, cy - dy * j) && sc(cx - dx * j + dx, cy - dy * j) && sc(cx - dx * j, cy - dy * j + dy)) { px = cx - dx * j; py = cy - dy * j; }
+        else break; }
+      const X = g.x0 + px * g.cell + Math.floor(g.cell / 2), Y = g.y0 + py * g.cell + Math.floor(g.cell / 2);
+      if (!nodes.some(p => Math.abs(p[0] - X) <= 64 && Math.abs(p[1] - Y) <= 64) && nodes.length < 600) nodes.push([X, Y]);
+      break; } }
+  graph = { safe, nodes, edges: [], own };
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++)
+    if (dist(nodes[i], nodes[j]) <= 2500 && lineFree(nodes[i], nodes[j], true)) graph.edges.push([i, j]);
+  // only to look at: a link that is almost the same as going through a third node is dropped (the
+  // bot keeps them all - its routes are the same)
+  const adj = nodes.map(() => new Map()), key = (a, b) => a < b ? a + ',' + b : b + ',' + a;
+  for (const [a, b] of graph.edges) { const d = dist(nodes[a], nodes[b]); adj[a].set(b, d); adj[b].set(a, d); }
+  const gone = new Set();
+  for (const [a, b] of [...graph.edges].sort((p, q) => dist(nodes[q[0]], nodes[q[1]]) - dist(nodes[p[0]], nodes[p[1]]))) {
+    if (a < own || b < own) continue;   // own nodes: every link shown
+    const d = adj[a].get(b);
+    for (const [k, dak] of adj[a]) { if (k === b) continue; const dkb = adj[k].get(b);
+      if (dkb !== undefined && dak + dkb <= d * 1.02) { adj[a].delete(b); adj[b].delete(a); gone.add(key(a, b)); break; } }
+  }
+  graph.edges = graph.edges.filter(([a, b]) => !gone.has(key(a, b)));
+  if (route.a && route.b) route.path = findRoute(route.a, route.b);
+  draw(); infoLine();
+}
+function freeAt(x, y, safe) { const g = grid; if (x < g.x0 || y < g.y0) return true;
+  const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+  if (cx >= g.w || cy >= g.h) return true; return graph.safe[cy * g.w + cx] === 1; }
+function lineFree(a, b, safe) {
+  // checked every half cell, but not finer than every 8 units (as the bot: tiny cells stay fast)
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), n = Math.trunc(L / Math.max(grid.cell * 0.5, 8)) + 1;
+  const at = k => freeAt(Math.round(a[0] + dx * k / n), Math.round(a[1] + dy * k / n), false);
+  let k0 = 0, k1 = n;
+  if (!safe) { while (k0 <= n && !at(k0)) k0++; while (k1 >= k0 && !at(k1)) k1--; }
+  for (let k = k0; k <= k1; k++) { const t = k / n;
+    if (!safe && (t * L < 60 || (1 - t) * L < 60)) continue;
+    if (!freeAt(Math.round(a[0] + dx * t), Math.round(a[1] + dy * t), safe)) return false; }
+  return true;
+}
+function components() { const p = graph.nodes.map((_, i) => i), f = x => p[x] === x ? x : (p[x] = f(p[x]));
+  for (const [a, b] of graph.edges) p[f(a)] = f(b); return new Set(graph.nodes.map((_, i) => f(i))).size; }
+function findRoute(A, B) {
+  const P = graph.nodes, n = P.length;
+  if (lineFree(A, B, false)) return [A, B];
+  const D = new Array(n).fill(Infinity), prev = new Array(n).fill(-1), done = new Array(n).fill(false);
+  for (let i = 0; i < n; i++) { const d = dist(A, P[i]); if (d <= 3000 && lineFree(A, P[i], false)) D[i] = d; }
+  const adj = P.map(() => []); for (const [a, b] of graph.edges) { adj[a].push(b); adj[b].push(a); }
+  for (;;) { let u = -1, bd = Infinity; for (let i = 0; i < n; i++) if (!done[i] && D[i] < bd) { bd = D[i]; u = i; }
+    if (u < 0) break; done[u] = true; for (const v of adj[u]) { const al = D[u] + dist(P[u], P[v]); if (al < D[v]) { D[v] = al; prev[v] = u; } } }
+  let e = -1, be = Infinity;
+  for (let i = 0; i < n; i++) if (D[i] < Infinity) { const d = dist(P[i], B); if (d <= 3000 && D[i] + d < be && lineFree(P[i], B, false)) { be = D[i] + d; e = i; } }
+  if (e < 0) return null;
+  const r = []; for (let v = e; v >= 0; v = prev[v]) r.unshift(P[v]);
+  const out = [A]; let cur = A;
+  for (let k = 0; k < r.length; k++) { if (lineFree(cur, B, false)) break; if (k + 1 < r.length && lineFree(cur, r[k + 1], false)) continue; out.push(r[k]); cur = r[k]; }
+  out.push(B); return out;
+}
+function infoLine() {
+  if (!grid) return; const free = grid.f.reduce((a, v) => a + (v === 1 ? 1 : 0), 0);
+  let s = 'Навмеш: ' + free + ' клеток по ' + grid.cell;
+  if (graph) { const c = graph.nodes.length ? components() : 0;
+    s += ', граф ' + graph.nodes.length + ' точек / ' + graph.edges.length + ' связей';
+    if (c > 1) s += ' · <span class="warn">граф из ' + c + ' несвязанных кусков — где-то проход перекрыт или слишком узкий</span>'; }
+  else s += ' · <span class="warn">изменён — нажми «Перегенерить навмеш»</span>';
+  $('info').innerHTML = s;
+}
+
+// ===== files =====
+function parseFile(text, name) {
+  if (/<zone/i.test(text)) {
+    const doc = new DOMParser().parseFromString(text, 'text/xml');
+    const pts = el => [...el.querySelectorAll('point')].map(p => [+p.getAttribute('x'), +p.getAttribute('y')]);
+    const ext = doc.querySelector('ExternalPoly');
+    zone = { outer: ext ? pts(ext) : [], inner: [...doc.querySelectorAll('InternalPolies poly')].map(pts) };
+    if (zone.outer.length >= 3 && (!grid || confirm('Начать навмеш заново по зоне ' + name + '? (OK — да, Отмена — оставить нарисованное, зона будет только контуром)'))) {
+      snapshot(); grid = gridFromZone(); gridImg = null; graph = null; }
+    fname = name.replace(/\.\w+$/, '');
+  } else if (/^\s*S\s+-?\d+\s*$/m.test(text)) {
+    strokes = []; let cur = null;
+    for (const line of text.split(/\r?\n/)) { const f = line.trim().split(/\s+/);
+      if (f[0] === 'S') { cur = []; strokes.push(cur); } else if (f[0] === 'P' && cur) cur.push([+f[1], +f[2]]);
+      else if (f[0] === 'F') addSpot(+f[1], +f[2], +f[3] || 0, true); }   // farm spots (#f) -> the map
+    strokes = strokes.filter(s => s.length >= 2);
+    // the map must cover the run: grow it (or start an empty one) round the run
+    const all = strokes.flat();
+    if (all.length) { const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+      ensure(Math.min(...xs), Math.min(...ys)); ensure(Math.max(...xs), Math.max(...ys)); }
+  } else if (/^G /m.test(text)) {
+    let g = null, row = 0;
+    for (const line of text.split(/\r?\n/)) {
+      if (line.startsWith('G ')) { const f = line.trim().split(/\s+/); g = { x0: +f[1], y0: +f[2], cell: +f[3], w: +f[4], h: +f[5], z: +f[6] || 0 }; g.f = new Uint8Array(g.w * g.h); }
+      else if (line.startsWith('R ') && g && row < g.h) { const s = line.slice(2); for (let cx = 0; cx < g.w; cx++) g.f[row * g.w + cx] = s[cx] === '.' ? 1 : s[cx] === '#' ? 2 : 0; row++; }
+    }
+    if (g) { snapshot(); grid = g; gridImg = null; graph = null; $('cell').value = g.cell; fname = name.replace(/\.\w+$/, '');
+      rooms = []; spots = []; safe = null; unodes = []; cfg = {}; cfgExtra = []; cfgDirty = false; $('save').textContent = 'Сохранить .navgrid';
+      for (const line of text.split(/\r?\n/)) {
+        if (line.startsWith('K ')) cfgParse(line);
+        else if (line.startsWith('Q ')) { const f = line.trim().split(/\s+/), pts = [];
+          for (let i = 5; i + 1 < f.length; i += 2) pts.push([+f[i], +f[i + 1]]);
+          rooms.push({ name: f[1], min: +f[2] || 4, mode: f[3] || 'PACK', prio: +f[4] || 1, pts }); }
+        else if (line.startsWith('F ')) { const f = line.trim().split(/\s+/); spots.push({ x: +f[1], y: +f[2], z: +f[3] || 0 }); }
+        else if (line.startsWith('S ')) { const f = line.trim().split(/\s+/); safe = { x: +f[1], y: +f[2], z: +f[3] || 0 }; }
+        else if (line.startsWith('N ')) { const f = line.trim().split(/\s+/); unodes.push([+f[1], +f[2]]); }
+      }
+      roomsUi(); }
+  } else if (/AddCorner|SetSafePoint|SetPackFarm|RunFarm/.test(text)) {
+    if (/SetPackFarm|AddSupply|SetBuff|SetLogin/.test(text) && confirm('Взять настройки из ' + name + ' во вкладку «Настройки»? (пачка, мобы, оружие, баф, расходка…)')) {
+      const n = importScript(text); dirty(); toast('Из ' + name + ' взято настроек: ' + n + ' — проверь во вкладке «Настройки» и сохрани .navgrid'); }
+    const code = text.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n'); seeds = [];
+    for (const m of code.matchAll(/(AddCorner|SetSafePoint)\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)/g)) {
+      seeds.push({ t: m[1] === 'AddCorner' ? 'C' : 'S', x: +m[2], y: +m[3] }); if (grid && !grid.z) grid.z = +m[4]; }
+  } else toast('Не понял файл ' + name);
+}
+function gridText() {
+  const g = grid, L = ['# navgrid: . walkable, # not', 'G ' + g.x0 + ' ' + g.y0 + ' ' + g.cell + ' ' + g.w + ' ' + g.h + ' ' + (g.z || 0)];
+  const ch = ['?', '.', '#'];
+  for (let cy = 0; cy < g.h; cy++) { let r = 'R '; for (let cx = 0; cx < g.w; cx++) r += ch[g.f[cy * g.w + cx]]; L.push(r); }
+  // the farm script settings (tab Settings), then the map extras: rooms (name min mode prio polygon), farm spots, safe point
+  L.push(...cfgLines());
+  for (const r of rooms) if (r.pts.length >= 3)
+    L.push('Q ' + r.name.replace(/\s+/g, '_') + ' ' + r.min + ' ' + r.mode + ' ' + r.prio + ' ' + r.pts.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
+  for (const p of spots) L.push('F ' + Math.round(p.x) + ' ' + Math.round(p.y) + ' ' + (p.z || 0));
+  if (safe) L.push('S ' + Math.round(safe.x) + ' ' + Math.round(safe.y) + ' ' + (safe.z || 0));
+  for (const p of unodes) L.push('N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  return L.join('\r\n') + '\r\n';
+}
+// the folder of the maps (Library\Nav): the handle of the last opened / saved file, kept in IndexedDB -
+// the open / save dialogs start there (a browser page cannot name a folder by its path)
+let navDir = null;
+function idb(mode, fn) { return new Promise(res => { try { const rq = indexedDB.open('navview', 1);
+  rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+  rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => res(null); };
+  rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+function rememberDir(h) { navDir = h; idb('readwrite', st => st.put(h, 'navDir')); }
+idb('readonly', st => st.get('navDir')).then(h => { if (h && !navDir) navDir = h; });
+// a picker that starts in navDir; a stale handle (folder moved) -> without it
+async function picker(fn, opts) {
+  try { return await fn({ ...opts, id: 'navmaps', ...(navDir ? { startIn: navDir } : {}) }); }
+  catch (e) { if (e.name === 'AbortError' || !navDir) throw e; return await fn({ ...opts, id: 'navmaps' }); }
+}
+async function openFiles() {
+  if (!window.showOpenFilePicker) { $('file').click(); return; }
+  let hs;
+  try { hs = await picker(o => showOpenFilePicker(o), { multiple: true, types: [{ description: 'карты, зоны, пробеги, скрипты',
+    accept: { 'text/plain': ['.navgrid', '.zmap', '.navtrace', '.txt'] } }] }); }
+  catch (e) { if (e.name !== 'AbortError') $('file').click(); return; }
+  const nav = hs.find(h => /\.(navgrid|navtrace)$/i.test(h.name));
+  if (nav) rememberDir(nav);
+  load(await Promise.all(hs.map(h => h.getFile())));
+}
+
+async function save() {
+  if (!grid) { toast('Нечего сохранять'); return; }
+  const name = fname + '.navgrid', text = gridText();
+  try { if (window.showSaveFilePicker) { const h = await picker(o => showSaveFilePicker(o), { suggestedName: name, types: [{ description: 'navgrid', accept: { 'text/plain': ['.navgrid'] } }] });
+    rememberDir(h);
+    const w = await h.createWritable(); await w.write(text); await w.close(); fname = h.name.replace(/\.\w+$/, '');
+    cfgDirty = false; $('save').textContent = 'Сохранить .navgrid'; toast('Сохранено ' + h.name + ' → в скрипте SetNavGrid(\'' + h.name + '\')'); return; } }
+  catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.download = name; a.click();
+  cfgDirty = false; $('save').textContent = 'Сохранить .navgrid';
+  toast('Скачано ' + name + ' — положи в Library\\Nav, в скрипте SetNavGrid(\'' + name + '\')');
+}
+
+// ===== map extras: rooms, farm spots, safe point =====
+function addSpot(x, y, z, quiet) {
+  if (spots.some(p => Math.hypot(p.x - x, p.y - y) < 30)) return;
+  spots.push({ x: Math.round(x), y: Math.round(y), z: z || (grid ? grid.z : 0) || 0 });
+  if (!quiet) toast('Точка фарма ' + spots.length);
+}
+function nextRoomName() { const used = new Set(rooms.map(r => r.name));
+  for (let i = 0; i < 26; i++) { const n = String.fromCharCode(65 + i); if (!used.has(n)) return n; } return 'R' + (rooms.length + 1); }
+function roomsUi() {
+  const box = $('rooms');
+  box.style.display = rooms.length ? 'block' : 'none';
+  box.innerHTML = '<h3>Комнаты</h3><div class="muted">имя · мин. мобов · режим · приоритет</div>';
+  rooms.forEach((r, i) => {
+    const d = document.createElement('div'); d.className = 'r' + (i === selRoom ? ' sel' : '');
+    d.innerHTML = '<span class="sw" style="background:' + ROOM_COL[i % ROOM_COL.length] + '"></span>' +
+      '<input class="n" value="' + r.name + '"><input class="m" type="number" min="1" value="' + r.min + '">' +
+      '<select><option>PACK</option><option>SINGLE</option><option>AUTO</option></select>' +
+      '<input class="p" type="number" min="1" value="' + r.prio + '"><button class="x" title="удалить">✕</button>';
+    const [n, m, sel, pr, x] = [d.querySelector('.n'), d.querySelector('.m'), d.querySelector('select'), d.querySelector('.p'), d.querySelector('.x')];
+    sel.value = r.mode;
+    n.onchange = () => { r.name = n.value.trim() || r.name; draw(); };
+    m.onchange = () => { r.min = Math.max(1, +m.value || 1); };
+    sel.onchange = () => { r.mode = sel.value; };
+    pr.onchange = () => { r.prio = Math.max(1, +pr.value || 1); };
+    x.onclick = () => { rooms.splice(i, 1); selRoom = -1; roomsUi(); draw(); };
+    d.onclick = ev => { if (ev.target.tagName === 'DIV' || ev.target.tagName === 'SPAN') { selRoom = i; roomsUi(); draw(); } };
+    box.appendChild(d);
+  });
+}
+function closeRoom() {
+  if (!roomDraw || roomDraw.pts.length < 3) { roomDraw = null; draw(); return; }
+  rooms.push({ name: nextRoomName(), min: 6, mode: 'PACK', prio: 1, pts: roomDraw.pts });
+  selRoom = rooms.length - 1; roomDraw = null; roomsUi(); draw();
+  toast('Комната ' + rooms[selRoom].name + ' — настройки в панели справа');
+}
+function roomVertexAt(p) { const R = 8 / scale;
+  for (let i = rooms.length - 1; i >= 0; i--) for (let k = 0; k < rooms[i].pts.length; k++)
+    if (dist(p, rooms[i].pts[k]) < R) return [i, k];
+  return null; }
+
+// ===== settings of the farm script: "K key value" lines of the .navgrid (spot_farm_pack_nav.pas, PkSetting) =====
+// cfg: field id -> text ('' / missing = the library default); list fields -> arrays of rows
+let cfg = {}, cfgExtra = [], cfgDirty = false;
+const ITEMS = [[1463, 'Soulshot D'], [1464, 'Soulshot C'], [1465, 'Soulshot B'], [1466, 'Soulshot A'], [1467, 'Soulshot S'],
+  [3948, 'Blessed Spiritshot D'], [3949, 'Blessed Spiritshot C'], [3950, 'Blessed Spiritshot B'], [3951, 'Blessed Spiritshot A'],
+  [3952, 'Blessed Spiritshot S'], [6645, 'Beast Soulshot'], [6647, 'Beast Blessed Spiritshot'], [3031, 'Spirit Ore'],
+  [2508, 'Cursed Bone'], [726, 'Mana Drug'], [728, 'Mana Potion'], [1539, 'Healing Potion']];
+const ITEM_CONST = { SOULSHOT_D: 1463, SOULSHOT_C: 1464, SOULSHOT_B: 1465, SOULSHOT_A: 1466, SOULSHOT_S: 1467,
+  BLESSED_SPIRITSHOT_D: 3948, BLESSED_SPIRITSHOT_C: 3949, BLESSED_SPIRITSHOT_B: 3950, BLESSED_SPIRITSHOT_A: 3951,
+  BLESSED_SPIRITSHOT_S: 3952, BEAST_SOULSHOT: 6645, BEAST_BLESSED_SPIRITSHOT: 6647, SPIRIT_ORE: 3031, CURSED_BONE: 2508,
+  MANA_DRUG: 726, MANA_POTION: 728, HEALING_POTION: 1539 };
+// pull tuning (Core\mob_pull.pas, PullSet): key, label, default, hint
+const PULL = [
+  ['pull_range', 'Дальность заводки', 0, 'с пачкой на хвосте свободных мобов дальше не берёт (0 — любых)'],
+  ['leash_range', 'Поводок', 0, 'моб пачки дальше этого отстаёт — ждём зигзагом (0 — выкл; по дороге на точку тогда 800)'],
+  ['zig', 'Зигзаг', 180, 'настолько в каждую сторону поперёк пути к отставшему'],
+  ['overshoot', 'Перебег', 150, 'клик настолько дальше моба — без остановок'],
+  ['single_range', 'Дальность «по одному»', 3000, 'по одному: мобов дальше (по пути) не берёт'],
+  ['pack_density', 'Плотность для пачки', 0, 'авто: столько свободных в 1500 — собираем пачку (0 — половина пачки)'],
+  ['touch', 'Касание', 120, 'настолько близко к мобу — должен сагриться'],
+  ['touch_wait_ms', 'Ждать агр, мс', 800, 'никого на нас, стоим у моба столько без агра — бьём'],
+  ['extra_range', 'Добор по пути', 300, 'пачка полная, но свободных так близко ещё берём'],
+  ['min_hp', 'Мин. HP %', 50, 'HP ниже — заводка заканчивается'],
+  ['nogain_ms', 'Без нового агра, мс', 15000, 'столько нет нового агра — заводка заканчивается'],
+  ['max_ms', 'Макс. заводка, мс', 60000, 'максимум одной заводки'],
+  ['pack_mult', 'Перебор пачек', 2, 'столько пачек на нас — заводка сразу заканчивается'],
+  ['grid_tol', 'Допуск к сетке', 48, 'моб так близко к зелёной клетке ещё считается']];
+const PULL_ADV = [
+  ['touch_grace_ms', 'Время на агр после касания, мс', 3000], ['touch_max', 'Касаний без агра', 3], ['skip_ms', 'Пропуск застрявшего, мс', 8000],
+  ['ignore_ms', 'Пропуск пассивного, мс', 30000], ['approach_ms', 'Не подойти к мобу, мс', 15000], ['tap_after_ms', 'Тап после пробега, мс', 1000],
+  ['tap_ms', 'Тап: смена+удар, мс', 4000], ['tap_skip_ms', 'Тапнутого не трогать, мс', 10000], ['back_penalty', 'Штраф за моба сзади', 400],
+  ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
+  ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
+const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', skip_champions: '0' };
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'debug', 'ranged_ms',
+  'player_alert', 'champion_alert', 'telegram'];
+const CARDS = [
+  { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
+    { k: 'login.user', l: 'Логин', h: 'пусто — без автологина' },
+    { k: 'login.pass', l: 'Пароль', type: 'pass' },
+    { k: 'zone', l: 'Зона .zmap', ph: 'MOS_1.zmap', h: 'Library\\Zones; пусто — активная зона бота' },
+    { k: 'config', l: 'Конфиг .xml', ph: 'alarm.xml', h: 'Library\\Configurations' }] },
+  { ic: '⚔', t: 'Фарм', sub: 'Что бьём и как', f: [
+    { k: 'pack.size', l: 'Размер пачки', type: 'num', ph: '6', h: 'сколько мобов собирать перед боем' },
+    { k: 'pack.spoil', l: 'Масс спойл', type: 'num', ph: '302', h: 'ID скилла; пусто — 302, 0 — без спойла' },
+    { k: 'pack.sweep', l: 'Масс свип', type: 'num', ph: '444', h: 'ID скилла; пусто — 444, 0 — без свипа' },
+    { k: 'pack.mobs', l: 'ID мобов', type: 'ids', ph: '22126, 22127', h: 'пусто — любой моб в зоне' },
+    { k: 'mode', l: 'Режим', type: 'sel', opts: [['', 'сам: комнаты, если нарисованы, иначе пачки'], ['PACK', 'пачка → за угол'],
+      ['SINGLE', 'по одному, где стоят'], ['AUTO', 'авто: много — пачкой, мало — по одному'], ['ROOMS', 'комнаты']] },
+    { k: 'skip_champions', l: 'Не бить чемпионов', type: 'bool', h: 'чемпионов не заводить и не бить — комната без них считается зачищенной, идём дальше' },
+    { k: 'champ_hp', l: 'Чемпион от MaxHP', type: 'num', ph: '100000', h: 'моб с MaxHP выше этого — чемпион; пусто — порог из «Оповещений»' },
+    { k: 'zrange', l: 'Только свой этаж', type: 'num', ph: '0', h: 'мобы не дальше по высоте (0 — без ограничения)' },
+    { k: 'ignore', l: 'Игнор мобов', type: 'ids', ph: '12345, 67890', h: 'не заводить и не бить (лучники с места…)' }] },
+  { ic: '📍', t: 'Точка фарма и комнаты', sub: 'Где стоять и бить пачку', f: [
+    { k: 'spots_only', l: 'Только мои точки', type: 'bool', h: 'пачку вести только на точки фарма с карты, свои углы не искать' },
+    { k: 'corner_radius', l: 'Радиус у точки', type: 'num', ph: '0', h: 'бьёт мобов пачки до стольки от точки, подбегая (0 — стоит)' },
+    { k: 'auto_corner', l: 'Искать угол в', type: 'num', ph: '0', h: 'нет подходящей точки фарма — угол стены в этом радиусе (0 — выкл)' },
+    { k: 'ranged_ms', l: 'Бьёт издалека, мс', type: 'num', ph: '3000', h: 'моб на нас стоит и не подходит столько — бежим убить его, потом назад (0 — ждать)' },
+    { k: 'room_players', l: 'Игрок в комнате, с', type: 'num', ph: '60', h: 'столько секунд в комнате чужой — уходим (0 — сразу, -1 — плевать). Комнату, где чужого видно издалека, не выбираем' },
+    { k: 'room_avoid', l: 'Не ходить туда, с', type: 'num', ph: '30', h: 'после ухода из-за игрока комнату обходим столько секунд' },
+    { k: '_map', type: 'map' }] },
+  { ic: '🗡', t: 'Оружие', sub: 'Фарм-оружие и тап для заводки', f: [
+    { k: 'weapon', l: 'Фарм-оружие', type: 'num', h: 'ID предмета; пусто — что в руках при старте' },
+    { k: 'tap.id', l: 'Тап-оружие', type: 'num', h: 'моб не агрится от пробега — удар этим и дальше' },
+    { k: 'tap.range', l: 'Дистанция тапа', type: 'num', ph: '80' },
+    { k: 'tap_always', l: 'Тапать всех', type: 'bool', h: 'каждого моба заводить ударом, без пробега мимо' },
+    { k: 'dagger.id', l: 'Кинжал на толстого', type: 'num', h: 'остался один толстый моб — кинжал' },
+    { k: 'dagger.hp', l: 'Толстый от MaxHP', type: 'num', ph: '0', h: '0 — порог чемпиона' }] },
+  { ic: '✨', t: 'Баф', sub: 'Баф через сервис и свои бафы', f: [
+    { k: 'buff.id', l: 'ID бафа (следим)', type: 'num', ph: '1204' },
+    { k: 'buff.bypass', l: 'Байпасы бафа', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'по одному в строке, в этом порядке' },
+    { k: 'selfbuff', l: 'Свои бафы', type: 'rows', cols: [['Скилл', 'num', '421'], ['ID бафа', 'num', '0 = как скилл']], h: 'бафа нет — каст скилла на себя' }] },
+  { ic: '🧲', t: 'Заводка', sub: 'Core\\mob_pull.pas — пусто = по умолчанию (серым)', pull: true },
+  { ic: '🧪', t: 'Расходка', sub: 'Меньше минимума — докупить до максимума', f: [
+    { k: 'supply', type: 'rows', wide: true, cols: [['Предмет', 'item'], ['Мин', 'num', '100'], ['Макс', 'num', '400']] }] },
+  { ic: '🔔', t: 'Оповещения', sub: 'Личка, смерть и чемпионы включены по умолчанию', f: [
+    { k: 'player_alert', l: 'Игрок ближе', type: 'num', ph: '0', h: 'не из пати/клана (0 — выкл)' },
+    { k: 'private_alert', l: 'Личные сообщения', type: 'bool' },
+    { k: 'champion_alert', l: 'Чемпион от MaxHP', type: 'num', ph: '100000', h: '0 — выкл' },
+    { k: 'telegram', l: 'Telegram ключ', type: 'pass', h: 'ключ из кабинета Адреналина' }] },
+  { ic: '🧭', t: 'Дорога на спот', sub: 'Пусто — фармит там, где запущен', f: [
+    { k: 'teleport', l: 'Телепорт из Адена', ph: '_bbs_teleport?id=...&fromtown=6', h: 'байпас ГК' },
+    { k: 'stp.npc', l: 'Второй телепорт: NPC', type: 'num' },
+    { k: 'stp.bypass', l: 'Его байпасы', type: 'lines', h: 'по одному в строке' },
+    { k: 'path', l: 'Путь от точки высадки', type: 'lines', ph: 'x y z\nx y z', h: 'точки x y z по строкам, бег серверным путём' }] },
+  { ic: '🛠', t: 'Прочее', f: [
+    { k: 'exp_off', l: 'Выключить опыт', type: 'bool', h: 'exp?state=off' },
+    { k: 'debug', l: 'Отладка', type: 'sel', opts: [['', 'по умолчанию (состояния)'], ['0', 'тихо'], ['1', '[State] при смене'], ['2', '[State] + таблица комнат']] }] }];
+
+const ids = s => (s || '').split(/[^\d]+/).filter(Boolean).join(', ');
+const cv0 = k => (cfg[k] === undefined ? '' : String(cfg[k])).trim();
+function cfgParse(line) {
+  const m = line.match(/^K\s+(\S+)\s*(.*)$/); if (!m) return;
+  const key = m[1].toLowerCase(), rest = m[2].trim(), f = rest.split(/\s+/).filter(Boolean), tail = n => f.slice(n).join(' ');
+  const list = (k, row) => (cfg[k] = cfg[k] || []).push(row);
+  switch (key) {
+    case 'login': cfg['login.user'] = f[0] || ''; cfg['login.pass'] = f[1] || ''; break;
+    case 'buff': cfg['buff.id'] = f[0] || ''; cfg['buff.bypass'] = tail(1).split('|').map(s => s.trim()).filter(Boolean).join('\n'); break;
+    case 'second_tp': cfg['stp.npc'] = f[0] || ''; cfg['stp.bypass'] = tail(1).split('|').map(s => s.trim()).filter(Boolean).join('\n'); break;
+    case 'path': { const L = []; for (let i = 0; i + 2 < f.length; i += 3) L.push(f.slice(i, i + 3).join(' ')); cfg.path = L.join('\n'); break; }
+    case 'pack': cfg['pack.size'] = f[0] || ''; cfg['pack.spoil'] = f[1] || ''; cfg['pack.sweep'] = f[2] || ''; cfg['pack.mobs'] = ids(tail(3)); break;
+    case 'tap': cfg['tap.id'] = f[0] || ''; cfg['tap.range'] = f[1] || ''; break;
+    case 'dagger': cfg['dagger.id'] = f[0] || ''; cfg['dagger.hp'] = f[1] || ''; break;
+    case 'ignore': cfg.ignore = ids(rest); break;
+    case 'pull': if (f[0]) cfg['pull.' + f[0].toLowerCase()] = f[1] || ''; break;
+    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0']); break;
+    case 'supply': list('supply', [f[0] || '', f[1] || '', f[2] || '']); break;
+    default: if (SIMPLE.includes(key) || key in BOOLS) cfg[key] = rest; else cfgExtra.push(line.trim());
+  }
+}
+// the farm goes by the rooms: mode ROOMS, or no mode and rooms are drawn
+function cfgRooms() { const m = cv0('mode'); return m === 'ROOMS' || (m === '' && rooms.length > 0); }
+function cfgLines() {
+  const L = [], v = cv0, put = (...a) => L.push('K ' + a.join(' ').trim());
+  if (v('login.user')) put('login', v('login.user'), v('login.pass'));
+  for (const k of ['zone', 'config', 'teleport']) if (v(k)) put(k, v(k));
+  if (v('buff.id')) put('buff', v('buff.id'), v('buff.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
+  if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
+  if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
+  for (const r of cfg.selfbuff || []) if (+r[0]) put('selfbuff', +r[0], +r[1] || 0);
+  if (v('pack.size') || cfgRooms()) put('pack', v('pack.size') || 0, v('pack.spoil') === '' ? 302 : v('pack.spoil'), v('pack.sweep') === '' ? 444 : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
+  if (v('tap.id')) put('tap', v('tap.id'), v('tap.range') || 0);
+  if (v('dagger.id')) put('dagger', v('dagger.id'), v('dagger.hp') || 0);
+  if (v('ignore')) put('ignore', ids(v('ignore')).replace(/ /g, ''));
+  for (const k of SIMPLE) if (!['zone', 'config', 'teleport'].includes(k) && v(k) !== '') put(k, v(k));
+  for (const k in BOOLS) if (v(k) !== '' && v(k) !== BOOLS[k]) put(k, v(k));
+  for (const [k] of [...PULL, ...PULL_ADV]) if (v('pull.' + k) !== '') put('pull', k, v('pull.' + k));
+  for (const r of cfg.supply || []) if (+r[0] && r[2] !== '') put('supply', +r[0], +r[1] || 0, +r[2] || 0);
+  return L.concat(cfgExtra);
+}
+// settings out of an old script .txt (SetPackFarm, AddSupply...): the same values into the form
+function importScript(text) {
+  const code = text.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+  const call = (name, fn) => { for (const m of code.matchAll(new RegExp('\\b' + name + '\\s*\\(([^;]*)\\)\\s*;', 'g'))) fn(m[1]); };
+  const strs = a => [...a.matchAll(/'([^']*)'/g)].map(m => m[1]);
+  const nums = a => (a.match(/-?\d+/g) || []);
+  const arr = a => { const m = a.match(/\[([^\]]*)\]/); return m ? m[1] : ''; };
+  let n = 0; const set = (k, val) => { cfg[k] = String(val); n++; };
+  call('SetLogin', a => { const s = strs(a); set('login.user', s[0] || ''); set('login.pass', s[1] || ''); });
+  call('SetZone', a => set('zone', strs(a)[0] || ''));
+  call('SetConfig', a => set('config', strs(a)[0] || ''));
+  call('SetTeleport', a => set('teleport', strs(a)[0] || ''));
+  call('SetBuff', a => { set('buff.id', nums(a)[0]); set('buff.bypass', strs(a).join('\n')); });
+  call('SetSecondTeleport', a => { set('stp.npc', nums(a)[0]); set('stp.bypass', strs(a).join('\n')); });
+  call('SetPath', a => { const p = nums(arr(a)), L = []; for (let i = 0; i + 2 < p.length; i += 3) L.push(p.slice(i, i + 3).join(' ')); set('path', L.join('\n')); });
+  call('SetPackFarm', a => { const p = nums(a.replace(/\[.*\]/s, '')); set('pack.size', p[0]); set('pack.spoil', p[1]); set('pack.sweep', p[2]);
+    set('pack.mobs', ids(nums(arr(a)).filter(x => +x > 0).join(','))); });
+  call('SetFarmMode', a => { const m = a.match(/FARM_(\w+)/); if (m) set('mode', m[1]); });
+  call('SetPullIgnore', a => set('ignore', ids(nums(arr(a)).join(','))));
+  call('SetPackTap', a => { const p = nums(a); set('tap.id', p[0]); set('tap.range', p[1] || ''); });
+  call('SetPackDagger', a => { const p = nums(a); set('dagger.id', p[0]); set('dagger.hp', p[1] || ''); });
+  call('SetPackTapAlways', a => set('tap_always', /true/i.test(a) ? '1' : '0'));
+  call('SetExpOff', a => set('exp_off', /true/i.test(a) ? '1' : '0'));
+  call('SetPrivateAlert', a => set('private_alert', /true/i.test(a) ? '1' : '0'));
+  call('SetTelegram', a => set('telegram', strs(a)[0] || ''));
+  for (const [fn, k] of [['SetZRange', 'zrange'], ['SetWeapon', 'weapon'], ['SetCornerRadius', 'corner_radius'], ['SetAutoCorner', 'auto_corner'],
+    ['SetRoomPlayers', 'room_players'], ['SetDebug', 'debug'], ['SetPlayerAlert', 'player_alert'], ['SetChampionAlert', 'champion_alert']])
+    call(fn, a => { const p = nums(a); if (p.length) set(k, p[0]); });
+  call('SetPull', a => { const s = strs(a), p = nums(a.replace(/'[^']*'/g, '')); if (s[0] && p.length) set('pull.' + s[0].toLowerCase(), p[0]); });
+  let sb = false, su = false;
+  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0']); n++; });
+  call('AddSupply', a => { const m = a.match(/^\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)/); if (!m) return; if (!su) { cfg.supply = []; su = true; }
+    cfg.supply.push([String(ITEM_CONST[m[1].toUpperCase()] || +m[1] || ''), m[2], m[3]]); n++; });
+  call('SetSafePoint', a => { const p = nums(a); if (p.length >= 3) safe = { x: +p[0], y: +p[1], z: +p[2] }; });
+  return n;
+}
+
+function mk(tag, props, ...kids) { const e = document.createElement(tag); if (props) for (const k in props) {
+  if (k === 'class') e.className = props[k]; else if (k === 'text') e.textContent = props[k]; else if (k in e) e[k] = props[k]; else e.setAttribute(k, props[k]); }
+  for (const c of kids) if (c != null) e.append(c); return e; }
+function dirty() { cfgDirty = true; $('save').textContent = 'Сохранить .navgrid •'; cfgChips(); }
+function fieldUi(f) {
+  if (f.type === 'map') {
+    const d = mk('div', { class: 'fld' }, mk('label', { text: 'На карте' }),
+      mk('div', { text: rooms.length + ' комнат · ' + spots.length + ' точек фарма · ' + (safe ? 'сейф есть' : 'сейфа нет') }),
+      mk('div', { class: 'h', text: 'рисуются на карте: «Комната», «Точка фарма», «Сейф»' }));
+    return d;
+  }
+  const row = mk('div', { class: 'fld' }), mark = () => row.classList.toggle('set', f.type === 'bool' ? cv0(f.k) !== '' && cv0(f.k) !== BOOLS[f.k] : f.type === 'rows' ? !!(cfg[f.k] || []).length : cv0(f.k) !== '');
+  if (f.wide) row.style.gridTemplateColumns = '1fr'; else row.append(mk('label', { text: f.l || '' }));
+  let inp;
+  const store = s => { s = (s || '').trim(); if (s === '') delete cfg[f.k]; else cfg[f.k] = s; mark(); dirty(); };
+  if (f.type === 'bool') {
+    const c = mk('input', { type: 'checkbox' }); c.checked = (cv0(f.k) || BOOLS[f.k]) === '1';
+    c.onchange = () => { const v = c.checked ? '1' : '0'; if (v === BOOLS[f.k]) delete cfg[f.k]; else cfg[f.k] = v; mark(); dirty(); };
+    inp = mk('label', { class: 'tg' }, c, mk('span'));
+  } else if (f.type === 'sel') {
+    inp = mk('select'); for (const [v, t] of f.opts) inp.append(mk('option', { value: v, text: t })); inp.value = cv0(f.k); inp.onchange = () => { store(inp.value); if (f.k === 'mode') cfgUi(); };
+  } else if (f.type === 'lines') {
+    inp = mk('textarea', { placeholder: f.ph || '', spellcheck: false, rows: 3 }); inp.value = cv0(f.k); inp.oninput = () => store(inp.value);
+  } else if (f.type === 'rows') {
+    inp = mk('div', { class: 'rows' });
+    const cols = f.cols.map(c => c[1] === 'item' ? '2fr' : '1fr').join(' ') + ' auto';
+    const draw = () => { inp.innerHTML = '';
+      (cfg[f.k] || []).forEach((r, i) => {
+        const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
+        f.cols.forEach((c, j) => {
+          let e;
+          if (c[1] === 'item') { e = mk('select'); for (const [id, nm] of ITEMS) e.append(mk('option', { value: id, text: nm }));
+            if (r[j] && !ITEMS.some(x => String(x[0]) === String(r[j]))) e.append(mk('option', { value: r[j], text: 'ID ' + r[j] })); e.value = r[j]; e.onchange = () => { r[j] = e.value; dirty(); }; }
+          else { e = mk('input', { type: 'number', placeholder: c[2] || c[0], title: c[0] }); e.value = r[j] || ''; e.oninput = () => { r[j] = e.value.trim(); dirty(); }; }
+          line.append(e);
+        });
+        line.append(mk('button', { class: 'x', text: '✕', title: 'убрать', onclick: () => { cfg[f.k].splice(i, 1); if (!cfg[f.k].length) delete cfg[f.k]; draw(); mark(); dirty(); } }));
+        inp.append(line);
+      });
+      inp.append(mk('button', { class: 'addrow', text: '+ добавить', onclick: () => {
+        (cfg[f.k] = cfg[f.k] || []).push(f.cols.map(c => c[1] === 'item' ? String(ITEMS[0][0]) : '')); draw(); mark(); dirty(); } }));
+    };
+    draw();
+  } else {
+    inp = mk('input', { type: f.type === 'num' ? 'number' : f.type === 'pass' ? 'password' : 'text', placeholder: f.ph || '', spellcheck: false });
+    inp.value = cv0(f.k);
+    inp.oninput = () => store(inp.value);
+    if (f.type === 'ids') inp.onchange = () => { inp.value = ids(inp.value); store(inp.value); };
+  }
+  row.append(inp);
+  if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
+  mark(); return row;
+}
+function cfgChips() {
+  const box = $('cfgChips'); if (!box) return; box.innerHTML = '';
+  const chip = (t, c) => box.append(mk('span', { class: 'chip ' + (c || ''), text: t }));
+  const v = cv0, mode = v('mode') || (rooms.length ? 'ROOMS' : 'PACK');
+  const MODE = { PACK: 'пачки за угол', SINGLE: 'по одному', AUTO: 'авто', ROOMS: 'комнаты' };
+  chip(v('login.user') ? 'логин ' + v('login.user') : 'без автологина', v('login.user') ? 'ok' : '');
+  if (cfgRooms()) chip('пачка = вся комната · ' + (v('pack.mobs') ? 'мобы ' + v('pack.mobs') : 'любые мобы'), 'ok');
+  else if (v('pack.size')) chip('пачка ' + v('pack.size') + ' · ' + (v('pack.mobs') ? 'мобы ' + v('pack.mobs') : 'любые мобы'), 'ok'); else chip('нет размера пачки — фарм не включится', 'warn');
+  chip('режим: ' + (MODE[mode] || mode), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
+  if (mode === 'ROOMS' && !rooms.length) chip('режим комнат, а комнат на карте нет', 'warn');
+  chip(rooms.length + ' комнат · ' + spots.length + ' точек фарма', rooms.length || spots.length ? 'ok' : '');
+  chip(safe ? 'сейф есть' : 'сейфа нет', safe ? 'ok' : '');
+  if (!v('teleport') && !v('path')) chip('без дороги: фармит где запущен');
+  if ((cfg.supply || []).length) chip('расходка: ' + cfg.supply.length);
+  if (!grid) chip('карта не открыта — сохранять некуда', 'warn');
+}
+function cfgUi() {
+  const box = $('cfg'); box.innerHTML = '';
+  box.append(mk('div', { class: 'head' }, mk('h1', { text: '⚙ Настройки скрипта' }), mk('span', { class: 'muted', text: fname + '.navgrid' }),
+    mk('span', { class: 'sp' }),
+    mk('label', { class: 'btn', text: 'Взять из скрипта .txt…' }, mk('input', { type: 'file', accept: '.txt,.pas', hidden: true, onchange: async e => {
+      const f = e.target.files[0]; if (!f) return; const n = importScript(await f.text()); e.target.value = ''; toast('Из ' + f.name + ' взято настроек: ' + n); dirty(); cfgUi(); } })),
+    mk('button', { text: 'Скрипт для бота', onclick: showScript }),
+    mk('button', { class: 'primary', text: 'Сохранить .navgrid', onclick: save }),
+    mk('button', { text: '← к карте', onclick: () => cfgShow(false) })));
+  box.append(mk('div', { class: 'chips', id: 'cfgChips' }));
+  const gridEl = mk('div', { class: 'grid' });
+  for (const c of CARDS) {
+    const card = mk('div', { class: 'card' }, mk('h2', null, mk('span', { class: 'ic', text: c.ic }), c.t));
+    if (c.sub) card.append(mk('div', { class: 'sub', text: c.sub }));
+    if (c.pull) {
+      for (const [k, l, d, h] of PULL) card.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
+      const adv = mk('details', { class: 'adv' }, mk('summary', { text: 'Тонкая настройка (' + PULL_ADV.length + ')' }));
+      for (const [k, l, d] of PULL_ADV) adv.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d) }));
+      card.append(adv);
+    } else for (const f of c.f) if (!(f.k === 'pack.size' && cfgRooms())) card.append(fieldUi(f));
+    gridEl.append(card);
+  }
+  box.append(gridEl); cfgChips();
+}
+function cfgShow(on) { const box = $('cfg'); box.style.top = $('bar').offsetHeight + 'px';
+  box.style.display = on ? 'block' : 'none'; $('cfgBtn').classList.toggle('on', on); if (on) cfgUi(); }
+function scriptText() {
+  const n = fname + '.navgrid';
+  return ['uses SysUtils;', "uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';", '',
+    '// the bot sends game events only to the script itself - pass them on to the library; do not remove',
+    'procedure OnAction(Action: TL2Action; P1, P2: cardinal);', 'begin', '  SpoilOnAction(Action, P1, P2);', 'end;', '',
+    '// All settings, rooms, farm spots and the safe point are in ' + n + ' (Library\\Nav):',
+    '// open it in Library\\Nav\\nav_view.html, button "Settings". A line after SetNavGrid overrides the file.', '',
+    'begin', "  SetNavGrid('" + n + "');", '  RunFarm();', 'end.', ''].join('\r\n');
+}
+function showScript() { $('scriptText').value = scriptText(); $('scriptBox').style.display = 'grid'; }
+
+// ===== drawing =====
+const LEVELS = ['', '1', '2', '3', '4', '5', '6'];
+function visTiles() { const dx = +$('cdx').value || 0, dy = +$('cdy').value || 0, r = [];
+  const x0 = Math.floor((wx(0) - dx) / TILE) + 20, x1 = Math.floor((wx(W()) - dx) / TILE) + 20, y0 = Math.floor((wy(0) - dy) / TILE) + 18, y1 = Math.floor((wy(H()) - dy) / TILE) + 18;
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 30) return r; for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) r.push([x, y]); return r; }
+function tile(tx, ty, l) { const k = tx + '_' + ty + (l ? '_' + l : '');
+  if (!(k in tiles)) { const im = new Image(); tiles[k] = im; im.onload = () => { draw(); levelsSoon(); }; im.onerror = () => { tiles[k] = null; levelsSoon(); }; im.src = '../../Maps/' + k + '.jpg'; }
+  const im = tiles[k]; return im && im.complete && im.naturalWidth ? im : null; }
+function levelsUi() { const box = $('levels'), vis = visTiles(); box.innerHTML = '';
+  for (const l of LEVELS) { const b = document.createElement('button'); b.textContent = l || 'верх';
+    if (l === level) b.className = 'on'; else if (vis.length <= 6 && !vis.some(([x, y]) => tile(x, y, l))) b.style.opacity = .35;
+    b.onclick = () => { level = l; try { localStorage.setItem('navmeshLevel', l); } catch (e) {} levelsUi(); draw(); }; box.appendChild(b); } }
+let lt = 0; function levelsSoon() { clearTimeout(lt); lt = setTimeout(levelsUi, 250); }
+function gridImage() {
+  if (gridImg) return gridImg;
+  const c = document.createElement('canvas'); c.width = grid.w; c.height = grid.h;
+  const g = c.getContext('2d'), img = g.createImageData(grid.w, grid.h);
+  const col = [[0, 0, 0, 0], [61, 220, 132, 95], [255, 93, 108, 110]];
+  for (let i = 0; i < grid.f.length; i++) img.data.set(col[grid.f[i]] || col[0], i * 4);
+  g.putImageData(img, 0, 0); gridImg = c; return c;
+}
+function path(pts) { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1]))); }
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#0d1014'; ctx.fillRect(0, 0, W(), H());
+  const dx = +$('cdx').value || 0, dy = +$('cdy').value || 0;
+  for (const [tx, ty] of visTiles()) { const im = tile(tx, ty, level); if (im) ctx.drawImage(im, sx((tx - 20) * TILE + dx), sy((ty - 18) * TILE + dy), TILE * scale, TILE * scale); }
+  if (grid) { ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(gridImage(), sx(grid.x0), sy(grid.y0), grid.w * grid.cell * scale, grid.h * grid.cell * scale); ctx.restore(); }
+  if (zone) { ctx.setLineDash([8, 5]); ctx.lineWidth = 1.2; ctx.strokeStyle = '#c792ea'; path(zone.outer); ctx.closePath(); ctx.stroke();
+    for (const h of zone.inner) { path(h); ctx.closePath(); ctx.stroke(); } ctx.setLineDash([]); }
+  ctx.strokeStyle = '#5ee6ff'; ctx.lineWidth = 1.5; for (const s of strokes) { path(s); ctx.stroke(); }
+  if (leak && Date.now() < leak.until && grid) { ctx.fillStyle = 'rgba(255,159,28,.45)'; const s = grid.cell * scale + .5;
+    for (const c of leak.cells) ctx.fillRect(sx(grid.x0 + (c % grid.w) * grid.cell), sy(grid.y0 + Math.floor(c / grid.w) * grid.cell), s, s); }
+  if (graph) { ctx.strokeStyle = 'rgba(255,209,102,.3)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (const [a, b] of graph.edges) { ctx.moveTo(sx(graph.nodes[a][0]), sy(graph.nodes[a][1])); ctx.lineTo(sx(graph.nodes[b][0]), sy(graph.nodes[b][1])); } ctx.stroke();
+    ctx.fillStyle = '#ffd166'; for (const p of graph.nodes) { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3, 0, 7); ctx.fill(); } }
+  for (const p of unodes) { const X = sx(p[0]), Y = sy(p[1]); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X, Y - 7); ctx.lineTo(X + 7, Y); ctx.lineTo(X, Y + 7); ctx.lineTo(X - 7, Y); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  rooms.forEach((r, i) => { const col = ROOM_COL[i % ROOM_COL.length];
+    path(r.pts); ctx.closePath(); ctx.globalAlpha = i === selRoom ? .22 : .1; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.lineWidth = i === selRoom ? 2.5 : 1.5; ctx.strokeStyle = col; ctx.stroke();
+    if (tool === 'room') { ctx.fillStyle = col; for (const p of r.pts) ctx.fillRect(sx(p[0]) - 3, sy(p[1]) - 3, 6, 6); }
+    const cxr = r.pts.reduce((a, p) => a + p[0], 0) / r.pts.length, cyr = r.pts.reduce((a, p) => a + p[1], 0) / r.pts.length;
+    ctx.font = 'bold 13px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.fillStyle = col;
+    const lbl = r.name + ' · ' + r.min + ' · ' + r.mode; ctx.strokeText(lbl, sx(cxr) - 20, sy(cyr)); ctx.fillText(lbl, sx(cxr) - 20, sy(cyr)); });
+  if (roomDraw) { ctx.setLineDash([6, 4]); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    path(roomDraw.cursor ? [...roomDraw.pts, roomDraw.cursor] : roomDraw.pts); ctx.stroke(); ctx.setLineDash([]); }
+  for (const p of spots) { const X = sx(p.x), Y = sy(p.y); ctx.fillStyle = '#c792ea'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (let k = 0; k < 10; k++) { const a = k * Math.PI / 5 - Math.PI / 2, rr = k % 2 ? 4 : 9;
+      k ? ctx.lineTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr) : ctx.moveTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr); }
+    ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  if (safe) { ctx.fillStyle = '#4fb3ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(safe.x), sy(safe.y), 8, 0, 7);
+    ctx.fill(); ctx.stroke(); ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText('S', sx(safe.x) - 3, sy(safe.y) + 4); }
+  for (const s of seeds) { ctx.fillStyle = s.t === 'S' ? '#4fb3ff' : s.t === 'F' ? '#c792ea' : '#ffd166'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(s.x), sy(s.y), 6, 0, 7); ctx.fill(); ctx.stroke(); }
+  for (const [p, l] of [[route.a, 'A'], [route.b, 'B']]) if (p) { ctx.fillStyle = '#ff9f1c'; ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 7, 0, 7); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText(l, sx(p[0]) - 3, sy(p[1]) + 4); }
+  if (route.path) { ctx.strokeStyle = '#ff9f1c'; ctx.lineWidth = 3; path(route.path); ctx.stroke(); }
+  if (mouse && tool === 'brush') { const r = (+$('brush').value + .5) * (+$('cell').value || 4) * scale;
+    ctx.strokeStyle = color === 'good' ? '#3ddc84' : '#ff5d6c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(mouse[0], mouse[1], r, 0, 7); ctx.stroke(); }
+}
+function fit() {
+  const box = [...(zone ? zone.outer : []), ...strokes.flat(), ...seeds.map(s => [s.x, s.y]), ...rooms.flatMap(r => r.pts)];
+  if (!box.length && grid) box.push([grid.x0, grid.y0], [grid.x0 + grid.w * grid.cell, grid.y0 + grid.h * grid.cell]);
+  if (!box.length) return; const xs = box.map(p => p[0]), ys = box.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  scale = Math.min(W() / Math.max(200, x1 - x0), (H() - 140) / Math.max(200, y1 - y0)) * 0.85;
+  ox = W() / 2 - (x0 + x1) / 2 * scale; oy = H() / 2 - (y0 + y1) / 2 * scale; levelsSoon();
+}
+
+// ===== input =====
+let pan = null, painting = false, space = false;
+function setTool(t) { if (t !== 'room') roomDraw = null;
+  tool = t; document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
+  cv.style.cursor = t === 'brush' ? 'none' : t === 'fill' ? 'cell' : 'crosshair'; draw(); }
+function setColor(c) { color = c; document.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('on', b.dataset.color === c));
+  if (tool === 'route') setTool('brush'); draw(); }
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  if (e.button !== 0 || space) { pan = { x: e.clientX, y: e.clientY, ox, oy }; return; }
+  const p = [wx(e.offsetX), wy(e.offsetY)];
+  if (tool === 'route') {
+    if (!graph) regen();
+    if (!route.a || route.b) route = { a: p, b: null, path: null };
+    else { route.b = p; route.path = graph ? findRoute(route.a, route.b) : null; if (graph && !route.path) toast('Пути нет'); }
+    draw(); return;
+  }
+  if (tool === 'fill') { fillAt(p); return; }
+  if (tool === 'room') {
+    if (roomDraw) { if (roomDraw.pts.length >= 3 && dist(p, roomDraw.pts[0]) < 10 / scale) { closeRoom(); return; }
+      roomDraw.pts.push([Math.round(p[0]), Math.round(p[1])]); draw(); return; }
+    const hv = roomVertexAt(p); if (hv) { roomDrag = hv; selRoom = hv[0]; roomsUi(); return; }
+    roomDraw = { pts: [[Math.round(p[0]), Math.round(p[1])]], cursor: null }; draw(); return;
+  }
+  if (tool === 'spot') { const k = spots.findIndex(q => Math.hypot(sx(q.x) - e.offsetX, sy(q.y) - e.offsetY) < 10);
+    if (k >= 0) { spots.splice(k, 1); toast('Точка фарма убрана'); } else addSpot(p[0], p[1], 0, false); draw(); return; }
+  if (tool === 'node') { const k = unodes.findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
+    if (k >= 0) unodes.splice(k, 1); else {
+      const g = grid, cx = g ? Math.floor((p[0] - g.x0) / g.cell) : -1, cy = g ? Math.floor((p[1] - g.y0) / g.cell) : -1;
+      if (!g || cx < 0 || cy < 0 || cx >= g.w || cy >= g.h || g.f[cy * g.w + cx] !== 1) toast('Нода не на зелёной клетке — бот через неё не пройдёт');
+      unodes.push([Math.round(p[0]), Math.round(p[1])]); }
+    regen(); return; }
+  if (tool === 'safe') { safe = { x: Math.round(p[0]), y: Math.round(p[1]), z: grid ? grid.z || 0 : 0 }; toast('Сейф-поинт поставлен'); draw(); return; }
+  snapshot(); painting = true; paint(p); draw();
+});
+window.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect(); mouse = [e.clientX - r.left, e.clientY - r.top];
+  if (pan) { ox = pan.ox + e.clientX - pan.x; oy = pan.oy + e.clientY - pan.y; draw(); levelsSoon(); return; }
+  if (painting) paint([wx(mouse[0]), wy(mouse[1])]);
+  if (roomDrag) rooms[roomDrag[0]].pts[roomDrag[1]] = [Math.round(wx(mouse[0])), Math.round(wy(mouse[1]))];
+  if (roomDraw) roomDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
+  draw();
+});
+window.addEventListener('mouseup', () => { if (painting) infoLine(); pan = null; painting = false; roomDrag = null; });
+cv.addEventListener('mouseleave', () => { mouse = null; draw(); });
+cv.addEventListener('wheel', e => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+  ox = e.offsetX - (e.offsetX - ox) * k; oy = e.offsetY - (e.offsetY - oy) * k; scale *= k; draw(); levelsSoon(); }, { passive: false });
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('scriptBox').style.display === 'grid') { $('scriptBox').style.display = 'none'; return; }
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox') return;
+  if ($('cfg').style.display === 'block') return;   // the settings view: no map keys
+  if (e.code === 'Space') { space = true; e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') undo();
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'Enter' && roomDraw) closeRoom();
+  if (e.key === 'Escape' && roomDraw) { roomDraw = null; draw(); }
+  if (e.key === 'Backspace' && roomDraw && roomDraw.pts.length > 1) { roomDraw.pts.pop(); draw(); e.preventDefault(); }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
+async function load(files) { for (const f of files) parseFile(await f.text(), f.name); fit(); if (grid) regen(); else draw();
+  if ($('cfg').style.display === 'block') cfgUi(); }
+$('file').onchange = e => { load(e.target.files); e.target.value = ''; };
+$('open').onclick = openFiles;
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => { e.preventDefault(); load(e.dataTransfer.files); });
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+document.querySelectorAll('[data-color]').forEach(b => b.onclick = () => setColor(b.dataset.color));
+$('save').onclick = save;
+$('cfgBtn').onclick = () => cfgShow($('cfg').style.display !== 'block');
+$('scriptClose').onclick = () => $('scriptBox').style.display = 'none';
+$('scriptCopy').onclick = async () => { const t = $('scriptText'); try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand('copy'); } toast('Скрипт скопирован'); };
+window.addEventListener('beforeunload', e => { if (cfgDirty) { e.preventDefault(); e.returnValue = ''; } });
+$('regen').onclick = regen;
+$('undo').onclick = undo;
+$('brush').oninput = () => { $('brushV').textContent = $('brush').value; draw(); };
+// a new cell size: what is painted is moved onto the new cells (each new cell takes the old cell under its centre)
+$('cell').onchange = () => {
+  const cell = Math.max(2, +$('cell').value || 4); $('cell').value = cell;
+  if (!grid || grid.cell === cell) return;
+  snapshot();
+  const o = grid, X1 = o.x0 + o.w * o.cell, Y1 = o.y0 + o.h * o.cell;
+  const g = { x0: o.x0, y0: o.y0, cell, w: Math.ceil((X1 - o.x0) / cell), h: Math.ceil((Y1 - o.y0) / cell), z: o.z };
+  g.f = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    const ocx = Math.floor((cx * cell + cell / 2) / o.cell), ocy = Math.floor((cy * cell + cell / 2) / o.cell);
+    if (ocx < o.w && ocy < o.h) g.f[cy * g.w + cx] = o.f[ocy * o.w + ocx];
+  }
+  grid = g; gridImg = null; regen(); toast('Клетка ' + cell + ': нарисованное перенесено');
+};
+for (const id of ['cdx', 'cdy']) $(id).oninput = draw;
+function resize() { dpr = devicePixelRatio || 1; cv.width = W() * dpr; cv.height = H() * dpr; draw(); }
+window.addEventListener('resize', resize);
+try { level = localStorage.getItem('navmeshLevel') || ''; } catch (e) {}
+setTool('brush'); setColor('good'); resize(); ox = W() / 2 - 83000 * scale; oy = H() / 2 - 148000 * scale; draw(); levelsUi();
+</script>
+</body>
+</html>
