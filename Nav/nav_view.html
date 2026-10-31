@@ -522,9 +522,9 @@ const CARDS = [
     { k: 'dagger.id', l: 'Кинжал на толстого', type: 'num', h: 'остался один толстый моб — кинжал' },
     { k: 'dagger.hp', l: 'Толстый от MaxHP', type: 'num', ph: '0', h: '0 — порог чемпиона' }] },
   { ic: '✨', t: 'Баф', sub: 'Баф через сервис и свои бафы', f: [
-    { k: 'buff.id', l: 'ID бафа (следим)', type: 'num', ph: '1204' },
+    { k: 'buff.id', l: 'ID бафа (следим)', type: 'num', ph: '1204', h: 'пусто — 1204 с байпасами ниже (как на всех наших чарах); 0 — без бафа' },
     { k: 'buff.bypass', l: 'Байпасы бафа', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'по одному в строке, в этом порядке' },
-    { k: 'selfbuff', l: 'Свои бафы', type: 'rows', cols: [['Скилл', 'num', '421'], ['ID бафа', 'num', '0 = как скилл']], h: 'бафа нет — каст скилла на себя' }] },
+    { k: 'selfbuff', l: 'Свои бафы', type: 'rows', cols: [['Скилл', 'num', '421'], ['ID бафа', 'num', '0 = как скилл']], h: 'бафа нет — каст скилла на себя. Пусто — 421; скилл 0 — без своих бафов' }] },
   { ic: '🧲', t: 'Заводка', sub: 'Core\\mob_pull.pas — пусто = по умолчанию (серым)', pull: true },
   { ic: '🧪', t: 'Расходка', sub: 'Меньше минимума — докупить до максимума', f: [
     { k: 'supply', type: 'rows', wide: true, cols: [['Предмет', 'item'], ['Мин', 'num', '100'], ['Макс', 'num', '400']] }] },
@@ -569,10 +569,11 @@ function cfgLines() {
   const L = [], v = cv0, put = (...a) => L.push('K ' + a.join(' ').trim());
   if (v('login.user')) put('login', v('login.user'), v('login.pass'));
   for (const k of ['zone', 'config', 'teleport']) if (v(k)) put(k, v(k));
-  if (v('buff.id')) put('buff', v('buff.id'), v('buff.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
+  if (v('buff.id') === '0') put('buff', 0);
+  else if (v('buff.id')) put('buff', v('buff.id'), (v('buff.bypass') || '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
-  for (const r of cfg.selfbuff || []) if (+r[0]) put('selfbuff', +r[0], +r[1] || 0);
+  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) put('selfbuff', +r[0] || 0, +r[1] || 0);
   if (v('pack.size') || cfgRooms()) put('pack', v('pack.size') || 0, v('pack.spoil') === '' ? 302 : v('pack.spoil'), v('pack.sweep') === '' ? 444 : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
   if (v('tap.id')) put('tap', v('tap.id'), v('tap.range') || 0);
   if (v('dagger.id')) put('dagger', v('dagger.id'), v('dagger.hp') || 0);

@@ -237,6 +237,10 @@ const
   DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
   DEFAULT_PRIVATE_SOUND = 'incoming private msg (fem).wav';
   DEFAULT_DEATH_SOUND   = 'caracter died.wav';
+  DEFAULT_BUFF_ID       = 1204;    // no SetBuff / buff setting: this buff via the buffer (same on all our chars)
+  DEFAULT_BUFF_BYPASS1  = '_bbs_buffer_show';
+  DEFAULT_BUFF_BYPASS2  = 'book_use?name=s&pre=0&target=Player';
+  DEFAULT_SELF_BUFF     = 421;     // no AddSelfBuff / self buff setting: this skill on self
   DEFAULT_CHAMPION_HP   = 100000;  // champion alert ON by default: a mob with MaxHP above this
   DEFAULT_CHAMPION_SOUND = 'champion.wav';
   WEAPON_POLL_MS        = 2000;    // check every N ms that the weapon is on (disarm)
@@ -310,6 +314,7 @@ var
   TeleportBypass: string;
   BuffID: integer;               // watched buff (SetBuff)
   BuffBypasses: array of string;  // buff bypasses, sent in order (SetBuff)
+  BuffSet, SelfBuffSet: boolean;  // set by the script / the map: no defaults (DEFAULT_BUFF_ID, DEFAULT_SELF_BUFF)
   Path: array of integer;
   HasSafePoint: boolean;          // SetSafePoint called
   NavZoneName: string;            // SetNavZone: map for runs ('' = the farm zone)
@@ -496,6 +501,7 @@ end;
 procedure SetBuff(WatchBuffID: integer; Bypasses: array of string);
 var i: integer;
 begin
+  BuffSet := true;
   BuffID := WatchBuffID;
   SetLength(BuffBypasses, Length(Bypasses));
   for i := 0 to Length(Bypasses) - 1 do
@@ -737,6 +743,8 @@ end;
 procedure AddSelfBuff(SkillID, BuffID: integer);
 var n: integer;
 begin
+  SelfBuffSet := true;
+  if SkillID <= 0 then exit;           // AddSelfBuff(0, 0) = no own buffs at all (no default either)
   n := Length(SelfBuffSkill);
   SetLength(SelfBuffSkill, n + 1);
   SetLength(SelfBuffID, n + 1);
@@ -1329,7 +1337,8 @@ begin
   else if K = 'config' then SetConfig(V)
   else if K = 'login' then SetLogin(PtField(V, 0), PtField(V, 1))
   else if K = 'teleport' then SetTeleport(V)
-  else if K = 'buff' then begin        // id bypass|bypass|...
+  else if K = 'buff' then begin        // id bypass|bypass|...  (id 0 = no buff at all)
+    BuffSet := true;
     BuffID := StrToIntDef(PtField(V, 0), 0);
     M := PkRest(V, 1);
     n := PkPieceCount(M, '|');
@@ -2254,14 +2263,39 @@ end;
 // Every second: a watched buff is gone and its skill is out of reuse -> cast the skill on self.
 // Not while travelling / recovering / dead.
 
+// the character has this skill (it is in its skill list)
+function HasSkill(ID: integer): boolean;
+var i, SID: integer;
+begin
+  result := false;
+  for i := 0 to SkillList.Count - 1 do begin
+    SID := SkillList(i).ID;
+    if SID = ID then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
 procedure SelfBuff_Thread();
 var i, SkillID, ID: integer;
+  Told: array of boolean;
 begin
+  SetLength(Told, Length(SelfBuffSkill));
+  for i := 0 to Length(Told) - 1 do Told[i] := false;
   while Delay(1000) do begin
     if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then continue;
+    if SkillList.Count = 0 then continue;         // the skill list is not loaded yet (just logged in)
     for i := 0 to Length(SelfBuffSkill) - 1 do begin
       SkillID := SelfBuffSkill[i];
       ID := SelfBuffID[i];
+      if not HasSkill(SkillID) then begin          // this character has no such skill: never cast it
+        if not Told[i] then begin
+          Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SkillID) + ' on this character - own buff skipped', 128);
+          Told[i] := true;
+        end;
+        continue;
+      end;
       if BuffTime(ID) > 0 then continue;          // still on us
       if SpSkillLeft(SkillID) > 0 then continue;  // reuse
       Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
@@ -4750,6 +4784,54 @@ begin
   if PkDist(X, Y) > 150 then MoveExact(X, Y, UZ, PK_REACH);
 end;
 
+// at the room: inside its polygon, or at one of its farm spots (they may lie in the passage outside)
+function PkAtRoom(n: integer): boolean;
+var k, UX, UY, SX, SY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  result := RoomInside(n, UX, UY);
+  if result then exit;
+  for k := 0 to PkSpotN - 1 do begin
+    SX := PkSpotX[k];
+    SY := PkSpotY[k];
+    if (PkDist(SX, SY) <= 200) and (RoomOfSpot(SX, SY) = n) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// run to the room along the nav map, but only until we are in it (the pull starts at the entry, not
+// in its middle); something on us on the way -> stop here, the pull goes on from here
+procedure PkRunIntoRoom(n: integer);
+var Started: cardinal;
+  AX, AY, UZ, TX, TY: integer;
+begin
+  AX := RoomAnchorX(n);
+  AY := RoomAnchorY(n);
+  UZ := User.Z;
+  Started := GetTickCount;
+  PkMoveReset();
+  PkClickAt := 0;
+  while (not AoeMustStop()) and (not PkAtRoom(n)) and (PkCountAggro() = 0) do begin
+    if GetTickCount - Started > MOVE_WAIT_MS then exit;
+    PullTapRestore();
+    TX := AX;
+    TY := AY;
+    if NavIsReady() and NavWaypoint(AX, AY) then begin
+      TX := NavWpX();
+      TY := NavWpY();
+    end;
+    if PkNeedClick(TX, TY) then PkClick(TX, TY, UZ);
+    if PkStillMs() > PK_POINT_STUCK_MS then begin
+      MoveWait(AX, AY, UZ);            // the plain way (it gets out of a stuck place)
+      exit;
+    end;
+    Delay(PK_TICK_MS);
+  end;
+end;
+
 // FARM_ROOMS: the room with the most mobs expected (with its minimum), farmed empty by its own mode,
 // then the next; nowhere enough -> wait in the best one (a better one comes up -> go there)
 procedure PkRoomTick();
@@ -4782,7 +4864,7 @@ begin
   cur := PkRoomSel - 1;
   if cur >= 0 then begin
     if RoomBusy(cur) then cur := -1
-    else if (not PkRoomWaiting) and (RoomDist(cur, UX, UY) <= PK_ROOM_NEAR) and (RoomFree(cur) = 0) then begin
+    else if (not PkRoomWaiting) and PkAtRoom(cur) and (RoomFree(cur) = 0) then begin
       Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ' cleared', 0);
       RoomMarkCleared(cur);
       RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
@@ -4808,11 +4890,11 @@ begin
     cur := n;
   end;
   // at the room = inside it or at its farm spot outside (in the passage): RoomOfSpot takes them up to 500 out
-  if (RoomDist(cur, UX, UY) > PK_ROOM_NEAR) and (PkCountAggro() = 0) then begin
+  if (not PkAtRoom(cur)) and (PkCountAggro() = 0) then begin
     AX := RoomAnchorX(cur);
     AY := RoomAnchorY(cur);
     PkState('rooms: running to room ' + RoomName(cur) + ' (' + IntToStr(AX) + ', ' + IntToStr(AY) + ')');
-    MoveWait(AX, AY, UZ);              // along the nav map
+    PkRunIntoRoom(cur);                // until we are in it: the pull starts at the entry
     exit;
   end;
   if PkRoomWaiting and (PkCountAggro() = 0) then begin
@@ -5371,6 +5453,14 @@ procedure RunFarm();
 begin
   Engine.Msg('[Init]', 'Spot farm started, zone ' + ZoneName, 128);
   ApplyAlertDefaults();
+  if not BuffSet then begin            // the same on all our chars: the buffer buff + own buff 421
+    BuffID := DEFAULT_BUFF_ID;
+    SetLength(BuffBypasses, 2);
+    BuffBypasses[0] := DEFAULT_BUFF_BYPASS1;
+    BuffBypasses[1] := DEFAULT_BUFF_BYPASS2;
+    Engine.Msg('[Init]', 'Buff: default ' + IntToStr(BuffID) + ' via the buffer', 128);
+  end;
+  if not SelfBuffSet then AddSelfBuff(DEFAULT_SELF_BUFF, 0);
   if PkSkipChamps then begin           // own limit, else the same as the champion alert
     if PkChampHP > 0 then PullSkipChampions(PkChampHP)
     else if ChampionMinHP > 0 then PullSkipChampions(ChampionMinHP)

@@ -802,7 +802,15 @@ begin
       LimD := MpTouchDist * 2;
       if (Pass = 1) and (D <= LimD) then continue;   // just touched and still next to us: no use
       Cost := D;
-      if (FL > 50) and (D > 1) then begin
+      if PpN >= 3 then begin
+        // a room: from where the pull began (the entry) to the far end - near us AND near the entry
+        // first, a mob behind a wall (not seen straight) later
+        LDX := NX - MpDirX;
+        LDY := NY - MpDirY;
+        LD := Sqrt(LDX * LDX + LDY * LDY);
+        Cost := D + LD * 0.7;
+        if not NavSee(UX, UY, NX, NY) then Cost := Cost + 400;
+      end else if (FL > 50) and (D > 1) then begin
         MXd := NX - UX;
         MYd := NY - UY;
         CosA := (FX * MXd + FY * MYd) / (FL * D);
