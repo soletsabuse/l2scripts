@@ -35,7 +35,8 @@
   #rooms input, #rooms select { background: var(--panel2); color: var(--text); border: 1px solid #34404c; border-radius: 5px;
     padding: 3px 5px; font: inherit; }
   #rooms input.n { width: 48px; } #rooms input.m, #rooms input.p { width: 44px; }
-  #rooms .x, #rooms .g { padding: 2px 7px; }
+  #rooms .x, #rooms .g, #rooms .up, #rooms .dn { padding: 2px 7px; }
+  #rooms button:disabled { opacity: .3; cursor: default; }
   #rooms input.c { width: 74px; }
   #rooms input.rm { width: 46px; text-transform: uppercase; }
   #rooms { width: 400px; }
@@ -441,13 +442,15 @@ function nextRoomName() { const used = new Set(rooms.map(r => r.name));
 function roomsUi() {
   const box = $('rooms');
   box.style.display = rooms.length || spots.length ? 'block' : 'none';
-  box.innerHTML = '<h3>Комнаты</h3><div class="muted">имя · мин. мобов · режим · приоритет</div>';
+  box.innerHTML = '<h3>Комнаты</h3><div class="muted">имя · мин. мобов · режим · приоритет · ↑↓ порядок «по очереди»</div>';
   rooms.forEach((r, i) => {
     const d = document.createElement('div'); d.className = 'r' + (i === selRoom ? ' sel' : '');
     d.innerHTML = '<span class="sw" style="background:' + ROOM_COL[i % ROOM_COL.length] + '"></span>' +
       '<input class="n" value="' + r.name + '"><input class="m" type="number" min="1" value="' + r.min + '">' +
       '<select><option>PACK</option><option>SINGLE</option><option>AUTO</option></select>' +
-      '<input class="p" type="number" min="1" value="' + r.prio + '"><button class="x" title="удалить">✕</button>';
+      '<input class="p" type="number" min="1" value="' + r.prio + '">' +
+      '<button class="up" title="раньше в очереди">↑</button><button class="dn" title="позже в очереди">↓</button>' +
+      '<button class="x" title="удалить">✕</button>';
     const [n, m, sel, pr, x] = [d.querySelector('.n'), d.querySelector('.m'), d.querySelector('select'), d.querySelector('.p'), d.querySelector('.x')];
     sel.value = r.mode;
     n.onchange = () => { r.name = n.value.trim() || r.name; draw(); };
@@ -455,6 +458,13 @@ function roomsUi() {
     sel.onchange = () => { r.mode = sel.value; };
     pr.onchange = () => { r.prio = Math.max(1, +pr.value || 1); };
     x.onclick = () => { rooms.splice(i, 1); selRoom = -1; roomsUi(); draw(); };
+    // the order of the list = the order of "по очереди" (room_order SEQ) - saved as it is
+    const move = dir => { const j = i + dir; if (j < 0 || j >= rooms.length) return;
+      [rooms[i], rooms[j]] = [rooms[j], rooms[i]]; selRoom = j; roomsUi(); draw(); };
+    d.querySelector('.up').onclick = () => move(-1);
+    d.querySelector('.dn').onclick = () => move(1);
+    if (i === 0) d.querySelector('.up').disabled = true;
+    if (i === rooms.length - 1) d.querySelector('.dn').disabled = true;
     d.onclick = ev => { if (ev.target.tagName === 'DIV' || ev.target.tagName === 'SPAN') { selRoom = i; roomsUi(); draw(); } };
     box.appendChild(d);
   });
@@ -541,7 +551,7 @@ const PULL_ADV = [
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
 const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
-const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'debug', 'ranged_ms',
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
   { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
@@ -562,6 +572,7 @@ const CARDS = [
     { k: 'ignore', l: 'Игнор мобов', type: 'ids', ph: '12345, 67890', h: 'не заводить и не бить (лучники с места…)' }] },
   { ic: '📍', t: 'Точка фарма и комнаты', sub: 'Где стоять и бить пачку', f: [
     { k: 'spots_only', l: 'Только мои точки', type: 'bool', h: 'пачку вести только на точки фарма с карты, свои углы не искать' },
+    { k: 'spot_wait_ms', l: 'Ждать пачку на точке, мс', type: 'num', ph: '1500', h: 'не бить, пока пачка не подбежит (80% рядом / перестали подходить / это время), точку держит; 0 — бить сразу' },
     { k: 'corner_radius', l: 'Радиус у точки', type: 'num', ph: '0', h: 'бьёт мобов пачки до стольки от точки, подбегая (0 — стоит)' },
     { k: 'auto_corner', l: 'Искать угол в', type: 'num', ph: '0', h: 'нет подходящей точки фарма — угол стены в этом радиусе (0 — выкл)' },
     { k: 'ranged_ms', l: 'Бьёт издалека, мс', type: 'num', ph: '3000', h: 'моб на нас стоит и не подходит столько — бежим убить его, потом назад (0 — ждать)' },

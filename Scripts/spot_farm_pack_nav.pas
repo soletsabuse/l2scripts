@@ -292,6 +292,11 @@ const
   PK_ROOM_LOOK_MS   = 60000;    // rooms, nothing to farm: a room not seen this long -> go and look at it
   PK_LEAD_B         = 300;      // the way in to a farm spot: the leg before the turn at the corner
   PK_PHANTOM_MS     = 20000;    // "on us" but too far / another floor: not aggro this long
+  PK_RETARGET_MS    = 500;      // fight: the best target (splash) counted this often, not every tick
+  PK_WAIT_NEAR      = 150;      // at the spot: a pack mob this close has come
+  PK_WAIT_SHARE     = 80;       // ... this % of the pack has come -> hit
+  PK_WAIT_STILL_MS  = 700;      // ... nobody came closer this long -> hit
+  PK_WAIT_HOLD      = 20;       // ... moved off the spot more than this -> back to it
   PK_FIGHT_IDLE_MS  = 5000;     // pack farm: at the corner nobody comes into reach this long -> the fight is over
   PK_SPLASH_RANGE   = 150;      // pack farm: mobs this close in front of us are hit by the auto attack splash
   PK_SPLASH_ANGLE   = 60;       // pack farm: splash cone, degrees to each side of the target
@@ -396,6 +401,8 @@ var
   PkSeqWaitUntil: cardinal;       // ... until then
   PkRoomRecount: boolean;         // room_recount: the pull takes the mobs that came up meanwhile too
   PkIgnoreWay: boolean;           // room_ignore_way: aggro away from the room we go to -> run on, no fight
+  PkWaitMs: integer;              // spot_wait_ms: at the farm spot wait for the pack this long at most
+  PkWaitSet: boolean;
   PkChampHP: integer;             // SetChampionHP: a mob with MaxHP above this is a champion (0 = the alert limit)
   PkLeadBX, PkLeadBY, PkLeadEX, PkLeadEY: integer;   // PkPlanLead: the way in round the corner
   PkRebuffSaidAt: cardinal;       // last "waiting for the rebuff" message
@@ -1414,6 +1421,10 @@ begin
   else if K = 'room_cycle_wait' then PkCycleWait := StrToIntDef(V, 0)
   else if K = 'room_recount' then PkRoomRecount := V = '1'
   else if K = 'room_ignore_way' then PkIgnoreWay := V = '1'
+  else if K = 'spot_wait_ms' then begin
+    PkWaitMs := StrToIntDef(V, 1500);
+    PkWaitSet := true;
+  end
   else if K = 'exp_off' then SetExpOff(V = '1')
   else if K = 'player_alert' then SetPlayerAlert(StrToIntDef(V, 0))
   else if K = 'private_alert' then SetPrivateAlert(V = '1')
@@ -4500,9 +4511,53 @@ end;
 // the pack lives - we hit only mobs within PK_HIT_RANGE, the others come to us; nobody comes for
 // PK_FIGHT_IDLE_MS (behind a wall, far) -> the fight is over. No corner -> we run to the targets.
 // Auto attack -> mass spoil -> auto attack ..., sweep on the way, dagger on a fat mob left alone
+// at the farm spot: do not hit yet, the pack comes to us first - the spot is kept. Ends as soon as most
+// of the pack (PK_WAIT_SHARE %) is near, or they stop coming closer (PK_WAIT_STILL_MS), or after
+// spot_wait_ms (default 1500, 0 = no wait). Moved off the spot meanwhile -> back to it
+procedure PkWaitPack();
+var Started, GainAt: cardinal;
+  i, Total, Near, NX, NY: integer;
+  D, Sum, SumBest: double;
+begin
+  if not PkWaitSet then begin
+    PkWaitMs := 1500;
+    PkWaitSet := true;
+  end;
+  if PkWaitMs <= 0 then exit;
+  Started := GetTickCount;
+  GainAt := Started;
+  SumBest := 1E18;
+  PkMoveReset();
+  PkClickAt := 0;
+  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
+    Total := 0;
+    Near := 0;
+    Sum := 0;
+    for i := 0 to NpcList.Count - 1 do begin
+      if not PkFightMob(i) then continue;
+      NX := NpcList(i).X;
+      NY := NpcList(i).Y;
+      D := PkDist(NX, NY);
+      Inc(Total);
+      if D <= PK_WAIT_NEAR then Inc(Near);
+      Sum := Sum + D;
+    end;
+    if Total = 0 then exit;
+    if Near * 100 >= Total * PK_WAIT_SHARE then exit;      // the pack is here
+    if Sum < SumBest - 30 then begin   // they still come closer
+      SumBest := Sum;
+      GainAt := GetTickCount;
+    end;
+    if GetTickCount - GainAt > PK_WAIT_STILL_MS then exit;  // nobody comes closer any more
+    if GetTickCount - Started > PkWaitMs then exit;
+    if (PkDist(PkCX, PkCY) > PK_WAIT_HOLD) and PkNeedClick(PkCX, PkCY) then PkClick(PkCX, PkCY, PkCZ);
+    Delay(PK_TICK_MS);
+  end;
+end;
+
 procedure PkFight();
-var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID: integer;
-  NextSpoil, IdleSince, SpoilCastAt, RangedSince: cardinal;
+var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, BestOID: integer;
+  NextSpoil, IdleSince, SpoilCastAt, RangedSince, BestAt: cardinal;
   NearD0: double;
   Running, WasRunning, SpoilWait, AllSpoiled: boolean;
   R, SpoilN: integer;
@@ -4519,8 +4574,11 @@ begin
   SpoilN := 0;
   for Idx := 0 to 63 do PkSpoiledOID[Idx] := 0;   // a new pack: nobody spoiled yet
   PkCorpseSince := 0;
+  if PkCorner >= 0 then PkWaitPack();  // at the farm spot / corner: the pack comes to us first
   HuntOID := 0;
   NearOID := 0;
+  BestOID := 0;
+  BestAt := 0;
   NearD0 := 0;
   RangedSince := 0;
   if not PkRangedSet then begin
@@ -4553,7 +4611,21 @@ begin
       if Idx < 0 then HuntOID := 0
       else if not PkFightMob(Idx) then HuntOID := 0;
     end;
-    if HuntOID <> 0 then NewOID := HuntOID else NewOID := PkBestTarget(OID, Reach);
+    // the best target is counted every PK_RETARGET_MS, not every tick; sooner only when the chosen one
+    // died / is gone / is no fight mob any more
+    if HuntOID <> 0 then NewOID := HuntOID
+    else begin
+      if (BestOID <> 0) and (GetTickCount - BestAt < PK_RETARGET_MS) then begin
+        Idx := SpMobIdx(BestOID);
+        if Idx < 0 then BestAt := 0
+        else if not PkFightMob(Idx) then BestAt := 0;
+      end;
+      if (BestAt = 0) or (GetTickCount - BestAt >= PK_RETARGET_MS) then begin
+        BestOID := PkBestTarget(OID, Reach);
+        BestAt := GetTickCount;
+      end;
+      NewOID := BestOID;
+    end;
     if NewOID = 0 then begin
       // corner, nobody within the hit yet: stand in the corner, they come to us
       if IdleSince = 0 then IdleSince := GetTickCount;
@@ -4610,6 +4682,7 @@ begin
         Engine.Msg('[Pack]', 'Cannot get to ' + NpcList(Idx).Name + ' (wall?), skipping it', 0);
         SpIgnore(OID);
         if OID = HuntOID then HuntOID := 0;
+        BestAt := 0;                   // pick another one now
         OID := 0;
         RunOID := 0;
         Running := false;
