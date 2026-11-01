@@ -17,11 +17,11 @@ begin
   // teleport landing -> inside the zone (x, y, z per line)
 
   // where to stand while rebuffing on the spot (remove the line = buff where you stand)
-  SetSafePoint(-16680, -250409, -8191);
+  //SetSafePoint(-16680, -250409, -8191);
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
-
+  SetChampionAlert(0);
   // standing still 3 sec with no target -> run to the farthest patrol point (stops when the profile takes a target)
 
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
