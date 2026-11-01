@@ -4196,7 +4196,7 @@ begin
   if i >= NpcList.Count then exit;     // the list got shorter while we walk it
   if NpcList(i).Dead then exit;
   OID := NpcList(i).OID;
-  if PkIsShooter(OID) then exit;
+  if PullIsShooterAt(i) then exit;
   Atk := NpcList(i).AtkOID;
   Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;

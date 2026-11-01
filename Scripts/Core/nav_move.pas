@@ -66,7 +66,8 @@ const
   NAV_NONE          = -999999999;
   NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
   NAV_NODE_GAP      = 64;
-  NAV_BAN_R         = 40;       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
+  NAV_BAN_R         = 40;
+  NAV_WP_CACHE_MS   = 400;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
   NAV_LINK_MAX      = 2500;     // longest graph link
   NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
   NAV_END_SKIP      = 60;       // a wall cell this close to us / the target does not block the sight
@@ -90,6 +91,9 @@ var
   NmBanN: integer;
   NmUnstickPX, NmUnstickPY: integer;    // NavUnstick: the last node taken ...
   NmUnstickAt: cardinal;                // ... and when: not the same one again soon
+  NmWcTX, NmWcTY, NmWcUX, NmWcUY: integer;   // NavWaypoint cache: the target / we at the last count ...
+  NmWcAt: cardinal;                     // ... when ...
+  NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
   NmZoneFile, NmGridFile, NmTraceFile: string;
   NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
   NmWpX, NmWpY: integer;                   // NavWaypoint result
@@ -964,6 +968,19 @@ begin
   if not NavOn then exit;
   UX := User.X;
   UY := User.Y;
+  // the same answer as a moment ago when neither the target nor we moved much (it is called every
+  // tick; a route count is the heaviest thing of the farm)
+  if (NmWcAt <> 0) and (GetTickCount - NmWcAt < NAV_WP_CACHE_MS) and (Abs(X - NmWcTX) < 64) and
+     (Abs(Y - NmWcTY) < 64) and (Abs(UX - NmWcUX) < 64) and (Abs(UY - NmWcUY) < 64) then begin
+    result := NmWcRes;
+    exit;
+  end;
+  NmWcAt := GetTickCount;
+  NmWcTX := X;
+  NmWcTY := Y;
+  NmWcUX := UX;
+  NmWcUY := UY;
+  NmWcRes := false;
   if NmLineFree(UX, UY, X, Y, false) then exit;   // straight to it
   if not NmPlanTo(X, Y) then exit;
   for k := NavRouteN - 1 downto 0 do begin
@@ -974,6 +991,7 @@ begin
       NmWpX := PX;
       NmWpY := PY;
       result := true;
+      NmWcRes := true;
       exit;
     end;
   end;

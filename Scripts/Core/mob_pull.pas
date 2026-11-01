@@ -42,6 +42,7 @@ function PullIsAggro(i: integer): boolean;       // NpcList(i) is on us (shooter
 function PullMobTarget(i: integer): integer;     // OID of whom NpcList(i) targets, 0 = none / gone
 function PullCountAggro(): integer;
 function PullIsShooter(OID: integer): boolean;    // the mob is on the ignore list (PullIgnoreID) / a skipped champion
+function PullIsShooterAt(i: integer): boolean;    // the same for NpcList(i) (no search by OID: cheap)
 procedure PullSkipChampions(MinMaxHP: integer);   // mobs with MaxHP above this: never pulled / fought (0 = off)
 function PullIsChampion(i: integer): boolean;     // NpcList(i) is a live champion skipped by PullSkipChampions
 procedure PullSetPackLive(Enable: boolean);       // true: pack = on us + every free mob of the area, every tick
@@ -640,6 +641,24 @@ begin
 end;
 
 // a mob of the ignore list (PullIgnoreID): never pulled, never counted as aggro, not fought
+function PullIsShooterAt(i: integer): boolean;
+var ID, HP: integer;
+begin
+  result := false;
+  if (Length(MpIgnIDs) = 0) and (MpChampHP <= 0) then exit;
+  if (i < 0) or (i >= NpcList.Count) then exit;
+  if MpChampHP > 0 then begin          // a champion: as if it were not there
+    HP := NpcList(i).MaxHP;
+    if HP > MpChampHP then begin
+      result := true;
+      exit;
+    end;
+  end;
+  if Length(MpIgnIDs) = 0 then exit;
+  ID := NpcList(i).ID;
+  result := MpIgnoredID(ID);
+end;
+
 function PullIsShooter(OID: integer): boolean;
 var i, ID, HP: integer;
 begin
@@ -698,7 +717,7 @@ begin
   if i >= NpcList.Count then exit;
   if NpcList(i).Dead then exit;
   OID := NpcList(i).OID;
-  if MpSkippedHard(OID) or PullIsShooter(OID) then exit;
+  if MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
   Atk := NpcList(i).AtkOID;
   Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
@@ -776,7 +795,7 @@ begin
       if not MpWhitelisted(i) then continue;
       if Pass = 0 then Inc(MpCntAll);
       OID := NpcList(i).OID;
-      if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooter(OID) then begin
+      if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then begin
         if Pass = 0 then Inc(MpCntSkip);
         continue;
       end;
@@ -820,7 +839,8 @@ begin
         LDY := NY - MpDirY;
         LD := Sqrt(LDX * LDX + LDY * LDY);
         Cost := D + LD * 0.7;
-        if not NavSee(UX, UY, NX, NY) then Cost := Cost + 400;
+        // the sight check is a line through the map: only for a mob that could still win
+        if (Cost < BestD) and (not NavSee(UX, UY, NX, NY)) then Cost := Cost + 400;
       end else if (FL > 50) and (D > 1) then begin
         MXd := NX - UX;
         MYd := NY - UY;
@@ -846,7 +866,7 @@ begin
   if NpcList(i).Dead or MpNameIgnored(i) then exit;
   if PullIsAggro(i) or (not MpWhitelisted(i)) then exit;
   OID := NpcList(i).OID;
-  if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooter(OID) then exit;
+  if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;

@@ -67,6 +67,10 @@ var
   RLastAt, RClearAt, RPlayerSince, RBusyUntil: array[0..63] of cardinal;
   RRate: array[0..63] of double;     // learned respawn: mobs per second
   RBase: array[0..63] of integer;    // mobs left at the clear (skipped champions): not respawn
+  RScL: array[0..63] of double;      // RmScore: the way to the room along the map ...
+  RScX, RScY: array[0..63] of integer;   // ... from here ...
+  RScAt: array[0..63] of cardinal;   // ... counted then (a graph count each: kept 10 s)
+  RUpdAt: cardinal;                  // RoomUpdate: the last one (at most every 300 ms)
   RPlayers: integer;                 // RoomSetPlayers (not called: 60 s)
   RPlayersSet: boolean;
   RAvoidMs: integer;                 // RoomSetAvoid; 0 = not set: RM_BUSY_MS
@@ -334,6 +338,8 @@ begin
     RPlayers := 60;
     RPlayersSet := true;
   end;
+  if (RUpdAt <> 0) and (T - RUpdAt < 300) then exit;   // called every tick: 3 times a second is enough
+  RUpdAt := T;
   for i := 0 to RN - 1 do begin
     if not RoomSeen(i) then continue;
     c := RoomMobs(i);
@@ -393,12 +399,22 @@ end;
 
 // expected x priority, a far room counts less
 function RmScore(i: integer): double;
-var AX, AY: integer;
+var AX, AY, UX, UY: integer;
   L: double;
 begin
   AX := RoomAnchorX(i);
   AY := RoomAnchorY(i);
-  L := NavPathLen(AX, AY);
+  UX := User.X;
+  UY := User.Y;
+  if (RScAt[i] <> 0) and (GetTickCount - RScAt[i] < 10000) and (Abs(UX - RScX[i]) < 300) and
+     (Abs(UY - RScY[i]) < 300) then L := RScL[i]
+  else begin
+    L := NavPathLen(AX, AY);
+    RScL[i] := L;
+    RScX[i] := UX;
+    RScY[i] := UY;
+    RScAt[i] := GetTickCount;
+  end;
   if L < 0 then L := 5000;
   result := RoomExpected(i) * RPrio[i] / (1 + L / 2000);
 end;
