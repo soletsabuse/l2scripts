@@ -487,7 +487,7 @@ const PULL_ADV = [
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
 const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', skip_champions: '0' };
-const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'debug', 'ranged_ms',
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
   { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
@@ -511,6 +511,8 @@ const CARDS = [
     { k: 'corner_radius', l: 'Радиус у точки', type: 'num', ph: '0', h: 'бьёт мобов пачки до стольки от точки, подбегая (0 — стоит)' },
     { k: 'auto_corner', l: 'Искать угол в', type: 'num', ph: '0', h: 'нет подходящей точки фарма — угол стены в этом радиусе (0 — выкл)' },
     { k: 'ranged_ms', l: 'Бьёт издалека, мс', type: 'num', ph: '3000', h: 'моб на нас стоит и не подходит столько — бежим убить его, потом назад (0 — ждать)' },
+    { k: 'room_order', l: 'Порядок комнат', type: 'sel', opts: [['', 'умно: где больше мобов (по «мин.» комнат)'], ['SEQ', 'по очереди: A, B, C… без счёта мобов']],
+      h: 'по очереди — в порядке списка комнат на карте, каждая до последнего моба, потом следующая' },
     { k: 'room_players', l: 'Игрок в комнате, с', type: 'num', ph: '60', h: 'столько секунд в комнате чужой — уходим (0 — сразу, -1 — плевать). Комнату, где чужого видно издалека, не выбираем' },
     { k: 'room_avoid', l: 'Не ходить туда, с', type: 'num', ph: '30', h: 'после ухода из-за игрока комнату обходим столько секунд' },
     { k: '_map', type: 'map' }] },

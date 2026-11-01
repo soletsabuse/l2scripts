@@ -388,6 +388,8 @@ var
   PkAutoCorner: integer;          // SetAutoCorner: search a corner spot this far (0 = AddCorner only)
   PkSpotsOnly: boolean;           // SetSpotsOnly: the pack goes only to the farm spots of the map
   PkSkipChamps: boolean;          // SetSkipChampions: champions are not pulled / fought
+  PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another A, B, C..., no counting
+  PkSeqNext, PkSeqGoal: integer;  // SEQ: the room to go to next / the one we went for
   PkChampHP: integer;             // SetChampionHP: a mob with MaxHP above this is a champion (0 = the alert limit)
   PkLeadBX, PkLeadBY, PkLeadEX, PkLeadEY: integer;   // PkPlanLead: the way in round the corner
   PkRebuffSaidAt: cardinal;       // last "waiting for the rebuff" message
@@ -1393,6 +1395,7 @@ begin
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
   else if K = 'champ_hp' then SetChampionHP(StrToIntDef(V, 0))
+  else if K = 'room_order' then PkRoomSeq := UpperCase(V) = 'SEQ'
   else if K = 'exp_off' then SetExpOff(V = '1')
   else if K = 'player_alert' then SetPlayerAlert(StrToIntDef(V, 0))
   else if K = 'private_alert' then SetPrivateAlert(V = '1')
@@ -4881,10 +4884,36 @@ begin
     if RoomBusy(cur) then cur := -1
     else if (not PkRoomWaiting) and PkAtRoom(cur) and (RoomFree(cur) = 0) then begin
       Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ' cleared', 0);
+      if PkRoomSeq and (cur = PkSeqGoal) then PkSeqNext := cur + 1;   // in order: the next one
       RoomMarkCleared(cur);
       RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
       cur := -1;
     end;
+  end;
+  if (cur < 0) and PkRoomSeq then begin
+    // in order: the next room of the list (the order of the viewer), whatever its mobs; a room with
+    // another player in it now / avoided -> the one after it
+    n := -1;
+    for k := 0 to RoomCount() - 1 do begin
+      cur := (PkSeqNext + k) mod RoomCount();
+      if (not RoomBusy(cur)) and (not RoomTaken(cur)) and (RoomPointCount(cur) >= 3) then begin
+        n := cur;
+        break;
+      end;
+    end;
+    cur := -1;
+    if n < 0 then begin
+      PkState('rooms in order: every room busy (players) - idle');
+      PkIdle();
+      Delay(500);
+      exit;
+    end;
+    PkSeqNext := n;
+    PkSeqGoal := n;
+    PkRoomWaiting := false;
+    Engine.Msg('[Room]', 'In order: to room ' + RoomName(n), 0);
+    PkRoomSet(n);
+    cur := n;
   end;
   if cur < 0 then begin
     n := RoomPick();
@@ -4937,7 +4966,7 @@ begin
     end;
   end;
   // a few left here (under its minimum) and another room is ready: leave them, go there
-  if (PkCountAggro() = 0) and (RoomFree(cur) < RoomMin(cur)) then begin
+  if (not PkRoomSeq) and (PkCountAggro() = 0) and (RoomFree(cur) < RoomMin(cur)) then begin
     n := RoomPickExcept(cur);
     if n >= 0 then begin
       Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ': only ' + IntToStr(RoomFree(cur)) + ' left (min ' +

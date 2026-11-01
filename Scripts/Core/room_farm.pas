@@ -41,6 +41,7 @@ function RoomBusy(i: integer): boolean;       // another player farms it
 procedure RoomMarkCleared(i: integer);        // we farmed it empty: the respawn clock starts
 function RoomPick(): integer;                 // the best room with at least its minimum expected; -1 none
 function RoomPickExcept(Skip: integer): integer;   // the same, not this room
+function RoomTaken(i: integer): boolean;      // another player seen in it right now
 function RoomWaitPick(): integer;             // the best room to wait in (most expected), -1 none
 function RoomInfo(i: integer): string;        // one line for the debug: seen / expected / min / respawn / busy
 procedure RoomLoadStats(F: string);           // learned respawn speeds
@@ -406,6 +407,11 @@ end;
 function RmTaken(i: integer): boolean;
 begin
   result := (RPlayers >= 0) and (RmPlayersIn(i) > 0);
+end;
+
+function RoomTaken(i: integer): boolean;
+begin
+  result := RmTaken(i);
 end;
 
 function RoomPickExcept(Skip: integer): integer;
