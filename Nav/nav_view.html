@@ -550,8 +550,8 @@ const PULL_ADV = [
   ['tap_ms', 'Тап: смена+удар, мс', 4000], ['tap_skip_ms', 'Тапнутого не трогать, мс', 10000], ['back_penalty', 'Штраф за моба сзади', 400],
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
-const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
-const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'debug', 'ranged_ms',
+const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
   { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
@@ -568,6 +568,7 @@ const CARDS = [
       ['SINGLE', 'по одному, где стоят'], ['AUTO', 'авто: много — пачкой, мало — по одному'], ['ROOMS', 'комнаты']] },
     { k: 'skip_champions', l: 'Не бить чемпионов', type: 'bool', h: 'чемпионов не заводить и не бить — комната без них считается зачищенной, идём дальше' },
     { k: 'champ_hp', l: 'Чемпион от MaxHP', type: 'num', ph: '100000', h: 'моб с MaxHP выше этого — чемпион; пусто — порог из «Оповещений»' },
+    { k: 'pickup', l: 'Поднимать дроп', type: 'bool', h: 'после боя подбирать дроп рядом (выкл — оставляет, сразу дальше)' },
     { k: 'zrange', l: 'Только свой этаж', type: 'num', ph: '0', h: 'мобы не дальше по высоте (0 — без ограничения)' },
     { k: 'ignore', l: 'Игнор мобов', type: 'ids', ph: '12345, 67890', h: 'не заводить и не бить (лучники с места…)' }] },
   { ic: '📍', t: 'Точка фарма и комнаты', sub: 'Где стоять и бить пачку', f: [
@@ -610,6 +611,7 @@ const CARDS = [
     { k: 'path', l: 'Путь от точки высадки', type: 'lines', ph: 'x y z\nx y z', h: 'точки x y z по строкам, бег серверным путём' }] },
   { ic: '🛠', t: 'Прочее', f: [
     { k: 'exp_off', l: 'Выключить опыт', type: 'bool', h: 'exp?state=off' },
+    { k: 'nav_wp_cache_ms', l: 'Кэш маршрута, мс', type: 'num', ph: '400', h: 'куда кликать на бегу — пересчёт не чаще раза в столько (пока сдвинулись < 64). Меньше — точнее на углах, больше — легче для ПК; 0 — каждый тик' },
     { k: 'debug', l: 'Отладка', type: 'sel', opts: [['', 'по умолчанию (состояния)'], ['0', 'тихо'], ['1', '[State] при смене'], ['2', '[State] + таблица комнат']] }] }];
 
 const ids = s => (s || '').split(/[^\d]+/).filter(Boolean).join(', ');

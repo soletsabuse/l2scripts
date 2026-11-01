@@ -25,6 +25,7 @@ uses SysUtils, Classes;
 procedure NavSetZone(ZoneFile: string);       // map = this .zmap ('' = the zone active in the bot)
 procedure NavSetGrid(GridFile: string);       // map = this .navgrid (wins over the zone)
 procedure NavSetCell(Cell: integer);          // cell of the zone grid (default 40)
+procedure NavSetWpCache(Ms: integer);         // NavWaypoint keeps its answer this long (default 400, 0 = off)
 procedure NavSetTrace(TraceFile: string);     // + wall trace .navtrace (Library\Nav) over the zone
 procedure NavAddSeed(X, Y: integer);          // a point surely walkable (farm point): its piece stays
 function NavBuild(): boolean;                 // build the graph now (once; later calls do nothing)
@@ -65,9 +66,9 @@ const
   NAV_CELL          = 40;       // cell of the zone grid
   NAV_NONE          = -999999999;
   NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
-  NAV_NODE_GAP      = 64;
-  NAV_BAN_R         = 40;
-  NAV_WP_CACHE_MS   = 400;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
+  NAV_NODE_GAP      = 64;       // graph nodes closer than this to each other: one is enough
+  NAV_BAN_R         = 40;       // "X x y" of the grid file: no corner node this close
+  NAV_WP_CACHE_MS   = 400;      // NavWaypoint: the same answer this long while target / we moved < 64 (default)
   NAV_LINK_MAX      = 2500;     // longest graph link
   NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
   NAV_END_SKIP      = 60;       // a wall cell this close to us / the target does not block the sight
@@ -94,6 +95,8 @@ var
   NmWcTX, NmWcTY, NmWcUX, NmWcUY: integer;   // NavWaypoint cache: the target / we at the last count ...
   NmWcAt: cardinal;                     // ... when ...
   NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
+  NmWcMs: integer;                      // NavSetWpCache: how long (NmWcMsSet false -> NAV_WP_CACHE_MS)
+  NmWcMsSet: boolean;
   NmZoneFile, NmGridFile, NmTraceFile: string;
   NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
   NmWpX, NmWpY: integer;                   // NavWaypoint result
@@ -147,6 +150,14 @@ begin
   NmSeedX[NmSeedN] := X;
   NmSeedY[NmSeedN] := Y;
   Inc(NmSeedN);
+end;
+
+procedure NavSetWpCache(Ms: integer);
+begin
+  if Ms < 0 then Ms := 0;
+  NmWcMs := Ms;
+  NmWcMsSet := true;
+  NmWcAt := 0;
 end;
 
 procedure NavSetCell(Cell: integer);
@@ -970,7 +981,11 @@ begin
   UY := User.Y;
   // the same answer as a moment ago when neither the target nor we moved much (it is called every
   // tick; a route count is the heaviest thing of the farm)
-  if (NmWcAt <> 0) and (GetTickCount - NmWcAt < NAV_WP_CACHE_MS) and (Abs(X - NmWcTX) < 64) and
+  if not NmWcMsSet then begin
+    NmWcMs := NAV_WP_CACHE_MS;
+    NmWcMsSet := true;
+  end;
+  if (NmWcMs > 0) and (NmWcAt <> 0) and (GetTickCount - NmWcAt < NmWcMs) and (Abs(X - NmWcTX) < 64) and
      (Abs(Y - NmWcTY) < 64) and (Abs(UX - NmWcUX) < 64) and (Abs(UY - NmWcUY) < 64) then begin
     result := NmWcRes;
     exit;

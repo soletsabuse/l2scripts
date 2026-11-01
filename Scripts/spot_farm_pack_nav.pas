@@ -155,6 +155,7 @@ procedure SetRoomPlayers(Seconds: integer);
 procedure SetDebug(Level: integer);
 procedure SetRangedHunt(Ms: integer);
 procedure SetSpotsOnly(Enable: boolean);
+procedure SetPickup(Enable: boolean);    // false = the drop is left lying (all farms)
 procedure SetSkipChampions(Enable: boolean);
 procedure SetChampionHP(MinMaxHP: integer);
 procedure SpoilOnAction(Action: TL2Action; P1, P2: cardinal);
@@ -394,6 +395,7 @@ var
   PkPullGrid: string;             // SetNavGrid: pull area = its walkable cells
   PkAutoCorner: integer;          // SetAutoCorner: search a corner spot this far (0 = AddCorner only)
   PkSpotsOnly: boolean;           // SetSpotsOnly: the pack goes only to the farm spots of the map
+  NoPickup: boolean;              // SetPickup(false) / pickup 0: the drop is not picked up
   PkSkipChamps: boolean;          // SetSkipChampions: champions are not pulled / fought
   PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another A, B, C..., no counting
   PkSeqNext, PkSeqGoal: integer;  // SEQ: the room to go to next / the one we went for
@@ -657,6 +659,11 @@ end;
 procedure SetSpotsOnly(Enable: boolean);
 begin
   PkSpotsOnly := Enable;
+end;
+
+procedure SetPickup(Enable: boolean);
+begin
+  NoPickup := not Enable;
 end;
 
 // true = champions (MaxHP above the champion alert limit, SetChampionAlert) are never pulled, not
@@ -1415,6 +1422,8 @@ begin
   else if K = 'debug' then SetDebug(StrToIntDef(V, 1))
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
+  else if K = 'pickup' then SetPickup(V <> '0')
+  else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
   else if K = 'champ_hp' then SetChampionHP(StrToIntDef(V, 0))
   else if K = 'room_order' then PkRoomSeq := UpperCase(V) = 'SEQ'
@@ -1865,6 +1874,7 @@ end;
 procedure AoePickupLoot();
 var i, DX, DY, DZ: integer;
 begin
+  if NoPickup then exit;
   for i := DropList.Count - 1 downto 0 do begin
     if User.Dead or NeedReturn then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
@@ -2148,6 +2158,7 @@ begin
       Delay(400);
     end;
   end;
+  if NoPickup then exit;
   for i := DropList.Count - 1 downto 0 do begin
     if User.Dead or NeedReturn then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
@@ -4748,6 +4759,7 @@ end;
 procedure PkPickup();
 var i, DX, DY, DZ: integer;
 begin
+  if NoPickup then exit;
   for i := DropList.Count - 1 downto 0 do begin
     if User.Dead or NeedReturn or (PkCountAggro() > 0) then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
