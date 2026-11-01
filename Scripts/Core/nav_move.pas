@@ -35,6 +35,9 @@ function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on th
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
 function NavGraphTo(X, Y, Z: integer): boolean;      // along the graph until the target is in sight
+// stuck (a statue / a ledge the map does not know): server path (it goes round by the geodata) to the
+// nearest own node of the viewer, none near -> the nearest graph node; true = got there
+function NavUnstick(): boolean;
 // a moving target (a mob): where to click now - the farthest route node in sight; false = the target
 // itself is in sight (click it) or no way. Call again as we run
 function NavWaypoint(X, Y: integer): boolean;
@@ -85,6 +88,8 @@ var
   NmUserN: integer;
   NmBanX, NmBanY: array of integer;     // "X x y": a corner node is never put this close (removed in the viewer)
   NmBanN: integer;
+  NmUnstickPX, NmUnstickPY: integer;    // NavUnstick: the last node taken ...
+  NmUnstickAt: cardinal;                // ... and when: not the same one again soon
   NmZoneFile, NmGridFile, NmTraceFile: string;
   NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
   NmWpX, NmWpY: integer;                   // NavWaypoint result
@@ -1272,6 +1277,61 @@ end;
 
 // the whole run: behind a wall -> along the graph first; then the plain server path; stuck -> the
 // graph and the plain path once more
+function NavUnstick(): boolean;
+var i, UX, UY, UZ, PX, PY, BX, BY, Pass: integer;
+  D, Best: double;
+  Own: boolean;
+begin
+  result := false;
+  if not NavOn then exit;
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  Own := false;
+  BX := 0;
+  BY := 0;
+  // pass 0: own nodes (placed in the viewer for this) within 2000; pass 1: any graph node
+  for Pass := 0 to 1 do begin
+    Best := 1E18;
+    if Pass = 0 then begin
+      for i := 0 to NmUserN - 1 do begin
+        PX := NmUserX[i];
+        PY := NmUserY[i];
+        D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
+        if (D < 150) or (D > 2000) or (D >= Best) then continue;
+        if (PX = NmUnstickPX) and (PY = NmUnstickPY) and (GetTickCount - NmUnstickAt < 20000) then continue;
+        Best := D;
+        BX := PX;
+        BY := PY;
+      end;
+    end else begin
+      for i := 0 to NavN - 1 do begin
+        if GetTickCount < NmBadUntil[i] then continue;
+        PX := NavX[i];
+        PY := NavY[i];
+        D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
+        if (D < 150) or (D >= Best) then continue;
+        if (PX = NmUnstickPX) and (PY = NmUnstickPY) and (GetTickCount - NmUnstickAt < 20000) then continue;
+        Best := D;
+        BX := PX;
+        BY := PY;
+      end;
+    end;
+    if Best < 1E17 then begin
+      Own := Pass = 0;
+      break;
+    end;
+  end;
+  if Best >= 1E17 then exit;
+  NmUnstickPX := BX;
+  NmUnstickPY := BY;
+  NmUnstickAt := GetTickCount;
+  if Own then Engine.Msg('[Nav]', 'Stuck - server path to the nearest own node ' + IntToStr(BX) + ', ' + IntToStr(BY), 0)
+  else Engine.Msg('[Nav]', 'Stuck - server path to the nearest map node ' + IntToStr(BX) + ', ' + IntToStr(BY) +
+    ' (put an own node near here in the viewer)', 0);
+  result := NmGo(BX, BY, UZ);
+end;
+
 function NavMoveTo(X, Y, Z, Radius: integer): boolean;
 begin
   if NavOn and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);

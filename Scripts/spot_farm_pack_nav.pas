@@ -286,6 +286,7 @@ const
   PK_SPOIL_FIRST_MS = 600;      // pack farm: auto attack this long before the 1st mass spoil
   PK_SPOIL_GAP_MS   = 1500;     // pack farm: at least this long between mass spoils
   PK_FIGHT_RANGE    = 700;      // pack farm: a mob on us this close belongs to the pack being fought (stragglers too)
+  PK_NO_GAIN_MS     = 6000;     // a run that gets no 100 closer to its target this long = stuck
   PK_ROOM_ENTRY     = 600;      // rooms: aggro this close outside the room polygon (its entry) -> pull the room
   PK_ROOM_NEAR      = 520;      // rooms: this close to a room polygon = at the room (its spots go 500 out)
   PK_ROOM_LOOK_MS   = 60000;    // rooms, nothing to farm: a room not seen this long -> go and look at it
@@ -974,6 +975,8 @@ begin
   result := MoveWaitPlain(X, Y, Z);
   if result or User.Dead or NavIsBusy() or (not NavIsReady()) then exit;
   if NavGraphTo(X, Y, Z) then result := MoveWaitPlain(X, Y, Z);
+  if (not result) and (not User.Dead) then
+    if NavUnstick() then begin end;    // stuck: out of there for the next try
 end;
 
 // no SetPath and no SetTeleport: we never travel, we farm where the script was started
@@ -3836,6 +3839,8 @@ begin
   result := MoveExactPlain(X, Y, Z, Radius);
   if result or User.Dead or NavIsBusy() or (not NavIsReady()) then exit;
   if NavGraphTo(X, Y, Z) then result := MoveExactPlain(X, Y, Z, Radius);
+  if (not result) and (not User.Dead) then
+    if NavUnstick() then begin end;    // stuck: out of there for the next try
 end;
 
 // [State]: what the farm does now and why - said when it changes, repeated every 30 s
@@ -4057,12 +4062,16 @@ begin
       TY := NavWpY();
     end;
     if PkNeedClick(TX, TY) then PkClick(TX, TY, Z);
-    if PkStillMs() > PK_POINT_STUCK_MS then exit;
+    if PkStillMs() > PK_POINT_STUCK_MS then begin
+      if NavUnstick() then begin end;  // out of the stuck place; the caller goes on (or MoveExact)
+      exit;
+    end;
     Delay(PK_TICK_MS);
   end;
 end;
 
-// to the farm spot with the pack: round the corner when there is such a way in, the leash all the way
+// to the farm spot with the pack: round the corner when there is such a way in, the leash all the way.
+// NOT USED now: the mobs behaved worse with it - PkGather runs with MoveExact as before
 procedure PkLeadRun(SX, SY, SZ: integer);
 var BX, BY, EX, EY: integer;
   Ok: boolean;
@@ -4114,7 +4123,7 @@ begin
         PkCZ := PkSpotZ[k];
         if PkCZ = 0 then PkCZ := UZ;
         Engine.Msg('[Pack]', 'Pack ' + IntToStr(n) + ' -> farm spot ' + IntToStr(k + 1), 0);
-        PkLeadRun(PkCX, PkCY, PkCZ);
+        MoveExact(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
         exit;
       end;
       if PkSpotsOnly and (PkSpotN > 0) then exit;   // only the spots: none here -> fight where we are
@@ -4128,7 +4137,7 @@ begin
         PkCY := NavSpotY();
         PkCZ := UZ;
         Engine.Msg('[Pack]', 'Pack ' + IntToStr(n) + ' -> round the corner at ' + IntToStr(PkCX) + ', ' + IntToStr(PkCY), 0);
-        PkLeadRun(PkCX, PkCY, PkCZ);
+        MoveExact(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
         exit;
       end;
     end;
@@ -4810,13 +4819,16 @@ end;
 // run to the room along the nav map, but only until we are in it (the pull starts at the entry, not
 // in its middle); something on us on the way -> stop here, the pull goes on from here
 procedure PkRunIntoRoom(n: integer);
-var Started: cardinal;
+var Started, BestAt: cardinal;
   AX, AY, UZ, TX, TY: integer;
+  D, BestD: double;
 begin
   AX := RoomAnchorX(n);
   AY := RoomAnchorY(n);
   UZ := User.Z;
   Started := GetTickCount;
+  BestD := PkDist(AX, AY);
+  BestAt := GetTickCount;
   PkMoveReset();
   PkClickAt := 0;
   while (not AoeMustStop()) and (not PkAtRoom(n)) and
@@ -4830,9 +4842,15 @@ begin
       TY := NavWpY();
     end;
     if PkNeedClick(TX, TY) then PkClick(TX, TY, UZ);
-    if PkStillMs() > PK_POINT_STUCK_MS then begin
-      MoveWait(AX, AY, UZ);            // the plain way (it gets out of a stuck place)
-      exit;
+    D := PkDist(AX, AY);
+    if D < BestD - 100 then begin      // getting closer
+      BestD := D;
+      BestAt := GetTickCount;
+    end;
+    // stands, or jerks at a wall without getting closer: out by the server path to the nearest own node
+    if (PkStillMs() > PK_POINT_STUCK_MS) or (GetTickCount - BestAt > PK_NO_GAIN_MS) then begin
+      if not NavUnstick() then MoveWait(AX, AY, UZ);
+      exit;                            // the next tick goes on from there as before
     end;
     Delay(PK_TICK_MS);
   end;

@@ -35,7 +35,8 @@
   #rooms input, #rooms select { background: var(--panel2); color: var(--text); border: 1px solid #34404c; border-radius: 5px;
     padding: 3px 5px; font: inherit; }
   #rooms input.n { width: 48px; } #rooms input.m, #rooms input.p { width: 44px; }
-  #rooms .x { padding: 2px 7px; }
+  #rooms .x, #rooms .g { padding: 2px 7px; }
+  #rooms input.c { width: 74px; }
   #rooms .muted { font-size: 11px; }
   /* ===== settings view ===== */
   #cfg { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; overflow-y: auto; background: var(--bg); z-index: 4; display: none; padding: 16px 16px 40px; }
@@ -113,7 +114,7 @@
   скрипт .txt — его углы и сейф-поинт. Выбери цвет «Проход» / «Стена» и крась «Кистью» или «Заливкой» (клик внутри фигуры,
   как в пейнте; линии пробега — стенки-помощники), потом «Перегенерить навмеш» и проверь «Путь A→B».
   «Комната» — клики по углам, Enter / клик в первый угол — закрыть, тянуть угол — двигать; настройки комнат — панель справа.
-  «Точка фарма» — клик ставит, клик по точке убирает. «Сейф» — клик. «Нода» — своя точка графа (клик ставит / убирает). «✕ Удалить» — клик по ноде, точке, сейфу, углу комнаты. «⚙ Настройки» — настройки скрипта фарма.
+  «Точка фарма» — клик ставит, тянуть звёздочку — двигать (координаты — в панели справа). «Сейф» — клик, тянуть — двигать. «Нода» — своя точка графа (клик ставит, тянуть — двигать). «✕ Удалить» — клик по ноде, точке, сейфу, углу комнаты. «⚙ Настройки» — настройки скрипта фарма.
   Всё сохраняется в .navgrid.
   Колесо — масштаб, правая кнопка или Пробел — двигать, Ctrl+Z — отмена.</div>
 <div id="rooms"></div>
@@ -133,6 +134,7 @@ let fname = 'map';
 let scale = 0.004, ox = 0, oy = 0, dpr = 1, level = '', tool = 'brush', color = 'good', route = { a: null, b: null, path: null };
 let history = [], mouse = null, leak = null;
 let unodes = [];                                   // own graph nodes ("N x y")
+let ptDrag = null;                                 // a farm spot / the safe point / an own node being dragged
 let bans = [];                                     // graph nodes removed ("X x y"): none is built there
 let rooms = [], spots = [], safe = null, roomDraw = null, roomDrag = null, selRoom = -1;   // map extras
 const ROOM_COL = ['#ffd166', '#5ee6ff', '#ff9f1c', '#c792ea', '#3ddc84', '#ff5d6c', '#4fb3ff', '#f78fb3'];
@@ -427,7 +429,7 @@ function nextRoomName() { const used = new Set(rooms.map(r => r.name));
   for (let i = 0; i < 26; i++) { const n = String.fromCharCode(65 + i); if (!used.has(n)) return n; } return 'R' + (rooms.length + 1); }
 function roomsUi() {
   const box = $('rooms');
-  box.style.display = rooms.length ? 'block' : 'none';
+  box.style.display = rooms.length || spots.length ? 'block' : 'none';
   box.innerHTML = '<h3>Комнаты</h3><div class="muted">имя · мин. мобов · режим · приоритет</div>';
   rooms.forEach((r, i) => {
     const d = document.createElement('div'); d.className = 'r' + (i === selRoom ? ' sel' : '');
@@ -445,6 +447,22 @@ function roomsUi() {
     d.onclick = ev => { if (ev.target.tagName === 'DIV' || ev.target.tagName === 'SPAN') { selRoom = i; roomsUi(); draw(); } };
     box.appendChild(d);
   });
+  if (!spots.length) return;
+  const h = document.createElement('h3'); h.textContent = 'Точки фарма'; h.style.marginTop = '10px'; box.appendChild(h);
+  const hint = document.createElement('div'); hint.className = 'muted'; hint.textContent = 'x · y · z — или тяни звёздочку инструментом «Точка фарма»'; box.appendChild(hint);
+  spots.forEach((q, i) => {
+    const d = document.createElement('div'); d.className = 'r';
+    d.innerHTML = '<span class="muted" style="width:18px">' + (i + 1) + '</span>' +
+      '<input class="c" type="number" value="' + q.x + '"><input class="c" type="number" value="' + q.y + '"><input class="c" type="number" value="' + (q.z || 0) + '">' +
+      '<button class="g" title="показать на карте">◎</button><button class="x" title="удалить">✕</button>';
+    const [ix, iy, iz] = d.querySelectorAll('input.c');
+    ix.onchange = () => { q.x = Math.round(+ix.value || q.x); draw(); };
+    iy.onchange = () => { q.y = Math.round(+iy.value || q.y); draw(); };
+    iz.onchange = () => { q.z = Math.round(+iz.value || 0); };
+    d.querySelector('.g').onclick = () => { ox = W() / 2 - q.x * scale; oy = H() / 2 - q.y * scale; draw(); levelsSoon(); };
+    d.querySelector('.x').onclick = () => { spots.splice(i, 1); roomsUi(); draw(); };
+    box.appendChild(d);
+  });
 }
 function closeRoom() {
   if (!roomDraw || roomDraw.pts.length < 3) { roomDraw = null; draw(); return; }
@@ -459,7 +477,7 @@ function eraseAt(px, py) {
   let k = unodes.findIndex(q => near(q[0], q[1]));
   if (k >= 0) { unodes.splice(k, 1); toast('Своя нода убрана'); regen(); return; }
   k = spots.findIndex(q => near(q.x, q.y));
-  if (k >= 0) { spots.splice(k, 1); toast('Точка фарма убрана'); draw(); return; }
+  if (k >= 0) { spots.splice(k, 1); toast('Точка фарма убрана'); roomsUi(); draw(); return; }
   if (safe && near(safe.x, safe.y)) { safe = null; toast('Сейф убран'); draw(); return; }
   for (let i = 0; i < rooms.length; i++) { const j = rooms[i].pts.findIndex(q => near(q[0], q[1]));
     if (j >= 0) { if (rooms[i].pts.length <= 3) { toast('У комнаты минимум 3 угла — удалить комнату: ✕ в панели справа'); return; }
@@ -850,14 +868,17 @@ cv.addEventListener('mousedown', e => {
     roomDraw = { pts: [[Math.round(p[0]), Math.round(p[1])]], cursor: null }; draw(); return;
   }
   if (tool === 'spot') { const k = spots.findIndex(q => Math.hypot(sx(q.x) - e.offsetX, sy(q.y) - e.offsetY) < 10);
-    if (k >= 0) { spots.splice(k, 1); toast('Точка фарма убрана'); } else addSpot(p[0], p[1], 0, false); draw(); return; }
+    if (k >= 0) { ptDrag = { kind: 'spot', k }; return; }
+    addSpot(p[0], p[1], 0, false); roomsUi(); draw(); return; }
   if (tool === 'erase') { eraseAt(e.offsetX, e.offsetY); return; }
   if (tool === 'node') { const k = unodes.findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
-    if (k >= 0) unodes.splice(k, 1); else {
+    if (k >= 0) { ptDrag = { kind: 'node', k }; return; }
+    {
       const g = grid, cx = g ? Math.floor((p[0] - g.x0) / g.cell) : -1, cy = g ? Math.floor((p[1] - g.y0) / g.cell) : -1;
       if (!g || cx < 0 || cy < 0 || cx >= g.w || cy >= g.h || g.f[cy * g.w + cx] !== 1) toast('Нода не на зелёной клетке — бот через неё не пройдёт');
       unodes.push([Math.round(p[0]), Math.round(p[1])]); }
     regen(); return; }
+  if (tool === 'safe' && safe && Math.hypot(sx(safe.x) - e.offsetX, sy(safe.y) - e.offsetY) < 10) { ptDrag = { kind: 'safe' }; return; }
   if (tool === 'safe') { safe = { x: Math.round(p[0]), y: Math.round(p[1]), z: grid ? grid.z || 0 : 0 }; toast('Сейф-поинт поставлен'); draw(); return; }
   snapshot(); painting = true; paint(p); draw();
 });
@@ -866,10 +887,15 @@ window.addEventListener('mousemove', e => {
   if (pan) { ox = pan.ox + e.clientX - pan.x; oy = pan.oy + e.clientY - pan.y; draw(); levelsSoon(); return; }
   if (painting) paint([wx(mouse[0]), wy(mouse[1])]);
   if (roomDrag) rooms[roomDrag[0]].pts[roomDrag[1]] = [Math.round(wx(mouse[0])), Math.round(wy(mouse[1]))];
+  if (ptDrag) { const X = Math.round(wx(mouse[0])), Y = Math.round(wy(mouse[1]));
+    if (ptDrag.kind === 'spot') { spots[ptDrag.k].x = X; spots[ptDrag.k].y = Y; }
+    else if (ptDrag.kind === 'safe') { safe.x = X; safe.y = Y; }
+    else unodes[ptDrag.k] = [X, Y]; }
   if (roomDraw) roomDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
   draw();
 });
-window.addEventListener('mouseup', () => { if (painting) infoLine(); pan = null; painting = false; roomDrag = null; });
+window.addEventListener('mouseup', () => { if (painting) infoLine(); pan = null; painting = false; roomDrag = null;
+  if (ptDrag) { const k = ptDrag.kind; ptDrag = null; if (k === 'node') regen(); else { roomsUi(); draw(); } } });
 cv.addEventListener('mouseleave', () => { mouse = null; draw(); });
 cv.addEventListener('wheel', e => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
   ox = e.offsetX - (e.offsetX - ox) * k; oy = e.offsetY - (e.offsetY - oy) * k; scale *= k; draw(); levelsSoon(); }, { passive: false });
