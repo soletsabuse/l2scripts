@@ -37,6 +37,8 @@
   #rooms input.n { width: 48px; } #rooms input.m, #rooms input.p { width: 44px; }
   #rooms .x, #rooms .g { padding: 2px 7px; }
   #rooms input.c { width: 74px; }
+  #rooms input.rm { width: 46px; text-transform: uppercase; }
+  #rooms { width: 400px; }
   #rooms .muted { font-size: 11px; }
   /* ===== settings view ===== */
   #cfg { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; overflow-y: auto; background: var(--bg); z-index: 4; display: none; padding: 16px 16px 40px; }
@@ -353,7 +355,7 @@ function parseFile(text, name) {
         else if (line.startsWith('Q ')) { const f = line.trim().split(/\s+/), pts = [];
           for (let i = 5; i + 1 < f.length; i += 2) pts.push([+f[i], +f[i + 1]]);
           rooms.push({ name: f[1], min: +f[2] || 4, mode: f[3] || 'PACK', prio: +f[4] || 1, pts }); }
-        else if (line.startsWith('F ')) { const f = line.trim().split(/\s+/); spots.push({ x: +f[1], y: +f[2], z: +f[3] || 0 }); }
+        else if (line.startsWith('F ')) { const f = line.trim().split(/\s+/); spots.push({ x: +f[1], y: +f[2], z: +f[3] || 0, room: (f[4] || '').toUpperCase() }); }
         else if (line.startsWith('S ')) { const f = line.trim().split(/\s+/); safe = { x: +f[1], y: +f[2], z: +f[3] || 0 }; }
         else if (line.startsWith('N ')) { const f = line.trim().split(/\s+/); unodes.push([+f[1], +f[2]]); }
         else if (line.startsWith('X ')) { const f = line.trim().split(/\s+/); bans.push([+f[1], +f[2]]); }
@@ -375,7 +377,7 @@ function gridText() {
   L.push(...cfgLines());
   for (const r of rooms) if (r.pts.length >= 3)
     L.push('Q ' + r.name.replace(/\s+/g, '_') + ' ' + r.min + ' ' + r.mode + ' ' + r.prio + ' ' + r.pts.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
-  for (const p of spots) L.push('F ' + Math.round(p.x) + ' ' + Math.round(p.y) + ' ' + (p.z || 0));
+  for (const p of spots) L.push('F ' + Math.round(p.x) + ' ' + Math.round(p.y) + ' ' + (p.z || 0) + (p.room ? ' ' + p.room : ''));
   if (safe) L.push('S ' + Math.round(safe.x) + ' ' + Math.round(safe.y) + ' ' + (safe.z || 0));
   for (const p of unodes) L.push('N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
   for (const p of bans) L.push('X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
@@ -420,6 +422,15 @@ async function save() {
 }
 
 // ===== map extras: rooms, farm spots, safe point =====
+function roomDist(r, x, y) {
+  if (inPoly([x, y], r.pts)) return 0; let best = Infinity;
+  for (let i = 0, j = r.pts.length - 1; i < r.pts.length; j = i++) { const [ax, ay] = r.pts[j], [bx, by] = r.pts[i], L2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    let t = L2 < 1 ? 0 : ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / L2; t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(x - (ax + (bx - ax) * t), y - (ay + (by - ay) * t))); }
+  return best; }
+function spotAuto(q) { let best = 500, name = '';
+  for (const r of rooms) if (r.pts.length >= 3) { const d = roomDist(r, q.x, q.y); if (d <= best) { best = d; name = r.name; } }
+  return name; }
 function addSpot(x, y, z, quiet) {
   if (spots.some(p => Math.hypot(p.x - x, p.y - y) < 30)) return;
   spots.push({ x: Math.round(x), y: Math.round(y), z: z || (grid ? grid.z : 0) || 0 });
@@ -449,16 +460,19 @@ function roomsUi() {
   });
   if (!spots.length) return;
   const h = document.createElement('h3'); h.textContent = 'Точки фарма'; h.style.marginTop = '10px'; box.appendChild(h);
-  const hint = document.createElement('div'); hint.className = 'muted'; hint.textContent = 'x · y · z — или тяни звёздочку инструментом «Точка фарма»'; box.appendChild(hint);
+  const hint = document.createElement('div'); hint.className = 'muted'; hint.textContent = 'x · y · z · комнаты (A или A,B; пусто — по месту) — или тяни звёздочку инструментом «Точка фарма»'; box.appendChild(hint);
   spots.forEach((q, i) => {
     const d = document.createElement('div'); d.className = 'r';
     d.innerHTML = '<span class="muted" style="width:18px">' + (i + 1) + '</span>' +
       '<input class="c" type="number" value="' + q.x + '"><input class="c" type="number" value="' + q.y + '"><input class="c" type="number" value="' + (q.z || 0) + '">' +
+      '<input class="rm" placeholder="' + (spotAuto(q) || '—') + '" title="после заводки каких комнат бежать сюда: A или A,B; пусто — по месту (серым — какая выйдет сама)" value="' + (q.room || '') + '">' +
       '<button class="g" title="показать на карте">◎</button><button class="x" title="удалить">✕</button>';
     const [ix, iy, iz] = d.querySelectorAll('input.c');
     ix.onchange = () => { q.x = Math.round(+ix.value || q.x); draw(); };
     iy.onchange = () => { q.y = Math.round(+iy.value || q.y); draw(); };
     iz.onchange = () => { q.z = Math.round(+iz.value || 0); };
+    const ir = d.querySelector('input.rm');
+    ir.onchange = () => { q.room = ir.value.toUpperCase().split(/[^A-Za-z0-9_]+/).filter(Boolean).join(','); ir.value = q.room; draw(); };
     d.querySelector('.g').onclick = () => { ox = W() / 2 - q.x * scale; oy = H() / 2 - q.y * scale; draw(); levelsSoon(); };
     d.querySelector('.x').onclick = () => { spots.splice(i, 1); roomsUi(); draw(); };
     box.appendChild(d);
@@ -824,7 +838,10 @@ function draw() {
   for (const p of spots) { const X = sx(p.x), Y = sy(p.y); ctx.fillStyle = '#c792ea'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
     ctx.beginPath(); for (let k = 0; k < 10; k++) { const a = k * Math.PI / 5 - Math.PI / 2, rr = k % 2 ? 4 : 9;
       k ? ctx.lineTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr) : ctx.moveTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr); }
-    ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    const lab = p.room || (rooms.length ? spotAuto(p) : '');
+    if (lab) { ctx.font = (p.room ? 'bold ' : '') + '11px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.fillStyle = p.room ? '#ffffff' : '#c792ea';
+      ctx.strokeText(lab, X + 9, Y - 6); ctx.fillText(lab, X + 9, Y - 6); } }
   if (safe) { ctx.fillStyle = '#4fb3ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(safe.x), sy(safe.y), 8, 0, 7);
     ctx.fill(); ctx.stroke(); ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText('S', sx(safe.x) - 3, sy(safe.y) + 4); }
   for (const s of seeds) { ctx.fillStyle = s.t === 'S' ? '#4fb3ff' : s.t === 'F' ? '#c792ea' : '#ffd166'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(s.x), sy(s.y), 6, 0, 7); ctx.fill(); ctx.stroke(); }

@@ -291,6 +291,7 @@ const
   PK_ROOM_NEAR      = 520;      // rooms: this close to a room polygon = at the room (its spots go 500 out)
   PK_ROOM_LOOK_MS   = 60000;    // rooms, nothing to farm: a room not seen this long -> go and look at it
   PK_LEAD_B         = 300;      // the way in to a farm spot: the leg before the turn at the corner
+  PK_PHANTOM_MS     = 20000;    // "on us" but too far / another floor: not aggro this long
   PK_FIGHT_IDLE_MS  = 5000;     // pack farm: at the corner nobody comes into reach this long -> the fight is over
   PK_SPLASH_RANGE   = 150;      // pack farm: mobs this close in front of us are hit by the auto attack splash
   PK_SPLASH_ANGLE   = 60;       // pack farm: splash cone, degrees to each side of the target
@@ -399,6 +400,7 @@ var
   PkLeadBX, PkLeadBY, PkLeadEX, PkLeadEY: integer;   // PkPlanLead: the way in round the corner
   PkRebuffSaidAt: cardinal;       // last "waiting for the rebuff" message
   PkSpotX, PkSpotY, PkSpotZ: array of integer;   // SetFarmSpots: perfect farm spots (#f of nav_trace)
+  PkSpotRooms: array of string;   // "F x y z A,B": the rooms the spot is for (',A,B,'); '' = by place
   PkSpotN: integer;
   PkFarmMode: integer;            // SetFarmMode
   PkFarmModeSet: boolean;         // SetFarmMode was called (else rooms in the map switch rooms on)
@@ -1079,6 +1081,7 @@ begin
   SetLength(PkSpotX, L.Count);
   SetLength(PkSpotY, L.Count);
   SetLength(PkSpotZ, L.Count);
+  SetLength(PkSpotRooms, L.Count);
   PkSpotN := 0;
   for i := 0 to L.Count - 1 do begin
     S := L[i];
@@ -1086,6 +1089,7 @@ begin
     PkSpotX[PkSpotN] := StrToIntDef(PtField(S, 1), 0);
     PkSpotY[PkSpotN] := StrToIntDef(PtField(S, 2), 0);
     PkSpotZ[PkSpotN] := StrToIntDef(PtField(S, 3), 0);
+    PkSpotRooms[PkSpotN] := '';
     Inc(PkSpotN);
   end;
   L.Free;
@@ -1130,9 +1134,13 @@ begin
         SetLength(PkSpotX, PkSpotN + 1);
         SetLength(PkSpotY, PkSpotN + 1);
         SetLength(PkSpotZ, PkSpotN + 1);
+        SetLength(PkSpotRooms, PkSpotN + 1);
         PkSpotX[PkSpotN] := X;
         PkSpotY[PkSpotN] := Y;
         PkSpotZ[PkSpotN] := Z;
+        M := UpperCase(Trim(PtField(S, 4)));    // the rooms it is for, set in the viewer ('' = by place)
+        if M <> '' then M := ',' + M + ',';
+        PkSpotRooms[PkSpotN] := M;
         Inc(PkSpotN);
       end else if not HasSafePoint then SetSafePoint(X, Y, Z);
     end;
@@ -2013,23 +2021,24 @@ end;
 // "spoil activated" / "already spoiled" arrived since the last call: the event flag
 // (SpoilOnAction), or a new line in the system chat history
 function SpSpoilMsg(): boolean;
-var i: integer;
+var i, n: integer;
   M: TChatMessage;
   T: string;
 begin
   result := SpoilMsgFlag;
   SpoilMsgFlag := false;
-  try
-    for i := 0 to History.Count(mtSystem) - 1 do begin
-      M := History.GetMessage(i, mtSystem);
-      if M.OID <= SpLastSysOID then continue;
-      SpLastSysOID := M.OID;
-      T := LowerCase(M.Text);
-      if (Pos('spoil condition has been activated', T) > 0) or
-         (Pos('already been spoiled', T) > 0) then result := true;
-    end;
-  except
-    // history not available: the event flag above is enough
+  // the history grows / is trimmed in the bot's thread while we read it: the count is checked before
+  // every line - no try (a try here broke the script with "Invalid
+  // pointer operation" when we died in a fight: new lines came in the middle of the loop)
+  n := History.Count(mtSystem);
+  for i := 0 to n - 1 do begin
+    if i >= History.Count(mtSystem) then break;
+    M := History.GetMessage(i, mtSystem);
+    if M.OID <= SpLastSysOID then continue;
+    SpLastSysOID := M.OID;
+    T := LowerCase(M.Text);
+    if (Pos('spoil condition has been activated', T) > 0) or
+       (Pos('already been spoiled', T) > 0) then result := true;
   end;
 end;
 
@@ -3454,15 +3463,14 @@ begin
     end;
 end;
 
-// OID of the current target, 0 if none
+// OID of the current target, 0 if none. The target object is taken once and checked for nil, no try:
+// a try round a target that is gone (the mob / we died) broke the script ("Invalid pointer operation")
 function TargetOID(): integer;
+var T: TL2Live;
 begin
   result := 0;
-  try
-    if User.Target <> nil then result := User.Target.OID;
-  except
-    result := 0;
-  end;
+  T := User.Target;
+  if T <> nil then result := T.OID;
 end;
 
 // true if an item with this ID is equipped right now
@@ -3936,6 +3944,23 @@ end;
 // scored on the nav map like a corner (the pack does not see it, a sharp turn round the corner, a
 // long shielding wall, not through the pack); a spot of yours gets a bonus over a found corner.
 // Without a nav map: the nearest one not through the pack. -1 = none fits
+// the farm spot k is for room n: the rooms set for it in the viewer, none set -> by place (inside the
+// room / in the passage up to 500 out, nearest room)
+function PkSpotFor(k, n: integer): boolean;
+var L, SX, SY: integer;
+  R: string;
+begin
+  R := PkSpotRooms[k];
+  if R <> '' then begin
+    L := Pos(',' + UpperCase(RoomName(n)) + ',', R);
+    result := L > 0;
+    exit;
+  end;
+  SX := PkSpotX[k];
+  SY := PkSpotY[k];
+  result := RoomOfSpot(SX, SY) = n;
+end;
+
 function PkPickSpot(UX, UY, CX, CY: integer): integer;
 var k, SX, SY, Range, Nearest: integer;
   D, Best, Sc, DUC, DSC, DX, DY, NearD: double;
@@ -3954,7 +3979,7 @@ begin
   for k := 0 to PkSpotN - 1 do begin
     SX := PkSpotX[k];
     SY := PkSpotY[k];
-    if (PkRoomSel > 0) and (RoomOfSpot(SX, SY) <> PkRoomSel - 1) then continue;   // rooms: its own (in / near it)
+    if (PkRoomSel > 0) and (not PkSpotFor(k, PkRoomSel - 1)) then continue;   // rooms: its own (set / in / near it)
     DX := SX - UX;
     DY := SY - UY;
     D := Sqrt(DX * DX + DY * DY);
@@ -4092,6 +4117,7 @@ end;
 procedure PkGather();
 var i, k, NX, NY, CX, CY, n, UX, UY, UZ, Far: integer;
 begin
+  n := 0;
   // SetAutoCorner: a spot round a wall corner found on the map - the pack runs round the corner
   // and bunches up on us there
   if ((PkAutoCorner > 0) and NavIsReady()) or (PkSpotN > 0) then begin
@@ -4126,7 +4152,14 @@ begin
         MoveExact(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
         exit;
       end;
-      if PkSpotsOnly and (PkSpotN > 0) then exit;   // only the spots: none here -> fight where we are
+      if PkSpotsOnly and (PkSpotN > 0) then begin   // only the spots: none here -> fight where we are
+        Far := 0;                      // (here: the spots of this room, for the message)
+        for i := 0 to PkSpotN - 1 do
+          if (PkRoomSel > 0) and PkSpotFor(i, PkRoomSel - 1) then Inc(Far);
+        Engine.Msg('[Pack]', 'No farm spot taken (pack ' + IntToStr(n) + ', spots ' + IntToStr(PkSpotN) +
+          ', room ' + IntToStr(PkRoomSel - 1) + ' has ' + IntToStr(Far) + ') - fight here', 0);
+        exit;
+      end;
       // a good corner near; none -> look twice as far (a good corner is worth the run)
       Far := PkAutoCorner * 2;
       if Far > 1500 then Far := 1500;
@@ -4143,7 +4176,10 @@ begin
     end;
   end;
   PkCorner := PkNearestCorner();
-  if PkCorner < 0 then exit;          // no corners: fight where we stand
+  if PkCorner < 0 then begin          // no corners: fight where we stand
+    Engine.Msg('[Pack]', 'No farm spot / corner (pack mobs counted ' + IntToStr(n) + ', spots ' + IntToStr(PkSpotN) + ') - fight here', 0);
+    exit;
+  end;
   PkCX := PkCorners[PkCorner * 3];
   PkCY := PkCorners[PkCorner * 3 + 1];
   PkCZ := PkCorners[PkCorner * 3 + 2];
@@ -4227,21 +4263,19 @@ end;
 // "already been spoiled" - one per mob hit by the mass spoil. The event and the chat history are
 // two sources of the same lines: the bigger count wins
 function PkSpoilCount(): integer;
-var i: integer;
+var i, n: integer;
   M: TChatMessage;
   T: string;
 begin
-  try
-    for i := 0 to History.Count(mtSystem) - 1 do begin
-      M := History.GetMessage(i, mtSystem);
-      if M.OID <= SpLastSysOID then continue;
-      SpLastSysOID := M.OID;
-      T := LowerCase(M.Text);
-      if (Pos('spoil condition has been activated', T) > 0) or
-         (Pos('already been spoiled', T) > 0) then Inc(PkHistSpoil);
-    end;
-  except
-    // history not available: the event count is enough
+  n := History.Count(mtSystem);        // no try: see SpSpoilMsg
+  for i := 0 to n - 1 do begin
+    if i >= History.Count(mtSystem) then break;
+    M := History.GetMessage(i, mtSystem);
+    if M.OID <= SpLastSysOID then continue;
+    SpLastSysOID := M.OID;
+    T := LowerCase(M.Text);
+    if (Pos('spoil condition has been activated', T) > 0) or
+       (Pos('already been spoiled', T) > 0) then Inc(PkHistSpoil);
   end;
   result := PkEvSpoil;
   if PkHistSpoil > result then result := PkHistSpoil;
@@ -4788,7 +4822,7 @@ begin
   for k := 0 to PkSpotN - 1 do begin
     SX := PkSpotX[k];
     SY := PkSpotY[k];
-    if RoomOfSpot(SX, SY) = n then begin
+    if PkSpotFor(k, n) then begin
       X := SX;
       Y := SY;
       break;
@@ -4809,7 +4843,7 @@ begin
   for k := 0 to PkSpotN - 1 do begin
     SX := PkSpotX[k];
     SY := PkSpotY[k];
-    if (PkDist(SX, SY) <= 200) and (RoomOfSpot(SX, SY) = n) then begin
+    if (PkDist(SX, SY) <= 200) and PkSpotFor(k, n) then begin
       result := true;
       exit;
     end;
@@ -4876,12 +4910,33 @@ end;
 
 // FARM_ROOMS: the room with the most mobs expected (with its minimum), farmed empty by its own mode,
 // then the next; nowhere enough -> wait in the best one (a better one comes up -> go there)
+// mobs "on us" by their target, but none of them can be fought: farther than the fight range (behind
+// walls in another room), on another floor, a target left from an old aggro. The rooms would stand
+// on "1 on us - fight here" for ever: they are not aggro for a while, the farm goes on
+procedure PkForgetPhantoms();
+var i, OID, n: integer;
+begin
+  n := 0;
+  for i := NpcList.Count - 1 downto 0 do begin
+    if i >= NpcList.Count then continue;
+    if PkAggro(i) and (not PkFightMob(i)) then begin
+      OID := NpcList(i).OID;
+      PullForget(OID, PK_PHANTOM_MS);
+      Inc(n);
+    end;
+  end;
+  if n > 0 then
+    Engine.Msg('[Pack]', IntToStr(n) + ' "on us" but none near / on our floor - not aggro for ' +
+      IntToStr(PK_PHANTOM_MS div 1000) + ' s', 0);
+end;
+
 procedure PkRoomTick();
 var n, cur, UX, UY, UZ, AX, AY, k: integer;
   MS: string;
   Near: boolean;
 begin
   RoomUpdate();
+  if (PkCountAggro() > 0) and (PkCountFight() = 0) then PkForgetPhantoms();
   if (PkDebug >= 2) and ((PkRoomsAt = 0) or (GetTickCount - PkRoomsAt > 15000)) then begin
     PkRoomsAt := GetTickCount;
     for k := 0 to RoomCount() - 1 do Engine.Msg('[Rooms]', RoomInfo(k), 0);
