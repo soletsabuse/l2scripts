@@ -4838,6 +4838,24 @@ begin
   end;
 end;
 
+// the room is done (empty / its pack killed): stats, in order -> the next one (the round pause after
+// the last), no room selected - the next tick picks the next room
+procedure PkRoomDone(n: integer; Why: string);
+begin
+  Engine.Msg('[Room]', 'Room ' + RoomName(n) + ' ' + Why, 0);
+  if PkRoomSeq and (n = PkSeqGoal) then begin
+    PkSeqNext := n + 1;
+    if (PkSeqNext >= RoomCount()) and (PkCycleWait > 0) then begin
+      PkSeqNext := 0;
+      PkSeqWaitUntil := GetTickCount + PkCycleWait * 1000;
+      Engine.Msg('[Room]', 'Round of the rooms done, waiting ' + IntToStr(PkCycleWait) + ' s', 0);
+    end;
+  end;
+  RoomMarkCleared(n);
+  RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
+  PkRoomSel := 0;
+end;
+
 // FARM_ROOMS: the room with the most mobs expected (with its minimum), farmed empty by its own mode,
 // then the next; nowhere enough -> wait in the best one (a better one comes up -> go there)
 procedure PkRoomTick();
@@ -4896,17 +4914,7 @@ begin
   if cur >= 0 then begin
     if RoomBusy(cur) then cur := -1
     else if (not PkRoomWaiting) and PkAtRoom(cur) and (RoomFree(cur) = 0) then begin
-      Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ' cleared', 0);
-      if PkRoomSeq and (cur = PkSeqGoal) then begin   // in order: the next one
-        PkSeqNext := cur + 1;
-        if (PkSeqNext >= RoomCount()) and (PkCycleWait > 0) then begin
-          PkSeqNext := 0;
-          PkSeqWaitUntil := GetTickCount + PkCycleWait * 1000;
-          Engine.Msg('[Room]', 'Round of the rooms done, waiting ' + IntToStr(PkCycleWait) + ' s', 0);
-        end;
-      end;
-      RoomMarkCleared(cur);
-      RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
+      PkRoomDone(cur, 'cleared');
       cur := -1;
     end;
   end;
@@ -5029,6 +5037,10 @@ begin
     PkGather();
     PkFight();
     PkPickup();
+    // the pack of the room is dead: on to the next room - a mob that came up meanwhile is not pulled
+    // alone (it waits for the next visit)
+    if (not User.Dead) and (not NeedReturn) and (PkCountAggro() = 0) then
+      PkRoomDone(cur, 'done: its pack is dead (' + IntToStr(RoomFree(cur)) + ' came up meanwhile, left for later)');
   end;
 end;
 
