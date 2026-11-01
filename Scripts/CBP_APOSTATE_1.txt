@@ -21,7 +21,7 @@ begin
 
   // XP gain off (exp?state=off): true = no XP, false = normal XP
   SetExpOff(true);
-
+   SetChampionAlert(0);
   // standing still 3 sec with no target -> run to the farthest patrol point (stops when the profile takes a target)
 
   // supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max.
