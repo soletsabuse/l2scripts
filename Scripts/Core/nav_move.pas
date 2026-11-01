@@ -62,7 +62,8 @@ const
   NAV_CELL          = 40;       // cell of the zone grid
   NAV_NONE          = -999999999;
   NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
-  NAV_NODE_GAP      = 64;       // graph nodes closer than this to each other: one is enough
+  NAV_NODE_GAP      = 64;
+  NAV_BAN_R         = 40;       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
   NAV_LINK_MAX      = 2500;     // longest graph link
   NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
   NAV_END_SKIP      = 60;       // a wall cell this close to us / the target does not block the sight
@@ -82,6 +83,8 @@ const
 var
   NmUserX, NmUserY: array of integer;   // "N x y" lines of the grid file: own graph nodes
   NmUserN: integer;
+  NmBanX, NmBanY: array of integer;     // "X x y": a corner node is never put this close (removed in the viewer)
+  NmBanN: integer;
   NmZoneFile, NmGridFile, NmTraceFile: string;
   NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
   NmWpX, NmWpY: integer;                   // NavWaypoint result
@@ -378,6 +381,7 @@ var L: TStringList;
 begin
   result := false;
   NmUserN := 0;
+  NmBanN := 0;
   if not FileExists(F) then begin
     Engine.Msg('[Nav]', 'No grid file ' + F, 128);
     exit;
@@ -410,6 +414,12 @@ begin
       NmUserX[NmUserN] := StrToIntDef(NmField(S, 1), 0);
       NmUserY[NmUserN] := StrToIntDef(NmField(S, 2), 0);
       Inc(NmUserN);
+    end else if K = 'X' then begin       // a graph node removed in the viewer
+      SetLength(NmBanX, NmBanN + 1);
+      SetLength(NmBanY, NmBanN + 1);
+      NmBanX[NmBanN] := StrToIntDef(NmField(S, 1), 0);
+      NmBanY[NmBanN] := StrToIntDef(NmField(S, 2), 0);
+      Inc(NmBanN);
     end;
   end;
   L.Free;
@@ -791,6 +801,11 @@ begin
         Near := false;
         for i := 0 to NavN - 1 do
           if (Abs(NavX[i] - X) <= NAV_NODE_GAP) and (Abs(NavY[i] - Y) <= NAV_NODE_GAP) then begin
+            Near := true;
+            break;
+          end;
+        for i := 0 to NmBanN - 1 do      // removed in the viewer: no node here
+          if (Abs(NmBanX[i] - X) <= NAV_BAN_R) and (Abs(NmBanY[i] - Y) <= NAV_BAN_R) then begin
             Near := true;
             break;
           end;
