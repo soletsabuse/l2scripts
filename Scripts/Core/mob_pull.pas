@@ -44,6 +44,7 @@ function PullCountAggro(): integer;
 function PullIsShooter(OID: integer): boolean;    // the mob is on the ignore list (PullIgnoreID) / a skipped champion
 procedure PullSkipChampions(MinMaxHP: integer);   // mobs with MaxHP above this: never pulled / fought (0 = off)
 function PullIsChampion(i: integer): boolean;     // NpcList(i) is a live champion skipped by PullSkipChampions
+procedure PullSetPackLive(Enable: boolean);       // true: pack = on us + every free mob of the area, every tick
 procedure PullCheckShooters();                   // (does nothing now: no automatic shooters)
 function PullInArea(X, Y, Z: integer): boolean;  // the point is where we pull
 procedure PullPolyClear();                       // no extra polygon: the whole area
@@ -97,6 +98,7 @@ var
   MpNames: array of string;
   MpIgnIDs: array of integer;   // PullIgnoreID
   MpChampHP: integer;           // PullSkipChampions: 0 = champions are mobs like any other
+  MpPackLive: boolean;          // PullSetPackLive: the pack size follows the free mobs (a room: respawn joins)
   MpStop: boolean;
   // area grid
   GgX0, GgY0, GgCell, GgW, GgH: integer;
@@ -858,6 +860,20 @@ begin
   result := MpFreeOK(i);
 end;
 
+procedure PullSetPackLive(Enable: boolean);
+begin
+  MpPackLive := Enable;
+end;
+
+// every free mob we may take now (the area / the room polygon, our floor)
+function MpCountFreeAll(): integer;
+var i: integer;
+begin
+  result := 0;
+  for i := 0 to NpcList.Count - 1 do
+    if MpFreeOK(i) then Inc(result);
+end;
+
 function PullCountFree(X, Y, R: integer): integer;
 var i, NX, NY: integer;
   DX, DY: double;
@@ -1194,6 +1210,13 @@ begin
     PullCheckShooters();
     Cnt := PullCountAggro();
     result := Cnt;
+    if MpPackLive then begin             // a mob that came up meanwhile is taken too
+      Limit := Cnt + MpCountFreeAll();
+      if Limit < 1 then Limit := 1;
+      if Limit > MpPack then
+        Engine.Msg('[Pull]', 'New mobs in the room: pack ' + IntToStr(MpPack) + ' -> ' + IntToStr(Limit), 0);
+      MpPack := Limit;
+    end;
     if Cnt <> Prev then begin
       if Cnt > Prev then LastGain := GetTickCount;
       Engine.Msg('[Pull]', 'Aggro ' + IntToStr(Cnt) + '/' + IntToStr(MpPack), 0);

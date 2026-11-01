@@ -390,6 +390,10 @@ var
   PkSkipChamps: boolean;          // SetSkipChampions: champions are not pulled / fought
   PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another A, B, C..., no counting
   PkSeqNext, PkSeqGoal: integer;  // SEQ: the room to go to next / the one we went for
+  PkCycleWait: integer;           // room_cycle_wait: SEQ, after the last room wait this many seconds
+  PkSeqWaitUntil: cardinal;       // ... until then
+  PkRoomRecount: boolean;         // room_recount: the pull takes the mobs that came up meanwhile too
+  PkIgnoreWay: boolean;           // room_ignore_way: aggro away from the room we go to -> run on, no fight
   PkChampHP: integer;             // SetChampionHP: a mob with MaxHP above this is a champion (0 = the alert limit)
   PkLeadBX, PkLeadBY, PkLeadEX, PkLeadEY: integer;   // PkPlanLead: the way in round the corner
   PkRebuffSaidAt: cardinal;       // last "waiting for the rebuff" message
@@ -1396,6 +1400,9 @@ begin
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
   else if K = 'champ_hp' then SetChampionHP(StrToIntDef(V, 0))
   else if K = 'room_order' then PkRoomSeq := UpperCase(V) = 'SEQ'
+  else if K = 'room_cycle_wait' then PkCycleWait := StrToIntDef(V, 0)
+  else if K = 'room_recount' then PkRoomRecount := V = '1'
+  else if K = 'room_ignore_way' then PkIgnoreWay := V = '1'
   else if K = 'exp_off' then SetExpOff(V = '1')
   else if K = 'player_alert' then SetPlayerAlert(StrToIntDef(V, 0))
   else if K = 'private_alert' then SetPrivateAlert(V = '1')
@@ -4812,7 +4819,8 @@ begin
   Started := GetTickCount;
   PkMoveReset();
   PkClickAt := 0;
-  while (not AoeMustStop()) and (not PkAtRoom(n)) and (PkCountAggro() = 0) do begin
+  while (not AoeMustStop()) and (not PkAtRoom(n)) and
+        ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) do begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
     PullTapRestore();
     TX := AX;
@@ -4848,7 +4856,7 @@ begin
     UX := User.X;
     UY := User.Y;
     for k := 0 to RoomCount() - 1 do
-      if (k <> cur) and RoomInside(k, UX, UY) and (RoomMode(k) <> FARM_SINGLE) then begin
+      if (not PkIgnoreWay) and (k <> cur) and RoomInside(k, UX, UY) and (RoomMode(k) <> FARM_SINGLE) then begin
         Engine.Msg('[Room]', 'Aggro in room ' + RoomName(k) + ' on the way - farming it now', 0);
         PkRoomSet(k);
         PkRoomWaiting := false;
@@ -4868,6 +4876,11 @@ begin
       Near := PkAtRoom(cur) or (RoomDist(cur, UX, UY) <= PK_ROOM_ENTRY) or (PkDist(AX, AY) < 1500);
     end;
     if Near then PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us at room ' + RoomName(cur) + ' - they come along, pulling the room');
+    if (not Near) and PkIgnoreWay and (cur >= 0) and (User.HP >= 50) and (GetTickCount >= PkSeqWaitUntil) then begin
+      // not the room we go to: they follow us and join the pull there
+      PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us on the way - ignoring them, running on to room ' + RoomName(cur));
+      Near := true;
+    end;
     if not Near then begin
       PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us (far from the room / one by one) - fight here');
       PkCorner := -1;
@@ -4884,11 +4897,24 @@ begin
     if RoomBusy(cur) then cur := -1
     else if (not PkRoomWaiting) and PkAtRoom(cur) and (RoomFree(cur) = 0) then begin
       Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ' cleared', 0);
-      if PkRoomSeq and (cur = PkSeqGoal) then PkSeqNext := cur + 1;   // in order: the next one
+      if PkRoomSeq and (cur = PkSeqGoal) then begin   // in order: the next one
+        PkSeqNext := cur + 1;
+        if (PkSeqNext >= RoomCount()) and (PkCycleWait > 0) then begin
+          PkSeqNext := 0;
+          PkSeqWaitUntil := GetTickCount + PkCycleWait * 1000;
+          Engine.Msg('[Room]', 'Round of the rooms done, waiting ' + IntToStr(PkCycleWait) + ' s', 0);
+        end;
+      end;
       RoomMarkCleared(cur);
       RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
       cur := -1;
     end;
+  end;
+  if (cur < 0) and PkRoomSeq and (GetTickCount < PkSeqWaitUntil) then begin
+    PkState('rooms in order: round done, next round in ' + IntToStr((PkSeqWaitUntil - GetTickCount) div 1000) + ' s');
+    if HasSafePoint then PkIdle();
+    Delay(500);
+    exit;
   end;
   if (cur < 0) and PkRoomSeq then begin
     // in order: the next room of the list (the order of the viewer), whatever its mobs; a room with
@@ -4934,7 +4960,7 @@ begin
     cur := n;
   end;
   // at the room = inside it or at its farm spot outside (in the passage): RoomOfSpot takes them up to 500 out
-  if (not PkAtRoom(cur)) and (PkCountAggro() = 0) then begin
+  if (not PkAtRoom(cur)) and ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) then begin
     AX := RoomAnchorX(cur);
     AY := RoomAnchorY(cur);
     PkState('rooms: running to room ' + RoomName(cur) + ' (' + IntToStr(AX) + ', ' + IntToStr(AY) + ')');
@@ -4992,7 +5018,9 @@ begin
   PkState('rooms: pulling room ' + RoomName(cur) + ' full: ' + IntToStr(PkCountAggro()) + ' on us, ' +
     IntToStr(RoomFree(cur)) + ' free -> pack ' + IntToStr(k));
   PullSetPackSize(k);
+  PullSetPackLive(PkRoomRecount);      // respawn meanwhile: taken too, until we run to the spot
   PullRun();
+  PullSetPackLive(false);
   PullSetPackSize(PkPackSize);
   PkTapRestore();
   if AoeMustStop() then exit;
