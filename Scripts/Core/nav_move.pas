@@ -121,8 +121,9 @@ var
   NmUserN: integer;
   NmBanX, NmBanY: array of integer;     // "X x y": a corner node is never put this close (removed in the viewer)
   NmBanN: integer;
-  NmUnstickPX, NmUnstickPY: integer;    // NavUnstick: the last node taken ...
-  NmUnstickAt: cardinal;                // ... and when: not the same one again soon
+  NmUnstickPX, NmUnstickPY: array[0..3] of integer;   // NavUnstick: the last nodes taken ...
+  NmUnstickAt: array[0..3] of cardinal;               // ... and when: none of them again for 20 s
+  NmUnstickHead: integer;
   NmWcTX, NmWcTY, NmWcUX, NmWcUY: integer;   // NavWaypoint cache: the target / we at the last count ...
   NmWcAt: cardinal;                     // ... when ...
   NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
@@ -1673,6 +1674,19 @@ end;
 
 // the whole run: behind a wall -> along the graph first; then the plain server path; stuck -> the
 // graph and the plain path once more
+// this node was an unstick target within 20 s (two nodes side by side were taken in turn for ever)
+function NmUnstickRecent(PX, PY: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to 3 do
+    if (NmUnstickPX[k] = PX) and (NmUnstickPY[k] = PY) and (NmUnstickAt[k] <> 0) and
+       (GetTickCount - NmUnstickAt[k] < 20000) then begin
+      result := true;
+      exit;
+    end;
+end;
+
 function NmUnstick(): boolean;
 var i, UX, UY, UZ, PX, PY, BX, BY, Pass: integer;
   D, Best: double;
@@ -1695,7 +1709,7 @@ begin
         PY := NmUserY[i];
         D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
         if (D < 150) or (D > 2000) or (D >= Best) then continue;
-        if (PX = NmUnstickPX) and (PY = NmUnstickPY) and (GetTickCount - NmUnstickAt < 20000) then continue;
+        if NmUnstickRecent(PX, PY) then continue;
         Best := D;
         BX := PX;
         BY := PY;
@@ -1707,7 +1721,7 @@ begin
         PY := NavY[i];
         D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
         if (D < 150) or (D >= Best) then continue;
-        if (PX = NmUnstickPX) and (PY = NmUnstickPY) and (GetTickCount - NmUnstickAt < 20000) then continue;
+        if NmUnstickRecent(PX, PY) then continue;
         Best := D;
         BX := PX;
         BY := PY;
@@ -1719,9 +1733,10 @@ begin
     end;
   end;
   if Best >= 1E17 then exit;
-  NmUnstickPX := BX;
-  NmUnstickPY := BY;
-  NmUnstickAt := GetTickCount;
+  NmUnstickPX[NmUnstickHead] := BX;
+  NmUnstickPY[NmUnstickHead] := BY;
+  NmUnstickAt[NmUnstickHead] := GetTickCount;
+  NmUnstickHead := (NmUnstickHead + 1) mod 4;
   if Own then Engine.Msg('[Nav]', 'Stuck - server path to the nearest own node ' + IntToStr(BX) + ', ' + IntToStr(BY), 0)
   else Engine.Msg('[Nav]', 'Stuck - server path to the nearest map node ' + IntToStr(BX) + ', ' + IntToStr(BY) +
     ' (put an own node near here in the viewer)', 0);

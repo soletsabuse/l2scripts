@@ -227,7 +227,6 @@ const
   AOE_SWEEP_RANGE   = 150;      // AoE mode: sweep only corpses this close
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
-  PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
   PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
   PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
@@ -351,6 +350,7 @@ var
   PkStopCodeSaid: integer;        // PackTick: the stop reason said last ...
   PkStopSaidAt: cardinal;         // ... and when
   PkEventsAt: cardinal;           // PkLightTick: the events were looked at then
+  PkRunFailRoom, PkRunFails: integer;   // PkRunIntoRoom: stuck on the way to this room so many times in a row
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
 
 // ===================== Events (players around, private messages) =====================
@@ -2792,28 +2792,10 @@ begin
   end;
 end;
 
-// Walks from where we stand to the point, splitting a long run into PATH_STEP pieces.
-function WalkSegment(X, Y, Z: integer): boolean;
-var
-  FX, FY, FZ, Steps, s: integer;
-  Dist: double;
-begin
-  FX := User.X;
-  FY := User.Y;
-  FZ := User.Z;
-  Dist := User.DistTo(X, Y, Z);
-  Steps := Trunc(Dist / PATH_STEP) + 1;
-  result := true;
-  for s := 1 to Steps - 1 do begin
-    // intermediate points do not have to be reached exactly
-    WalkToPoint(FX + (X - FX) * s div Steps, FY + (Y - FY) * s div Steps, FZ + (Z - FZ) * s div Steps);
-    if User.Dead then begin result := false; exit; end;
-  end;
-  result := WalkToPoint(X, Y, Z);
-end;
-
+// after the teleport: the path points one after another with the bot's own Engine.MoveTo (it runs
+// there itself and returns when it is there / cannot get there) - a missed point: the next one anyway
 function WalkToSpot(): boolean;
-var i: integer;
+var i, X, Y, Z: integer;
 begin
   result := false;
   Engine.Msg('[Path]', '=== Walking to the spot ===', 128);
@@ -2823,7 +2805,11 @@ begin
       Engine.Msg('[Path]', 'Died on the way', 128);
       exit;
     end;
-    WalkSegment(Path[i], Path[i + 1], Path[i + 2]);   // a missed point is reported, we still try the next one
+    X := Path[i];
+    Y := Path[i + 1];
+    Z := Path[i + 2];
+    if not Engine.MoveTo(X, Y, Z) then
+      Engine.Msg('[Path]', 'Did not get to ' + IntToStr(X) + ', ' + IntToStr(Y) + ', ' + IntToStr(Z) + ' - on to the next point', 128);
     i := i + 3;
   end;
   if User.Dead then exit;
@@ -5042,13 +5028,29 @@ begin
       BestD := D;
       BestAt := GetTickCount;
     end;
-    // stands, or jerks at a wall without getting closer: out by the server path to the nearest own node
+    // stands, or jerks at a wall without getting closer: the full run along the graph (it leaves a
+    // node it cannot get to out of the routes, then unsticks itself); 3 times in a row -> the room is
+    // not reachable now: skip it for a while, the next one
     if (NavStillMs() > PK_POINT_STUCK_MS) or (GetTickCount - BestAt > PK_NO_GAIN_MS) then begin
-      if not NavUnstick() then NavRun(AX, AY, UZ, PATH_REACHED);
-      exit;                            // the next tick goes on from there as before
+      if PkRunFailRoom <> n then begin
+        PkRunFailRoom := n;
+        PkRunFails := 0;
+      end;
+      Inc(PkRunFails);
+      if PkRunFails >= 3 then begin
+        PkRunFails := 0;
+        Engine.Msg('[Room]', 'Cannot get to room ' + RoomName(n) + ' - skipping it for 60 s (check the nav map there)', 128);
+        RoomAvoid(n, 60);
+        if PkRoomSeq then PkSeqNext := (n + 1) mod RoomCount();
+        PkRoomSel := 0;
+        exit;
+      end;
+      if NavRun(AX, AY, UZ, PATH_REACHED) then PkRunFails := 0;
+      exit;                            // the next tick goes on from there
     end;
     Delay(PK_TICK_MS);
   end;
+  if PkAtRoom(n) and (PkRunFailRoom = n) then PkRunFails := 0;   // got there
 end;
 
 // the room is done (empty / its pack killed): stats, in order -> the next one (the round pause after

@@ -37,7 +37,8 @@ function RoomFree(i: integer): integer;       // free mobs in it now (when seen)
 function RoomMobs(i: integer): integer;       // RoomFree + skipped champions: for its minimum
 function RoomStalest(MinAgeMs: integer): integer;   // not seen for the longest (MinAgeMs+), -1 none
 function RoomExpected(i: integer): double;    // free mobs expected in it now
-function RoomBusy(i: integer): boolean;       // another player farms it
+function RoomBusy(i: integer): boolean;       // another player farms it / avoided (RoomAvoid)
+procedure RoomAvoid(i, Seconds: integer);     // do not go to room i for this long (cannot get there)
 procedure RoomMarkCleared(i: integer);        // we farmed it: what is left there now
 function RoomPick(): integer;                 // the best room with at least its minimum expected; -1 none
 function RoomPickExcept(Skip: integer): integer;   // the same, not this room
@@ -353,6 +354,12 @@ end;
 function RoomBusy(i: integer): boolean;
 begin
   result := GetTickCount < RBusyUntil[i];
+end;
+
+procedure RoomAvoid(i, Seconds: integer);
+begin
+  if (i < 0) or (i >= RN) then exit;
+  RBusyUntil[i] := GetTickCount + Seconds * 1000;
 end;
 
 procedure RoomMarkCleared(i: integer);

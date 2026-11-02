@@ -1255,6 +1255,7 @@ var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart: cardinal;
   Tapped, Tapping, TapOk: boolean;
   LimHi, LimLo: double;
+  PackMax: integer;                    // the biggest pack size of this pull (for the log)
 begin
   MpInit();
   result := 0;
@@ -1272,6 +1273,7 @@ begin
   MpDirX := User.X;
   MpDirY := User.Y;
   MpWaiting := false;                  // a new pull: no waiting carried over
+  PackMax := MpPack;
   while not MpMustStop() do begin
     PullCheckShooters();
     Cnt := PullCountAggro();
@@ -1279,8 +1281,13 @@ begin
     if MpPackLive then begin             // a mob that came up meanwhile is taken too
       Limit := Cnt + MpCountFreeAll();
       if Limit < 1 then Limit := 1;
-      if Limit > MpPack then
-        Engine.Msg('[Pull]', 'New mobs in the room: pack ' + IntToStr(MpPack) + ' -> ' + IntToStr(Limit), 0);
+      // said only when bigger than ever in this pull: a mob counted / not counted in turn (skipped a
+      // moment, at the edge) made it say "2 -> 3" again and again
+      if Limit > PackMax then begin
+        if PackMax > 0 then
+          Engine.Msg('[Pull]', 'New mobs in the room: pack ' + IntToStr(PackMax) + ' -> ' + IntToStr(Limit), 0);
+        PackMax := Limit;
+      end;
       MpPack := Limit;
     end;
     if Cnt <> Prev then begin
