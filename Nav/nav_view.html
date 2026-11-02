@@ -551,7 +551,7 @@ const PULL_ADV = [
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
 const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
-const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'nav_run', 'nav_step', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
   { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
@@ -611,10 +611,7 @@ const CARDS = [
     { k: 'path', l: 'Путь от точки высадки', type: 'lines', ph: 'x y z\nx y z', h: 'точки x y z по строкам, бег серверным путём' }] },
   { ic: '🛠', t: 'Прочее', f: [
     { k: 'exp_off', l: 'Выключить опыт', type: 'bool', h: 'exp?state=off' },
-    { k: 'nav_run', l: 'Бег по графу', type: 'sel', opts: [['', 'Срезая углы (по видимости)'], ['STEP', 'Строго по маршруту (шагами)']],
-      h: 'срезая углы — клик на самую дальнюю видимую ноду (старый бег). Строго по маршруту — маршрут считается раз на забег, клик серверным путём недалеко вперёд по линии графа: углы не срезает, ПК почти не грузит' },
-    { k: 'nav_step', l: 'Шаг бега, ед.', type: 'num', ph: '400', h: '«строго по маршруту»: клик на столько вперёд по маршруту; следующий — когда до точки 150. Меньше — точнее по нодам, больше — реже клики' },
-    { k: 'nav_wp_cache_ms', l: 'Кэш маршрута, мс', type: 'num', ph: '0', h: '«срезая углы»: куда кликать — пересчёт не чаще раза в столько. Расчёт теперь лёгкий (таблицы путей до целей) — по умолчанию 0, каждый тик: точнее всего на углах. Больше 0 — только если окон очень много' },
+    { k: 'nav_wp_cache_ms', l: 'Кэш маршрута, мс', type: 'num', ph: '500', h: 'куда кликать на бегу — пересчёт не чаще раза в столько (пока сдвинулись < 64). Меньше — точнее на углах, больше — легче для ПК; 0 — каждый тик' },
     { k: 'debug', l: 'Отладка', type: 'sel', opts: [['', 'по умолчанию (состояния)'], ['0', 'тихо'], ['1', '[State] при смене'], ['2', '[State] + таблица комнат']] }] }];
 
 const ids = s => (s || '').split(/[^\d]+/).filter(Boolean).join(', ');

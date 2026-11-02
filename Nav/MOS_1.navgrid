@@ -1718,7 +1718,9 @@ R ??????????????????????????????????????????????????????????????????????????????
 K login DCPspoil1 ASD123qwe
 K zone MOS_1.zmap
 K config ALARM_SILENT.xml
+K teleport _bbs_teleport?id=135&fromtown=6
 K buff 1204 _bbs_buffer_show|book_use?name=s&pre=0&target=Player
+K path 108642 -87823 -2909 110685 -87751 -3295 110526 -86339 -3295 110510 -86027 -3405
 K selfbuff 421 0
 K pack 3 302 444 22126
 K tap 5634 100
@@ -1731,7 +1733,7 @@ K room_players 30
 K room_avoid 30
 K champ_hp 100000
 K room_order SEQ
-K nav_step 400
+K nav_wp_cache_ms 100
 K debug 2
 K champion_alert 0
 K tap_always 1
@@ -1743,6 +1745,7 @@ K pull leash_range 3000
 K supply 1466 5000 15000
 K supply 726 100 400
 K supply 1539 150 500
+K nav_step 0
 Q A 3 PACK 1 109537 -86030 109576 -84733 111498 -84741 111459 -86038
 Q B 3 PACK 1 109529 -84592 109545 -83827 110311 -83842 110334 -84585
 Q C 3 PACK 1 109576 -83639 109592 -81577 112405 -81584 112358 -81897 109858 -81897 109912 -83717
