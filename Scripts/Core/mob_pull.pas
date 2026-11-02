@@ -1263,8 +1263,9 @@ end;
 
 function PullRun(): integer;
 var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
-  Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt: cardinal;
+  Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
   Tapped, Tapping, TapOk: boolean;
+  TapTries: integer;                   // tap again from right next to it (the whole room must aggro)
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
 begin
@@ -1274,6 +1275,8 @@ begin
   TapHP0 := 0;
   TapStart := 0;
   TapArmedAt := 0;
+  TapCloseUntil := 0;
+  TapTries := 0;
   Started := GetTickCount;
   LastGain := GetTickCount;
   Prev := -1;
@@ -1445,11 +1448,14 @@ begin
         Tapping := true;
         TapStart := GetTickCount;
         TapArmedAt := 0;
+        TapCloseUntil := 0;
+        TapTries := 0;
         TapHP0 := NpcList(Idx).CurHP;
         Engine.SetTarget(OID);
       end;
       HP := NpcList(Idx).CurHP;
-      if HP < TapHP0 then begin
+      // landed: its HP went down, or it is on us now (a fat mob: one tap may not move its HP %)
+      if (HP < TapHP0) or PullIsAggro(Idx) then begin
         PullIgnore(OID, MpTapSkipMs);  // hit: it comes after us now
         Tapping := false;
         OID := 0;
@@ -1470,6 +1476,29 @@ begin
           OID := 0;
           continue;
         end;
+      end;
+      // did not land (behind something, out of sight, a bad spot): right up to it and hit again, twice;
+      // only then it is skipped - every mob of the room must come
+      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) and (TapTries < 2) then begin
+        Inc(TapTries);
+        Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land - right up to it, again (' +
+          IntToStr(TapTries) + '/2)', 0);
+        TapCloseUntil := GetTickCount + 2000;
+        TapArmedAt := GetTickCount;
+        MpMoveReset();
+        MpClick(MX, MY, MZ);
+        Delay(MpTickMs);
+        continue;
+      end;
+      if (TapCloseUntil <> 0) and (GetTickCount < TapCloseUntil) and (MpDist(MX, MY) > 40) then begin
+        if MpNeedClick(MX, MY) then MpClick(MX, MY, MZ);   // still on the way to it
+        TapArmedAt := GetTickCount;    // the tap time starts when we stand at it
+        Delay(MpTickMs);
+        continue;
+      end;
+      if (TapCloseUntil <> 0) and (GetTickCount >= TapCloseUntil) or ((TapCloseUntil <> 0) and (MpDist(MX, MY) <= 40)) then begin
+        TapCloseUntil := 0;
+        Engine.SetTarget(OID);
       end;
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
         Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land, skipping it', 0);
