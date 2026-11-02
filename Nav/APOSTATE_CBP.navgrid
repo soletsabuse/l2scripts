@@ -1471,6 +1471,8 @@ K weapon 11890
 K corner_radius 80
 K room_players 0
 K champ_hp 50000
+K nav_wp_cache_ms 100
+K debug 2
 K tap_always 1
 K exp_off 1
 K spots_only 1
