@@ -35,6 +35,9 @@ procedure NavSend(Hex: string);               // a packet to the server (Engine.
 procedure NavSetWpCache(Ms: integer);         // NavWaypoint keeps its answer this long (default 500, 0 = off)
 procedure NavSetRunSteps(Enable: boolean);    // not used (the run is the one of de3a091); kept for old settings
 procedure NavSetStepLen(StepLen: integer);    // not used; kept for old settings
+// a run straight / a short cut over route nodes only where the line keeps this far off the red cells
+// all the way (default 40, 0 = may touch them) - the same rule as the route of the viewer
+procedure NavSetRunClear(Units: integer);
 function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
@@ -71,6 +74,7 @@ const
   NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
   NAV_NODE_GAP      = 64;
   NAV_BAN_R         = 40;
+  NAV_RUN_CLEAR     = 40;       // a run line keeps this far off the red cells (default, NavSetRunClear)
   NAV_WP_CACHE_MS   = 500;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
   NAV_LINK_MAX      = 2500;     // longest graph link
   NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
@@ -100,6 +104,9 @@ var
   NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
   NmWcMs: integer;                      // NavSetWpCache: how long (NmWcMsSet false -> NAV_WP_CACHE_MS)
   NmWcMsSet: boolean;
+  NmRunClear: integer;                  // NavSetRunClear: the margin of a run line (units)
+  NmRunClearSet: boolean;
+  NgRun: array of boolean;              // cells at least NmRunClear off the red / the map edge
   NmZoneFile, NmGridFile, NmTraceFile: string;
   NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
   NmWpX, NmWpY: integer;                   // NavWaypoint result
@@ -170,6 +177,13 @@ end;
 
 procedure NavSetRunSteps(Enable: boolean);
 begin
+end;
+
+procedure NavSetRunClear(Units: integer);
+begin
+  if Units < 0 then Units := 0;
+  NmRunClear := Units;
+  NmRunClearSet := true;
 end;
 
 procedure NavSetStepLen(StepLen: integer);
@@ -534,6 +548,50 @@ begin
   end;
 end;
 
+function NmRunAt(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := true;
+  if Length(NgRun) <> NgW * NgH then exit;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  result := NgRun[cy * NgW + cx];
+end;
+
+// a line we may RUN straight: free (NmLineFree) and NmRunClear off the red all the way - the body of
+// the character does not catch a corner. Where we stand at a wall (a corner, pushed there) / the target
+// is at one (a corner spot), the first / last 2 x NmRunClear may be closer. The viewer's route: the same
+function NmRunFree(X1, Y1, X2, Y2: integer): boolean;
+var k, n, PX, PY: integer;
+  L, T, DX, DY, D0, D1, Relax0, Relax1: double;
+begin
+  result := NmLineFree(X1, Y1, X2, Y2, false);
+  if (not result) or (NmRunClear <= 0) then exit;
+  Relax0 := 0;
+  Relax1 := 0;
+  if not NmRunAt(X1, Y1) then Relax0 := NmRunClear * 2;
+  if not NmRunAt(X2, Y2) then Relax1 := NmRunClear * 2;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  if NgCell >= 16 then n := Trunc(L / (NgCell * 0.5)) + 1
+  else n := Trunc(L / 8) + 1;
+  for k := 0 to n do begin
+    T := k / n;
+    D0 := T * L;
+    D1 := (1 - T) * L;
+    if (D0 <= Relax0) or (D1 <= Relax1) then continue;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if not NmRunAt(PX, PY) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
 function NavSee(X1, Y1, X2, Y2: integer): boolean;
 begin
   result := true;
@@ -546,12 +604,14 @@ begin
   if NavOn then result := NmFreeAt(X, Y, false);
 end;
 
+// a straight run from us (MoveWait / the graph run: go straight or along the graph) - with the margin
 function NavSeeFromUs(X, Y: integer): boolean;
 var UX, UY: integer;
 begin
   UX := User.X;
   UY := User.Y;
-  result := NavSee(UX, UY, X, Y);
+  result := true;
+  if NavOn then result := NmRunFree(UX, UY, X, Y);
 end;
 
 function NmDist(i, j: integer): double;
@@ -780,6 +840,34 @@ end;
 
 // a node at every convex corner of the walls (a safe cell whose diagonal neighbour is a wall while
 // both side neighbours are safe), links between nodes that see each other
+// the run margin: a cell is fine to run over when every cell within NmRunClear (a square) is walkable
+procedure NmBuildRun();
+var cx, cy, dx, dy, ax, ay, R: integer;
+  Ok: boolean;
+begin
+  if not NmRunClearSet then begin
+    NmRunClear := NAV_RUN_CLEAR;
+    NmRunClearSet := true;
+  end;
+  SetLength(NgRun, NgW * NgH);
+  R := 0;
+  if (NmRunClear > 0) and (NgCell > 0) then R := (NmRunClear + NgCell - 1) div NgCell;
+  for cy := 0 to NgH - 1 do
+    for cx := 0 to NgW - 1 do begin
+      Ok := NgFree[cy * NgW + cx];
+      if Ok then
+        for dy := -R to R do
+          for dx := -R to R do begin
+            if not Ok then break;
+            ax := cx + dx;
+            ay := cy + dy;
+            if (ax < 0) or (ay < 0) or (ax >= NgW) or (ay >= NgH) then Ok := false
+            else if not NgFree[ay * NgW + ax] then Ok := false;
+          end;
+      NgRun[cy * NgW + cx] := Ok;
+    end;
+end;
+
 function NavBuild(): boolean;
 var cx, cy, dx, dy, i, j, k, X, Y, X2, Y2, R, PX, PY: integer;
   Started: cardinal;
@@ -869,6 +957,7 @@ begin
       Y2 := NavY[j];
       if NmLineFree(X, Y, X2, Y2, true) then NmLink(i, j);
     end;
+  NmBuildRun();
   Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) +
     ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links (' +
     IntToStr((GetTickCount - Started) div 1000) + ' s)', 128);
@@ -1012,13 +1101,13 @@ begin
   NmWcUX := UX;
   NmWcUY := UY;
   NmWcRes := false;
-  if NmLineFree(UX, UY, X, Y, false) then exit;   // straight to it
+  if NmRunFree(UX, UY, X, Y) then exit;   // straight to it
   if not NmPlanTo(X, Y) then exit;
   for k := NavRouteN - 1 downto 0 do begin
     i := NavRoute[k];
     PX := NavX[i];
     PY := NavY[i];
-    if (k = 0) or NmLineFree(UX, UY, PX, PY, false) then begin
+    if (k = 0) or NmRunFree(UX, UY, PX, PY) then begin
       NmWpX := PX;
       NmWpY := PY;
       result := true;

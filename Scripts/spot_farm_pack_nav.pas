@@ -301,9 +301,8 @@ const
   PK_FIGHT_IDLE_MS  = 5000;     // pack farm: at the corner nobody comes into reach this long -> the fight is over
   PK_SPLASH_RANGE   = 150;      // pack farm: mobs this close in front of us are hit by the auto attack splash
   PK_SPLASH_ANGLE   = 60;       // pack farm: splash cone, degrees to each side of the target
-  PK_SPOIL_CASTS    = 2;        // pack farm: mass spoil casts per pack if the server never sends the spoil messages
-  PK_SPOIL_MAX      = 8;        // pack farm: max mass spoil casts per pack (+ new mobs) while not all are spoiled
-  PK_SPOIL_RESULT_MS = 1200;    // pack farm: after a mass spoil count the spoil messages this long
+  PK_SPOIL_MAX      = 12;       // pack farm: max mass spoil casts per pack (+ new mobs)
+  PK_SPOIL_PER_MOB  = 2;        // pack farm: mass spoils a mob must be under to count as spoiled (default)
   PK_SPOIL_AREA     = 200;      // pack farm: mobs this close to us are taken as hit by a mass spoil
   PK_NEW_SPOIL_MS   = 300;      // pack farm: a new (not spoiled) mob next to us -> mass spoil after this pause
   PK_CAST_MS        = 300;      // pack farm: short pause after a mass spoil / mass sweep cast, then hit again
@@ -449,7 +448,9 @@ var
   PkShootOID: array[0..31] of integer;   // shooters (do not move, shoot from afar): never pulled / fought
   PkShootHead: integer;
   PkDirX, PkDirY: integer;               // pull order: where we came from (the last touched mob)
-  PkSpoiledOID: array[0..63] of integer; // mobs of the pack hit by our mass spoil
+  PkSpoiledOID: array[0..63] of integer; // mobs of the pack under our mass spoil ...
+  PkSpoiledCnt: array[0..63] of integer; // ... how many times
+  PkSpoilPerMob: integer;         // spoil_per_mob: that many mass spoils per mob are enough (0 -> default)
   PkSpoiledHead: integer;
   PkSnapOID: array[0..31] of integer;    // mobs under the last mass spoil (taken at the cast)
   PkSnapN: integer;
@@ -1419,7 +1420,9 @@ begin
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
+  else if K = 'spoil_per_mob' then PkSpoilPerMob := StrToIntDef(V, PK_SPOIL_PER_MOB)
   else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 500))
+  else if K = 'nav_clear' then NavSetRunClear(StrToIntDef(V, 40))
   else if K = 'nav_run' then NavSetRunSteps(UpperCase(V) = 'STEP')
   else if K = 'nav_step' then NavSetStepLen(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
@@ -1533,12 +1536,15 @@ end;
 function ItemCount(ItemID: integer): Int64;
 var
   i, ID, Cnt: integer;
+  It: TL2Item;
 begin
   result := 0;
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    ID := Inventory.User.Items(i).ID;
+    It := Inventory.User.Items(i);     // each item read once (the list changes in the bot's thread)
+    if It = nil then continue;
+    ID := It.ID;
     if ID = ItemID then begin
-      Cnt := Inventory.User.Items(i).Count;
+      Cnt := It.Count;
       result := result + Cnt;
     end;
   end;
@@ -1599,16 +1605,14 @@ end;
 
 // ===================== Helper functions =====================
 
+// the bot's own search (TL2List.ByID) instead of walking the buff list ourselves: the list changes
+// in the bot's thread every time a buff / debuff comes or goes (a buff ending while we walked it broke
+// the script with "Invalid pointer operation")
 function BuffTime(ID: integer): cardinal;
-var i: integer;
+var B: TL2Buff;
 begin
   result := 0;
-  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
-    if (User.Buffs.Items(i).id = ID) then begin
-      result := User.Buffs.Items(i).EndTime;
-      break;
-    end;
-  end;
+  if User.Buffs.ByID(ID, B) then result := B.EndTime;
 end;
 
 procedure BuffAltB();
@@ -1913,16 +1917,10 @@ end;
 // dead -> sweep -> pick up the drop around. Mobs that hit us are taken first.
 
 function SpSkillLeft(ID: integer): cardinal;
-var i, SID: integer;
+var Sk: TL2Skill;
 begin
   result := 0;
-  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
-    SID := SkillList(i).ID;
-    if SID = ID then begin
-      result := SkillList(i).EndTime;
-      exit;
-    end;
-  end;
+  if SkillList.ByID(ID, Sk) then result := Sk.EndTime;   // the bot's own search (see BuffTime)
 end;
 
 function SpIgnored(OID: integer): boolean;
@@ -2288,16 +2286,9 @@ end;
 
 // the character has this skill (it is in its skill list)
 function HasSkill(ID: integer): boolean;
-var i, SID: integer;
+var Sk: TL2Skill;
 begin
-  result := false;
-  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
-    SID := SkillList(i).ID;
-    if SID = ID then begin
-      result := true;
-      exit;
-    end;
-  end;
+  result := SkillList.ByID(ID, Sk);    // the bot's own search (see BuffTime)
 end;
 
 procedure SelfBuff_Thread();
@@ -3479,13 +3470,23 @@ begin
 end;
 
 // true if an item with this ID is equipped right now
+// The bot's own search first (TL2List.ByID - no walk over a list the bot changes meanwhile); only when
+// that copy is not on, the other copies with the same ID are looked at (two of the same weapon)
 function IsEquipped(ItemID: integer): boolean;
 var i, ID: integer;
+  It: TL2Item;
 begin
   result := false;
+  if not Inventory.User.ByID(ItemID, It) then exit;   // not in the bag at all
+  if It.Equipped then begin
+    result := true;
+    exit;
+  end;
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    ID := Inventory.User.Items(i).ID;
-    if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    ID := It.ID;
+    if (ID = ItemID) and It.Equipped then begin
       result := true;
       exit;
     end;
@@ -3677,6 +3678,7 @@ end;
 procedure RememberWeapon();
 var i, ID, Part: integer;
   Parts: string;
+  It: TL2Item;
 begin
   // tree mobs on: the weapon between them is the melee one from SetTreeMobs, never the bow
   if TreeEnabled then begin
@@ -3689,12 +3691,14 @@ begin
   RefreshInventory();
   Parts := '';
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    if not Inventory.User.Items(i).Equipped then continue;
-    ID := Inventory.User.Items(i).ID;
-    Part := Inventory.User.Items(i).BodyPart;
+    It := Inventory.User.Items(i);     // each item read once (the list changes in the bot's thread)
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    ID := It.ID;
+    Part := It.BodyPart;
     if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
       WeaponID := ID;
-      Engine.Msg('[Weapon]', 'Remembered weapon: ' + Inventory.User.Items(i).Name + ' (ID ' + IntToStr(ID) +
+      Engine.Msg('[Weapon]', 'Remembered weapon: ' + It.Name + ' (ID ' + IntToStr(ID) +
         ', slot ' + IntToStr(Part) + ')', 128);
       exit;
     end;
@@ -3893,14 +3897,17 @@ end;
 // the weapon in hands right now (right hand / two hands); 0 = none
 function PkCurrentWeapon(): integer;
 var i, Part: integer;
+  It: TL2Item;
 begin
   result := 0;
   RefreshInventory();
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    if not Inventory.User.Items(i).Equipped then continue;
-    Part := Inventory.User.Items(i).BodyPart;
+    It := Inventory.User.Items(i);     // each item read once
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    Part := It.BodyPart;
     if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
-      result := Inventory.User.Items(i).ID;
+      result := It.ID;
       exit;
     end;
   end;
@@ -4211,8 +4218,26 @@ begin
   result := (PkDist(NX, NY) <= PK_FIGHT_RANGE) and PkZOk(NZ);
 end;
 
-// all mobs under the last mass spoil answered "spoiled": exactly those (taken at the cast) are
-// marked - a mob that showed up after the cast was not hit
+// no spoil messages: a mob counts as spoiled once it was under PkSpoilPerMob (2) of our mass spoils
+function PkSpoilNeed(): integer;
+begin
+  result := PkSpoilPerMob;
+  if result <= 0 then result := PK_SPOIL_PER_MOB;
+end;
+
+// how many of our mass spoils this mob was under
+function PkSpoilHits(OID: integer): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to 63 do
+    if PkSpoiledOID[k] = OID then begin
+      result := PkSpoiledCnt[k];
+      exit;
+    end;
+end;
+
+// a mass spoil went out: every mob taken at the cast (PkSnapSpoilArea) was under it once more
 procedure PkMarkSpoiled();
 var j, k, OID: integer;
   Found: boolean;
@@ -4222,54 +4247,31 @@ begin
     Found := false;
     for k := 0 to 63 do
       if PkSpoiledOID[k] = OID then begin
+        Inc(PkSpoiledCnt[k]);
         Found := true;
         break;
       end;
     if Found then continue;
     PkSpoiledOID[PkSpoiledHead] := OID;
+    PkSpoiledCnt[PkSpoiledHead] := 1;
     PkSpoiledHead := (PkSpoiledHead + 1) mod 64;
   end;
 end;
 
-// a pack mob next to us that no mass spoil has hit yet (came late, or spawned from a corpse)
-function PkHasUnspoiled(): boolean;
-var i, k, OID, NX, NY: integer;
-  Found: boolean;
+// pack mobs within the mass spoil reach that were under fewer than PkSpoilNeed of our mass spoils
+// (all at the start; later the ones that came late / spawned from a corpse)
+function PkCountUnspoiled(): integer;
+var i, OID, NX, NY: integer;
 begin
-  result := false;
+  result := 0;
   for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PkFightMob(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
-    if PkDist(NX, NY) > PK_HIT_RANGE then continue;
+    if PkDist(NX, NY) > PK_SPOIL_AREA then continue;
     OID := NpcList(i).OID;
-    Found := false;
-    for k := 0 to 63 do
-      if PkSpoiledOID[k] = OID then begin
-        Found := true;
-        break;
-      end;
-    if not Found then begin
-      result := true;
-      exit;
-    end;
+    if PkSpoilHits(OID) < PkSpoilNeed() then Inc(result);
   end;
-end;
-
-// a mass spoil is cast now: start counting its messages
-procedure PkSpoilCountReset();
-begin
-  SpSpoilMsg();                        // old lines / flag belong to nobody
-  PkEvSpoil := 0;
-  PkHistSpoil := 0;
-end;
-
-// spoil messages since PkSpoilCountReset: "spoil condition has been activated" (spoiled now) +
-// "already been spoiled" - one per mob hit by the mass spoil, counted by the event (SpoilOnAction)
-function PkSpoilCount(): integer;
-begin
-  result := PkEvSpoil;                 // events only: see SpSpoilMsg
-  if result > 0 then PkSeenSpoilMsg := true;
 end;
 
 // a mass spoil is cast now: remember every live mob close enough to be hit (aggro or not - each one
@@ -4538,7 +4540,7 @@ procedure PkFight();
 var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, BestOID: integer;
   NextSpoil, IdleSince, SpoilCastAt, RangedSince, BestAt: cardinal;
   NearD0: double;
-  Running, WasRunning, SpoilWait, AllSpoiled: boolean;
+  Running, WasRunning: boolean;
   R, SpoilN: integer;
 begin
   OID := 0;
@@ -4547,11 +4549,12 @@ begin
   IdleSince := 0;
   Casts := 0;
   NextSpoil := 0;                      // set by the first hit: hit first, spoil after
-  SpoilWait := false;
-  AllSpoiled := false;
   SpoilCastAt := 0;
   SpoilN := 0;
-  for Idx := 0 to 63 do PkSpoiledOID[Idx] := 0;   // a new pack: nobody spoiled yet
+  for Idx := 0 to 63 do begin          // a new pack: nobody spoiled yet
+    PkSpoiledOID[Idx] := 0;
+    PkSpoiledCnt[Idx] := 0;
+  end;
   PkCorpseSince := 0;
   if PkCorner >= 0 then PkWaitPack();  // at the farm spot / corner: the pack comes to us first
   HuntOID := 0;
@@ -4676,33 +4679,26 @@ begin
       continue;
     end;
 
-    // auto attack -> mass spoil -> auto attack -> ... Every mob under a mass spoil answers with one
-    // message ("spoil activated" / "already spoiled"): fewer messages than mobs = somebody is not
-    // spoiled yet -> mass spoil again. All spoiled -> again only for new mobs (spawned from a corpse,
-    // came late)
-    if SpoilWait and (GetTickCount - SpoilCastAt >= PK_SPOIL_RESULT_MS) then begin
-      SpoilWait := false;
-      R := PkSpoilCount();
-      if PkSeenSpoilMsg then AllSpoiled := R >= SpoilN
-      else AllSpoiled := Casts >= PK_SPOIL_CASTS;   // the server sends no spoil messages: old rule
-      if AllSpoiled then PkMarkSpoiled();
-      Engine.Msg('[Pack]', 'Mass spoil: ' + IntToStr(R) + '/' + IntToStr(SpoilN) + ' spoiled', 0);
-    end;
+    // auto attack -> mass spoil -> auto attack -> ... No spoil messages are read: a mob near us counts
+    // as spoiled after PkSpoilNeed (2) of our mass spoils - cast again while one near has fewer (new
+    // mobs that came late / spawned from a corpse get their two as well)
     if NextSpoil = 0 then NextSpoil := GetTickCount + PK_SPOIL_FIRST_MS;
-    if (PkMassSpoil > 0) and (not SpoilWait) and (Casts < PK_SPOIL_MAX) and
-       (GetTickCount >= NextSpoil) and (SpSkillLeft(PkMassSpoil) = 0) and
-       ((not AllSpoiled) or PkHasUnspoiled()) then begin
-      if AllSpoiled then Engine.Msg('[Pack]', 'New mobs, mass spoil again', 0);
-      PkSpoilCountReset();
-      SpoilN := PkSnapSpoilArea();
-      Engine.UseSkill(PkMassSpoil);
-      Inc(Casts);
-      SpoilWait := true;
-      SpoilCastAt := GetTickCount;
-      AllSpoiled := false;
-      NextSpoil := GetTickCount + PK_SPOIL_GAP_MS;
-      Delay(PK_CAST_MS);
-      continue;
+    if (PkMassSpoil > 0) and (Casts < PK_SPOIL_MAX) and (GetTickCount >= NextSpoil) and
+       (SpSkillLeft(PkMassSpoil) = 0) then begin
+      R := PkCountUnspoiled();
+      if R > 0 then begin
+        SpoilN := PkSnapSpoilArea();
+        if Engine.UseSkill(PkMassSpoil) then begin
+          Inc(Casts);
+          PkMarkSpoiled();
+          SpoilCastAt := GetTickCount;
+          Engine.Msg('[Pack]', 'Mass spoil #' + IntToStr(Casts) + ': ' + IntToStr(R) + ' of ' + IntToStr(SpoilN) +
+            ' mobs near had fewer than ' + IntToStr(PkSpoilNeed()), 0);
+        end;
+        NextSpoil := GetTickCount + PK_SPOIL_GAP_MS;
+        Delay(PK_CAST_MS);
+        continue;
+      end;
     end;
 
     // corpses vanish: sweep them now

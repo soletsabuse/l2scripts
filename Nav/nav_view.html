@@ -295,11 +295,38 @@ function lineFree(a, b, safe) {
     if (!freeAt(Math.round(a[0] + dx * t), Math.round(a[1] + dy * t), safe)) return false; }
   return true;
 }
+// the margin cells for the runs (as NmBuildRun of the bot): every cell within the margin is walkable
+let runGrid = null, runKey = '';
+function runClear() { const c = String(cfg.nav_clear === undefined ? '' : cfg.nav_clear).trim(); return c === '' ? 40 : Math.max(0, +c || 0); }
+function runCells() {
+  const g = grid, C = runClear(), key = C + ':' + g.w + 'x' + g.h + ':' + (graph ? graph.nodes.length : 0);
+  if (runGrid && runKey === key) return runGrid;
+  const R = C > 0 && g.cell > 0 ? Math.ceil(C / g.cell) : 0, out = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    let ok = graph.safe[cy * g.w + cx] === 1;
+    for (let dy = -R; ok && dy <= R; dy++) for (let dx = -R; ok && dx <= R; dx++) {
+      const ax = cx + dx, ay = cy + dy;
+      if (ax < 0 || ay < 0 || ax >= g.w || ay >= g.h || graph.safe[ay * g.w + ax] !== 1) ok = false; }
+    out[cy * g.w + cx] = ok ? 1 : 0; }
+  runGrid = out; runKey = key; return out; }
+function runAt(x, y) { const g = grid, r = runCells(); if (x < g.x0 || y < g.y0) return true;
+  const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+  if (cx >= g.w || cy >= g.h) return true; return r[cy * g.w + cx] === 1; }
+// a line the bot RUNS straight (NmRunFree): free and the margin off the red all the way; at an end
+// standing at a wall the first / last 2 x margin may be closer
+function runFree(a, b) {
+  if (!lineFree(a, b, false)) return false;
+  const C = runClear(); if (C <= 0) return true;
+  const r0 = runAt(a[0], a[1]) ? 0 : C * 2, r1 = runAt(b[0], b[1]) ? 0 : C * 2;
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), n = Math.trunc(L / Math.max(grid.cell * 0.5, 8)) + 1;
+  for (let k = 0; k <= n; k++) { const t = k / n; if (t * L <= r0 || (1 - t) * L <= r1) continue;
+    if (!runAt(Math.round(a[0] + dx * t), Math.round(a[1] + dy * t))) return false; }
+  return true; }
 function components() { const p = graph.nodes.map((_, i) => i), f = x => p[x] === x ? x : (p[x] = f(p[x]));
   for (const [a, b] of graph.edges) p[f(a)] = f(b); return new Set(graph.nodes.map((_, i) => f(i))).size; }
 function findRoute(A, B) {
   const P = graph.nodes, n = P.length;
-  if (lineFree(A, B, false)) return [A, B];
+  if (runFree(A, B)) return [A, B];
   const D = new Array(n).fill(Infinity), prev = new Array(n).fill(-1), done = new Array(n).fill(false);
   for (let i = 0; i < n; i++) { const d = dist(A, P[i]); if (d <= 3000 && lineFree(A, P[i], false)) D[i] = d; }
   const adj = P.map(() => []); for (const [a, b] of graph.edges) { adj[a].push(b); adj[b].push(a); }
@@ -310,7 +337,7 @@ function findRoute(A, B) {
   if (e < 0) return null;
   const r = []; for (let v = e; v >= 0; v = prev[v]) r.unshift(P[v]);
   const out = [A]; let cur = A;
-  for (let k = 0; k < r.length; k++) { if (lineFree(cur, B, false)) break; if (k + 1 < r.length && lineFree(cur, r[k + 1], false)) continue; out.push(r[k]); cur = r[k]; }
+  for (let k = 0; k < r.length; k++) { if (runFree(cur, B)) break; if (k + 1 < r.length && runFree(cur, r[k + 1])) continue; out.push(r[k]); cur = r[k]; }
   out.push(B); return out;
 }
 function infoLine() {
@@ -551,7 +578,7 @@ const PULL_ADV = [
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
 const BOOLS = { tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
-const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
   { ic: '👤', t: 'Аккаунт и старт', sub: 'Логин в игру и файлы бота', f: [
@@ -562,6 +589,7 @@ const CARDS = [
   { ic: '⚔', t: 'Фарм', sub: 'Что бьём и как', f: [
     { k: 'pack.size', l: 'Размер пачки', type: 'num', ph: '6', h: 'сколько мобов собирать перед боем' },
     { k: 'pack.spoil', l: 'Масс спойл', type: 'num', ph: '302', h: 'ID скилла; пусто — 302, 0 — без спойла' },
+    { k: 'spoil_per_mob', l: 'Масс спойлов на моба', type: 'num', ph: '2', h: 'системные сообщения не читаются: моб считается заспойленным, когда попал под столько масс спойлов (реснувшиеся / подбежавшие позже — тоже по столько)' },
     { k: 'pack.sweep', l: 'Масс свип', type: 'num', ph: '444', h: 'ID скилла; пусто — 444, 0 — без свипа' },
     { k: 'pack.mobs', l: 'ID мобов', type: 'ids', ph: '22126, 22127', h: 'пусто — любой моб в зоне' },
     { k: 'mode', l: 'Режим', type: 'sel', opts: [['', 'сам: комнаты, если нарисованы, иначе пачки'], ['PACK', 'пачка → за угол'],
@@ -611,6 +639,7 @@ const CARDS = [
     { k: 'path', l: 'Путь от точки высадки', type: 'lines', ph: 'x y z\nx y z', h: 'точки x y z по строкам, бег серверным путём' }] },
   { ic: '🛠', t: 'Прочее', f: [
     { k: 'exp_off', l: 'Выключить опыт', type: 'bool', h: 'exp?state=off' },
+    { k: 'nav_clear', l: 'Отступ бега от стен', type: 'num', ph: '40', h: 'бот бежит напрямую / срезает ноды, только если прямая по всей длине не ближе этого к красному. Оранжевый «Маршрут» на карте считается так же — как нарисован, так и побежит (0 — можно впритирку)' },
     { k: 'nav_wp_cache_ms', l: 'Кэш маршрута, мс', type: 'num', ph: '500', h: 'куда кликать на бегу — пересчёт не чаще раза в столько (пока сдвинулись < 64). Меньше — точнее на углах, больше — легче для ПК; 0 — каждый тик' },
     { k: 'debug', l: 'Отладка', type: 'sel', opts: [['', 'по умолчанию (состояния)'], ['0', 'тихо'], ['1', '[State] при смене'], ['2', '[State] + таблица комнат']] }] }];
 

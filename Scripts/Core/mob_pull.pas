@@ -1026,13 +1026,22 @@ end;
 
 // ---------- tap weapon ----------
 
+// the bot's own search first (TL2List.ByID); the other copies with that ID only when it is not on
 function MpEquipped(ItemID: integer): boolean;
 var i, ID: integer;
+  It: TL2Item;
 begin
   result := false;
+  if not Inventory.User.ByID(ItemID, It) then exit;
+  if It.Equipped then begin
+    result := true;
+    exit;
+  end;
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    ID := Inventory.User.Items(i).ID;
-    if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    ID := It.ID;
+    if (ID = ItemID) and It.Equipped then begin
       result := true;
       exit;
     end;
@@ -1042,15 +1051,18 @@ end;
 // the weapon in hands now (right hand $0080 / two hands $4000), from a fresh inventory; 0 = none
 function MpCurrentWeapon(): integer;
 var i, Part: integer;
+  It: TL2Item;
 begin
   result := 0;
   NavSend('14');
   Delay(1500);
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
-    if not Inventory.User.Items(i).Equipped then continue;
-    Part := Inventory.User.Items(i).BodyPart;
+    It := Inventory.User.Items(i);     // each item read once
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    Part := It.BodyPart;
     if (Part = $0080) or (Part = $4000) then begin
-      result := Inventory.User.Items(i).ID;
+      result := It.ID;
       exit;
     end;
   end;
