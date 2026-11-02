@@ -355,7 +355,7 @@ var
   PkRunFailRoom, PkRunFails: integer;   // PkRunIntoRoom: stuck on the way to this room so many times in a row
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
   PkActed: boolean;               // SelfBuffTick cast / WeaponTick put the weapon on (the target changed)
-  PkDbgFile: string;              // debug_file: '0' = no debug log file (default: on)
+  PkDbgFile: string;              // debug_file: '1' = the debug log file (default: off)
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -5790,7 +5790,7 @@ begin
     if AoeEnabled or SpoilEnabled or CasterEnabled then
       Engine.Msg('[Init]', 'SetPackFarm wins: SetAoeFarm / SetSpoilFarm / SetCasterFarm are not used with it', 128);
     Engine.Msg('[Init]', 'Pack farm: one thread', 0);
-    if PkDbgFile <> '0' then DbgStart(User.Name);
+    if PkDbgFile = '1' then DbgStart(User.Name);
     PackMain();
     exit;
   end;

@@ -1,8 +1,9 @@
 unit DbgLog;
 
-// Debug log to a file (Library\Logs\dbg_<name>_<part>.log): every decision of the pull / the fight /
+// Debug log to a file (Library\Logs\dbg_<name>_<time>_<part>.log): every decision of the pull / the fight /
 // the rooms with its numbers, for looking at afterwards. Lines are kept in memory and written out every
 // 2 s (DbgTick); a part over 4000 lines is closed and the next part starts. Off unless DbgStart.
+// Library\Logs must exist (no folder functions in the script); cannot write there -> the scripts folder.
 //
 // Shared library: scripts only call it, nobody edits it.
 
@@ -21,9 +22,10 @@ implementation
 var
   DlOn: boolean;
   DlLines: TStringList;
-  DlBase: string;
+  DlDir, DlName: string;
   DlPart: integer;
   DlSavedAt: cardinal;
+  DlMoved: boolean;                   // fell back to the scripts folder
 
 function DbgOn(): boolean;
 begin
@@ -31,29 +33,36 @@ begin
 end;
 
 procedure DbgStart(Name: string);
-var Dir: string;
 begin
   if DlOn then exit;
-  Dir := Script.Path + '..\Logs\';
-  try
-    if not DirectoryExists(Dir) then ForceDirectories(Dir);
-  except
-  end;
-  if not DirectoryExists(Dir) then Dir := Script.Path;
-  DlBase := Dir + 'dbg_' + Name + '_' + FormatDateTime('mmdd_hhnnss', Now);
+  DlDir := Script.Path + '..\Logs\';
+  DlName := 'dbg_' + Name + '_' + FormatDateTime('mmdd_hhnnss', Now);
   DlPart := 1;
+  DlMoved := false;
   DlLines := TStringList.Create;
   DlSavedAt := GetTickCount;
   DlOn := true;
-  Engine.Msg('[Debug]', 'Debug log: ' + DlBase + '_1.log', 128);
+  Engine.Msg('[Debug]', 'Debug log: ' + DlDir + DlName + '_1.log', 128);
 end;
 
 procedure DbgFlush();
+var Ok: boolean;
 begin
   if not DlOn then exit;
+  Ok := true;
   try
-    DlLines.SaveToFile(DlBase + '_' + IntToStr(DlPart) + '.log');
+    DlLines.SaveToFile(DlDir + DlName + '_' + IntToStr(DlPart) + '.log');
   except
+    Ok := false;
+  end;
+  if (not Ok) and (not DlMoved) then begin   // no Library\Logs: the scripts folder
+    DlMoved := true;
+    DlDir := Script.Path;
+    Engine.Msg('[Debug]', 'Cannot write to Library\Logs - debug log: ' + DlDir + DlName + '_' + IntToStr(DlPart) + '.log', 128);
+    try
+      DlLines.SaveToFile(DlDir + DlName + '_' + IntToStr(DlPart) + '.log');
+    except
+    end;
   end;
   DlSavedAt := GetTickCount;
   if DlLines.Count > 4000 then begin   // this part is full: the next file

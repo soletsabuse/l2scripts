@@ -1478,6 +1478,7 @@ K room_order SEQ
 K room_cycle_wait 30
 K debug 2
 K champion_alert 0
+K debug_file 1
 K tap_always 1
 K exp_off 1
 K spots_only 1
