@@ -1058,9 +1058,10 @@ begin
   end;
 end;
 
-// puts weapon W on without blocking (call every tick); true = on. The bot's "equipped" flag is
-// trusted only from an inventory the server resent after our last UseItem (a 2nd UseItem of a weapon
-// that is on takes it OFF)
+// puts weapon W on without blocking (call every tick); true = on. Fast: by the bag as the bot knows it
+// now - on already -> done, else UseItem at once; the server answers it with an inventory update, so it
+// is seen on within a moment. No answer in 1.5 s -> the slow safe way: a fresh inventory first and a
+// second UseItem only if it is still not on (a 2nd UseItem of a weapon that is on takes it OFF)
 function MpWear(W: integer): boolean;
 var T: cardinal;
 begin
@@ -1069,30 +1070,40 @@ begin
   if MpWearID <> W then begin
     MpWearID := W;
     MpWearOK := false;
-    MpWearUseAt := 0;
-    NavSend('14');
-    MpWearRefAt := T;
+    MpWearRefAt := 0;
+    if MpEquipped(W) then begin
+      MpWearOK := true;
+      result := true;
+      exit;
+    end;
+    Engine.UseItem(W);
+    MpWearUseAt := T;
     exit;
   end;
   if MpWearOK then begin
     result := true;
     exit;
   end;
-  if T - MpWearRefAt < 800 then exit;
-  if MpWearRefAt > MpWearUseAt then begin
-    if MpEquipped(W) then begin
-      MpWearOK := true;
-      result := true;
-      exit;
-    end;
-    if MpWearUseAt > 0 then Engine.Msg('[Weapon]', 'Item ' + IntToStr(W) + ' still not on, using it again', 0);
-    Engine.UseItem(W);
-    MpWearUseAt := T;
+  if (T - MpWearUseAt >= 150) and MpEquipped(W) then begin   // the server's answer to the UseItem
+    MpWearOK := true;
+    result := true;
     exit;
   end;
-  if T - MpWearUseAt < 1000 then exit;
-  NavSend('14');
-  MpWearRefAt := T;
+  if T - MpWearUseAt < 1500 then exit;
+  if MpWearRefAt <= MpWearUseAt then begin   // no answer: a fresh inventory before anything else
+    NavSend('14');
+    MpWearRefAt := T;
+    exit;
+  end;
+  if T - MpWearRefAt < 800 then exit;
+  if MpEquipped(W) then begin
+    MpWearOK := true;
+    result := true;
+    exit;
+  end;
+  Engine.Msg('[Weapon]', 'Item ' + IntToStr(W) + ' still not on, using it again', 0);
+  Engine.UseItem(W);
+  MpWearUseAt := T;
 end;
 
 function MpTapReady(): boolean;
@@ -1252,7 +1263,7 @@ end;
 
 function PullRun(): integer;
 var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
-  Started, LastGain, NearSince, LastSend, ApproachSince, TapStart: cardinal;
+  Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt: cardinal;
   Tapped, Tapping, TapOk: boolean;
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
@@ -1262,6 +1273,7 @@ begin
   Tapping := false;
   TapHP0 := 0;
   TapStart := 0;
+  TapArmedAt := 0;
   Started := GetTickCount;
   LastGain := GetTickCount;
   Prev := -1;
@@ -1432,6 +1444,7 @@ begin
         end;
         Tapping := true;
         TapStart := GetTickCount;
+        TapArmedAt := 0;
         TapHP0 := NpcList(Idx).CurHP;
         Engine.SetTarget(OID);
       end;
@@ -1442,14 +1455,29 @@ begin
         OID := 0;
         continue;
       end;
-      if GetTickCount - TapStart > MpTapMs then begin
+      // tap_ms counts from the moment the tap weapon is really on (a short run to the mob: the swap was not
+      // done yet and the time ran out before a single hit - it ran up to the mob and away); the swap
+      // itself gets 6 s more at most
+      if TapArmedAt = 0 then begin
+        if MpTapReady() then begin
+          TapArmedAt := GetTickCount;
+          Engine.SetTarget(OID);       // the swap (UseItem) may have dropped the target
+        end else if GetTickCount - TapStart > MpTapMs + 6000 then begin
+          Engine.Msg('[Pull]', 'Tap weapon did not go on for ' + PullNpcName(Idx) + ', skipping it', 0);
+          PullIgnore(OID, MpIgnoreMs);
+          Tapping := false;
+          OID := 0;
+          continue;
+        end;
+      end;
+      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
         Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land, skipping it', 0);
         PullIgnore(OID, MpIgnoreMs);
         Tapping := false;
         OID := 0;
         continue;
       end;
-      if MpTapReady() then Engine.Attack(MpTickMs) else Delay(MpTickMs);
+      if TapArmedAt <> 0 then Engine.Attack(MpTickMs) else Delay(MpTickMs);
       continue;
     end;
 
