@@ -1299,6 +1299,7 @@ var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
   Tapped, Tapping, TapOk: boolean;
   TapTries: integer;                   // tap again from right next to it (the whole room must aggro)
+  TapHitSaid: boolean;                 // debug log: "hit, waiting for the aggro" said for this tap
   DbgAt: cardinal;                     // debug log: the last state line
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
@@ -1530,18 +1531,18 @@ begin
         TapArmedAt := 0;
         TapCloseUntil := 0;
         TapTries := 0;
+        TapHitSaid := false;
         TapHP0 := NpcList(Idx).CurHP;
         Engine.SetTarget(OID);
       end;
+      // the tap counts ONLY when the mob really aggroes on us: then the check at the top of the loop
+      // drops it as "on us" and it is in the pack. Its HP going down is not enough - after one hit it may
+      // stay where it is (a priest): we go on hitting it until it comes or the tap time is over
+      LastGain := GetTickCount;        // a tap going on is not "no new aggro" (it has its own time limits)
       HP := NpcList(Idx).CurHP;
-      // landed: its HP went down, or it is on us now (a fat mob: one tap may not move its HP %)
-      if (HP < TapHP0) or PullIsAggro(Idx) then begin
-        Dbg('[Pull]', 'tap landed on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ' aggro ' +
-          IntToStr(Ord(PullIsAggro(Idx))));
-        PullIgnore(OID, MpTapSkipMs);  // hit: it comes after us now
-        Tapping := false;
-        OID := 0;
-        continue;
+      if (HP < TapHP0) and (not TapHitSaid) then begin
+        TapHitSaid := true;
+        Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ', hitting on until it aggroes');
       end;
       // tap_ms counts from the moment the tap weapon is really on (a short run to the mob: the swap was not
       // done yet and the time ran out before a single hit - it ran up to the mob and away); the swap
@@ -1564,7 +1565,7 @@ begin
       // only then it is skipped - every mob of the room must come
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) and (TapTries < 2) then begin
         Inc(TapTries);
-        MpMsg('Tap on ' + PullNpcName(Idx) + ' did not land - right up to it, again (' +
+        MpMsg('Tap on ' + PullNpcName(Idx) + ': no aggro - right up to it, again (' +
           IntToStr(TapTries) + '/2)');
         TapCloseUntil := GetTickCount + 2000;
         TapArmedAt := GetTickCount;
@@ -1584,7 +1585,7 @@ begin
         Engine.SetTarget(OID);
       end;
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
-        MpMsg('Tap on ' + PullNpcName(Idx) + ' did not land, skipping it');
+        MpMsg('Tap on ' + PullNpcName(Idx) + ': no aggro after 3 tries, skipping it');
         PullIgnore(OID, MpIgnoreMs);
         Engine.CancelTarget;           // the skipped mob does not stay in the target (the fight later)
         Tapping := false;
