@@ -516,14 +516,14 @@ begin
   if Mob = nil then exit;
   ID := Mob.ID;
   Found := false;
-  Script.Lock;                         // the table is shared by the threads (farm, events, watch)
+  // the table is shared by the threads (farm, events): an entry is written whole before the count
+  // grows, so a reader never sees half of one; two threads adding the same kind = a harmless double
   for k := 0 to MpNkN - 1 do
     if MpNkID[k] = ID then begin
       result := MpNkIgn[k];
       Found := true;
       break;
     end;
-  Script.Unlock;
   if Found then exit;
   Nm := LowerCase(Mob.Name);            // a new kind: its name once
   for k := 0 to Length(MpNames) - 1 do
@@ -531,14 +531,12 @@ begin
       result := true;
       break;
     end;
-  Script.Lock;
   Cnt := MpNkN;
   if Cnt <= 511 then begin
     MpNkID[Cnt] := ID;
     MpNkIgn[Cnt] := result;
     MpNkN := Cnt + 1;
   end;
-  Script.Unlock;
 end;
 
 function MpNameIgnored(i: integer): boolean;

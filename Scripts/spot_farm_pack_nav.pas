@@ -1419,7 +1419,7 @@ begin
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
-  else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 0))
+  else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 500))
   else if K = 'nav_run' then NavSetRunSteps(UpperCase(V) = 'STEP')
   else if K = 'nav_step' then NavSetStepLen(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
@@ -4269,6 +4269,7 @@ end;
 function PkSpoilCount(): integer;
 begin
   result := PkEvSpoil;                 // events only: see SpSpoilMsg
+  if result > 0 then PkSeenSpoilMsg := true;
 end;
 
 // a mass spoil is cast now: remember every live mob close enough to be hit (aggro or not - each one
