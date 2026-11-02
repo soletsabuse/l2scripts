@@ -1731,6 +1731,7 @@ K room_players 30
 K room_avoid 30
 K champ_hp 100000
 K room_order SEQ
+K nav_step 400
 K debug 2
 K champion_alert 0
 K tap_always 1
