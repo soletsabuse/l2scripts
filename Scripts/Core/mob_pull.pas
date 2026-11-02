@@ -504,8 +504,8 @@ begin
 end;
 
 function PullNameIgnored(i: integer): boolean;
-var k, ID, n: integer;
-  N: string;
+var k, ID, Cnt: integer;
+  Nm: string;
   Mob: TL2Npc;
   Found: boolean;
 begin
@@ -525,18 +525,18 @@ begin
     end;
   Script.Unlock;
   if Found then exit;
-  N := LowerCase(Mob.Name);            // a new kind: its name once
+  Nm := LowerCase(Mob.Name);            // a new kind: its name once
   for k := 0 to Length(MpNames) - 1 do
-    if N = MpNames[k] then begin
+    if Nm = MpNames[k] then begin
       result := true;
       break;
     end;
   Script.Lock;
-  n := MpNkN;
-  if n <= 511 then begin
-    MpNkID[n] := ID;
-    MpNkIgn[n] := result;
-    MpNkN := n + 1;
+  Cnt := MpNkN;
+  if Cnt <= 511 then begin
+    MpNkID[Cnt] := ID;
+    MpNkIgn[Cnt] := result;
+    MpNkN := Cnt + 1;
   end;
   Script.Unlock;
 end;
