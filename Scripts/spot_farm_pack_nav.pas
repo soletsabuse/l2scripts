@@ -356,6 +356,7 @@ var
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
   PkActed: boolean;               // SelfBuffTick cast / WeaponTick put the weapon on (the target changed)
   PkDbgFile: string;              // debug_file: '1' = the debug log file (default: off)
+  PkDbgRun: string;               // debug_run: '1' = the run moments into it too (starts the debug log)
   PkPullGridSet: boolean;         // PullSetGrid done (once, after NavBuild)
 
 // ===================== Events (players around, private messages) =====================
@@ -1376,6 +1377,10 @@ begin
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
   else if K = 'debug_file' then PkDbgFile := V
+  else if K = 'debug_run' then begin
+    PkDbgRun := V;
+    NavSetDebug(V = '1');
+  end
   else if K = 'spoil_per_mob' then PkSpoilPerMob := StrToIntDef(V, PK_SPOIL_PER_MOB)
   else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 500))
   else if K = 'nav_clear' then NavSetRunClear(StrToIntDef(V, 40))
@@ -5799,7 +5804,7 @@ begin
     if AoeEnabled or SpoilEnabled or CasterEnabled then
       Engine.Msg('[Init]', 'SetPackFarm wins: SetAoeFarm / SetSpoilFarm / SetCasterFarm are not used with it', 128);
     Engine.Msg('[Init]', 'Pack farm: one thread', 0);
-    if PkDbgFile = '1' then DbgStart(User.Name);
+    if (PkDbgFile = '1') or (PkDbgRun = '1') then DbgStart(User.Name);
     PackMain();
     exit;
   end;

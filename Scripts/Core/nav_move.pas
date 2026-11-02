@@ -20,7 +20,7 @@ unit NavMove;
 
 interface
 
-uses SysUtils, Classes;
+uses SysUtils, Classes, DbgLog in 'Core\dbg_log.pas';
 
 procedure NavSetZone(ZoneFile: string);       // map = this .zmap ('' = the zone active in the bot)
 procedure NavSetGrid(GridFile: string);       // map = this .navgrid (wins over the zone)
@@ -38,6 +38,9 @@ procedure NavSetStepLen(StepLen: integer);    // not used; kept for old settings
 // a run straight / a short cut over route nodes only where the line keeps this far off the red cells
 // all the way (default 40, 0 = may touch them) - the same rule as the route of the viewer
 procedure NavSetRunClear(Units: integer);
+// the run moments into the debug log (Core\dbg_log.pas, when it is on): clicks, the waypoint choice, node
+// runs, "not moved", give-ups, unstick, run results - each line with where we stand
+procedure NavSetDebug(Enable: boolean);
 function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
@@ -165,6 +168,7 @@ var
   // nodes) and size; the graph built from it is kept in Library\Nav\cache and taken from there next time
   NmGridVer, NmGridSig: string;
   NmGridOn: boolean;                    // the map is this .navgrid
+  NmDbg: boolean;                       // NavSetDebug: the run moments into the debug log
   NmCached: boolean;                    // NavBuild took the graph from the cache
   // runs: the click we sent and when we really moved last (the thread that drives now owns them)
   NmClX, NmClY, NmLX, NmLY: integer;
@@ -242,6 +246,24 @@ procedure NavSetStepLen(StepLen: integer);
 begin
 end;
 
+procedure NavSetDebug(Enable: boolean);
+begin
+  NmDbg := Enable;
+end;
+
+// one line of the run log: where we stand | what happens (callers check NmDbg first: no strings made
+// when it is off)
+procedure NmLog(Text: string);
+begin
+  if not DbgOn() then exit;
+  Dbg('[Run]', IntToStr(User.X) + ',' + IntToStr(User.Y) + ' | ' + Text);
+end;
+
+function NmXY(X, Y: integer): string;
+begin
+  result := IntToStr(X) + ',' + IntToStr(Y);
+end;
+
 function NavIsReady(): boolean;
 begin
   result := NavOn and NmReady;
@@ -266,6 +288,7 @@ begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
+  if NmDbg then NmLog('click ' + NmXY(X, Y) + ' d=' + IntToStr(Round(Sqrt(NmSq(X - UX) + NmSq(Y - UY)))));
   Engine.SendToServer('0F' + NmHex(X) + NmHex(Y) + NmHex(Z) + NmHex(UX) + NmHex(UY) + NmHex(UZ) + NmHex(1));
 end;
 
@@ -1258,11 +1281,15 @@ begin
   Stuck := 0;
   LX := User.X;
   LY := User.Y;
+  if NmDbg then NmLog('to node ' + NmXY(PX, PY) + ' d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
   NavClick(PX, PY, PZ);
   while User.DistTo(PX, PY, PZ) > NAV_POINT_REACH do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     if User.Dead then exit;
-    if GetTickCount - Started > NAV_POINT_MS then exit;
+    if GetTickCount - Started > NAV_POINT_MS then begin
+      if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not there in ' + IntToStr(NAV_POINT_MS div 1000) + ' s - given up');
+      exit;
+    end;
     UX := User.X;
     UY := User.Y;
     if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
@@ -1271,12 +1298,19 @@ begin
       StillSince := GetTickCount;
     end else if GetTickCount - StillSince > NAV_STILL_MS then begin
       Inc(Stuck);
-      if Stuck >= NAV_STUCK_MAX then exit;
+      if Stuck >= NAV_STUCK_MAX then begin
+        if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not moved ' + IntToStr(NAV_STILL_MS) + ' ms ' + IntToStr(Stuck) +
+          ' times - given up, d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
+        exit;
+      end;
+      if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not moved ' + IntToStr(NAV_STILL_MS) + ' ms - click again (' +
+        IntToStr(Stuck) + '/' + IntToStr(NAV_STUCK_MAX) + ')');
       NavClick(PX, PY, PZ);
       StillSince := GetTickCount;
     end;
     Delay(100);
   end;
+  if NmDbg then NmLog('node ' + NmXY(PX, PY) + ' reached in ' + IntToStr(GetTickCount - Started) + ' ms');
   result := true;
 end;
 
@@ -1609,10 +1643,16 @@ begin
   NmWcUX := UX;
   NmWcUY := UY;
   NmWcRes := false;
-  if NmRunFree(UX, UY, X, Y) then exit;   // straight to it
+  if NmRunFree(UX, UY, X, Y) then begin   // straight to it
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': in sight with the margin - straight');
+    exit;
+  end;
   R := NmRoute(X, Y);
   n := NmRouteCount(R);
-  if n = 0 then exit;
+  if n = 0 then begin
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no way on the map - the target itself');
+    exit;
+  end;
   // the farthest route node in sight with the run margin
   Best := -1;
   for k := n - 1 downto 0 do begin
@@ -1626,12 +1666,21 @@ begin
   end;
   // none, or only the node under our feet (a narrow place: nothing has the margin; clicking the node we
   // stand on never moves us) -> false: the caller clicks the target itself, the server builds the way
-  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then exit;
+  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then begin
+    if NmDbg then begin
+      if Best < 0 then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node (of ' + IntToStr(n) +
+        ') in sight with the margin - the target itself (server path)')
+      else NmLog('waypoint to ' + NmXY(X, Y) + ': only the node under us in sight - the target itself (server path)');
+    end;
+    exit;
+  end;
   i := NmRouteAt(R, Best);
   NmWpX := NavX[i];
   NmWpY := NavY[i];
   result := true;
   NmWcRes := true;
+  if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': route node ' + IntToStr(Best + 1) + '/' + IntToStr(n) + ' at ' +
+    NmXY(NmWpX, NmWpY));
 end;
 
 function NavWpX(): integer;
@@ -1649,6 +1698,7 @@ end;
 function NavGraphTo(X, Y, Z: integer): boolean;
 var i, k, PX, PY, NX2, NY2, RN: integer;
   Ok: boolean;
+  S: string;
   R: string;                             // the route (own: other threads count theirs meanwhile)
 begin
   result := false;
@@ -1657,14 +1707,26 @@ begin
   RN := NmRouteCount(R);
   if RN = 0 then begin
     Engine.Msg('[Nav]', 'No way on the map to ' + IntToStr(X) + ', ' + IntToStr(Y) + ' - plain server path', 128);
+    if NmDbg then NmLog('graph to ' + NmXY(X, Y) + ': no way on the map');
     exit;
   end;
   Engine.Msg('[Nav]', 'Wall on the way, along the map (' + IntToStr(RN) + ' nodes)', 0);
+  if NmDbg then begin
+    S := '';
+    for k := 0 to RN - 1 do begin
+      i := NmRouteAt(R, k);
+      S := S + ' ' + NmXY(NavX[i], NavY[i]);
+    end;
+    NmLog('graph to ' + NmXY(X, Y) + ': ' + IntToStr(RN) + ' nodes:' + S);
+  end;
   NavBusyFlag := true;
   Ok := true;
   k := 0;
   while k < RN do begin
-    if NavSeeFromUs(X, Y) then break;  // the target is in sight: the rest goes straight
+    if NavSeeFromUs(X, Y) then begin   // the target is in sight: the rest goes straight
+      if NmDbg then NmLog('graph: the target is in sight - the rest straight');
+      break;
+    end;
     if k + 1 < RN then begin
       i := NmRouteAt(R, k + 1);
       NX2 := NavX[i];
@@ -1685,6 +1747,8 @@ begin
         Engine.Msg('[Nav]', 'Cannot get to map node ' + IntToStr(i + 1) + ' at ' + IntToStr(PX) + ', ' +
           IntToStr(PY) + ' - left out of routes for ' + IntToStr(NAV_BAD_MS div 1000) +
           ' s (fix the nav map there?)', 128);
+        if NmDbg then NmLog('graph: cannot get to node ' + NmXY(PX, PY) + ' - left out of routes for ' +
+          IntToStr(NAV_BAD_MS div 1000) + ' s');
       end;
       Ok := false;
       break;
@@ -1996,7 +2060,14 @@ begin
       break;
     end;
   end;
-  if Best >= 1E17 then exit;
+  if Best >= 1E17 then begin
+    if NmDbg then NmLog('unstick: no node 150+ away');
+    exit;
+  end;
+  if NmDbg then begin
+    if Own then NmLog('unstick: to own node ' + NmXY(BX, BY) + ' d=' + IntToStr(Round(Best)))
+    else NmLog('unstick: no own node within 150..2000 - to map node ' + NmXY(BX, BY) + ' d=' + IntToStr(Round(Best)));
+  end;
   NmUnstickPX[NmUnstickHead] := BX;
   NmUnstickPY[NmUnstickHead] := BY;
   NmUnstickAt[NmUnstickHead] := GetTickCount;
@@ -2116,20 +2187,30 @@ begin
   LX := User.X;
   LY := User.Y;
   LastSend := 0;
+  if NmDbg then NmLog('plain run (a click every ' + IntToStr(NAV_RESEND_MS) + ' ms) to ' + NmXY(X, Y) + ' reach ' +
+    IntToStr(Reach) + ' d=' + IntToStr(Round(User.DistTo(X, Y, Z))));
   while not User.Dead do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     if User.DistTo(X, Y, Z) < Reach then begin
+      if NmDbg then NmLog('plain run: there in ' + IntToStr(GetTickCount - Started) + ' ms');
       result := true;
       exit;
     end;
-    if GetTickCount - Started > NAV_RUN_MS then exit;
+    if GetTickCount - Started > NAV_RUN_MS then begin
+      if NmDbg then NmLog('plain run: ' + IntToStr(NAV_RUN_MS div 1000) + ' s over, d=' + IntToStr(Round(User.DistTo(X, Y, Z))));
+      exit;
+    end;
     UX := User.X;
     UY := User.Y;
     if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
       LX := UX;
       LY := UY;
       StillSince := GetTickCount;
-    end else if GetTickCount - StillSince > NAV_RUN_STALL_MS then exit;
+    end else if GetTickCount - StillSince > NAV_RUN_STALL_MS then begin
+      if NmDbg then NmLog('plain run: not moved ' + IntToStr(NAV_RUN_STALL_MS) + ' ms - stuck, d=' +
+        IntToStr(Round(User.DistTo(X, Y, Z))));
+      exit;
+    end;
     if (LastSend = 0) or (GetTickCount - LastSend >= NAV_RESEND_MS) then begin
       NavClick(X, Y, Z);
       LastSend := GetTickCount;
@@ -2148,23 +2229,33 @@ begin
   Started := GetTickCount;
   Stops := 0;
   NavMoveReset();
+  if NmDbg then NmLog('exact run to ' + NmXY(X, Y) + ' radius ' + IntToStr(Radius) + ' d=' + IntToStr(Round(NmDistTo(X, Y))));
   NavClickAt(X, Y, Z);
   while not User.Dead do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     D := NmDistTo(X, Y);
     if D <= Radius then begin
+      if NmDbg then NmLog('exact run: there in ' + IntToStr(GetTickCount - Started) + ' ms');
       result := true;
       exit;
     end;
-    if GetTickCount - Started > NAV_RUN_MS then exit;
-    if NavStillMs() > NAV_POINT_STUCK then exit;     // wall: the server finds no way there
+    if GetTickCount - Started > NAV_RUN_MS then begin
+      if NmDbg then NmLog('exact run: ' + IntToStr(NAV_RUN_MS div 1000) + ' s over, d=' + IntToStr(Round(D)));
+      exit;
+    end;
+    if NavStillMs() > NAV_POINT_STUCK then begin     // wall: the server finds no way there
+      if NmDbg then NmLog('exact run: not moved ' + IntToStr(NAV_POINT_STUCK) + ' ms - wall, d=' + IntToStr(Round(D)));
+      exit;
+    end;
     if NavNeedClick(X, Y) then begin
       // stopped short: a few times close to the point = the server cannot put us nearer
       Inc(Stops);
       if (Stops >= 3) and (D <= NAV_NEAR_OK) then begin
+        if NmDbg then NmLog('exact run: stopped ' + IntToStr(Stops) + ' times at d=' + IntToStr(Round(D)) + ' - as near as it lets us');
         result := true;
         exit;
       end;
+      if NmDbg then NmLog('exact run: stopped short d=' + IntToStr(Round(D)) + ' - click again (stop ' + IntToStr(Stops) + ')');
       NavClickAt(X, Y, Z);
     end;
     Delay(NAV_TICK_MS);
@@ -2187,14 +2278,23 @@ end;
 // behind a wall on the map -> along the graph first; then the server path; stuck -> the graph again;
 // still stuck -> out of the stuck place (to the nearest own node) for the caller's next try
 function NavRun(X, Y, Z, Reach: integer): boolean;
+var Started: cardinal;
 begin
   NmDriveBegin();
+  Started := GetTickCount;
+  if NmDbg then NmLog('RUN to ' + NmXY(X, Y) + ' reach ' + IntToStr(Reach) + ' d=' + IntToStr(Round(NmDistTo(X, Y))) +
+    ' in sight with the margin ' + IntToStr(Ord(NavSeeFromUs(X, Y))));
   if NmReady and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
   result := NmRunPlain(X, Y, Z, Reach);
   if (not result) and (not User.Dead) and (not NavBusyFlag) and NmReady then begin
+    if NmDbg then NmLog('RUN: the plain run failed - along the map again');
     if NavGraphTo(X, Y, Z) then result := NmRunPlain(X, Y, Z, Reach);
     if (not result) and (not User.Dead) then
       if NmUnstick() then begin end;
+  end;
+  if NmDbg then begin
+    if result then NmLog('RUN end: there in ' + IntToStr(GetTickCount - Started) + ' ms')
+    else NmLog('RUN end: NOT there after ' + IntToStr(GetTickCount - Started) + ' ms, d=' + IntToStr(Round(NmDistTo(X, Y))));
   end;
   NmDriveEnd();
 end;

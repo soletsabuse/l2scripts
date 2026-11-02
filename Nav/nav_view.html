@@ -591,7 +591,7 @@ const PULL_ADV = [
   ['tap_ms', 'Тап: запас на удар сверх бега, мс', 1000], ['tap_skip_ms', 'Ударенный считается сагренным, мс', 10000], ['back_penalty', 'Штраф за моба сзади', 400],
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
-const BOOLS = { debug_file: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
+const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
 const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'champion_alert', 'telegram'];
 const CARDS = [
@@ -654,6 +654,7 @@ const CARDS = [
   { ic: '🛠', t: 'Прочее', f: [
     { k: 'exp_off', l: 'Выключить опыт', type: 'bool', h: 'exp?state=off' },
     { k: 'debug_file', l: 'Дебаг-лог в файл', type: 'bool', h: 'подробный лог заводки / боя / комнат в Library\\Logs\\dbg_<ник>_<время>_N.log (для разбора проблем)' },
+    { k: 'debug_run', l: 'Лог бега', type: 'bool', h: 'в тот же дебаг-лог (включает его сам): каждый клик, какую точку маршрута выбрал и почему, бег к нодам, «стою / застрял», отлипание, чем кончился бег' },
     { k: 'nav_clear', l: 'Отступ бега от стен', type: 'num', ph: '40', h: 'бот бежит напрямую / срезает ноды, только если прямая по всей длине не ближе этого к красному. Оранжевый «Маршрут» на карте считается так же — как нарисован, так и побежит (0 — можно впритирку)' },
     { k: 'nav_wp_cache_ms', l: 'Кэш маршрута, мс', type: 'num', ph: '500', h: 'куда кликать на бегу — пересчёт не чаще раза в столько (пока сдвинулись < 64). Меньше — точнее на углах, больше — легче для ПК; 0 — каждый тик' },
     { k: 'debug', l: 'Отладка', type: 'sel', opts: [['', 'по умолчанию (состояния)'], ['0', 'тихо'], ['1', '[State] при смене'], ['2', '[State] + таблица комнат']] }] }];
