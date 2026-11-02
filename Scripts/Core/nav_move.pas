@@ -161,6 +161,19 @@ var
   NmClX, NmClY, NmLX, NmLY: integer;
   NmClAt, NmMovedAt: cardinal;
   NmDriveAt: cardinal;                  // a blocking run ticked then (its pulse; a dead thread holds nothing)
+  // way tables (NmFieldOf), up to 12 targets: for every node the way along the graph to the target and
+  // the next node toward it - counted once per target, then a route from us is a few line checks
+  NmFD: array of double;                // slot * NavN + node: the way (>= 1E17 = none)
+  NmFN: array of integer;               // ... the next node toward the target (-1 = sees it / no way)
+  NmFTX, NmFTY, NmFVer: array[0..11] of integer;   // the slot's target / the bans it was counted with
+  NmFUntil, NmFUsed: array[0..11] of cardinal;     // valid until (a left-out node comes back) / last used
+  NmFOn: array[0..11] of boolean;
+  NmFSize: integer;                     // NavN the tables are made for
+  NmFBusy: boolean;                     // a table is in use (a second thread at once counts the full way)
+  NmBadVer: integer;                    // +1 on every node left out (the tables are counted again)
+  NmMissX, NmMissY: array[0..15] of integer;   // targets asked once (no table yet) ...
+  NmMissAt: array[0..15] of cardinal;          // ... and when: asked again soon -> it gets a table
+  NmMissHead: integer;
 
 procedure NavSetZone(ZoneFile: string);
 begin
@@ -1024,7 +1037,7 @@ end;
 // THE route count: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way); first node = in sight
 // of us, last = in sight of the target, the shortest total way. Only its own local arrays, the graph is
 // only read (fixed after NavBuild): any thread may call it at the same time - no lock, nothing shared
-function NmRoute(X, Y: integer): string;
+function NmRouteFull(X, Y: integer): string;
 var i, u, v, e, k, Best, UX, UY, PX, PY: integer;
   Alt, BestD, DX, DY: double;
   NavD: array of double;
@@ -1095,6 +1108,191 @@ begin
     if result = '' then result := IntToStr(v) else result := IntToStr(v) + ',' + result;
     v := NavPrev[v];
   end;
+end;
+
+// the way table of the target X, Y (a slot of NmFD / NmFN). Kept for the very same target while no node
+// was left out since and no left-out node came back; else counted: the nodes in sight of the target
+// (up to NAV_SEE_MAX, not left out) start with the straight way, then Dijkstra back over the graph -
+// the same end rule as NmRouteFull, so the route is the same
+function NmFieldOf(X, Y: integer): integer;
+var f, Best, Base, i, u, v, e, k, PX, PY: integer;
+  T, ValidTo: cardinal;
+  Alt, BestD, DX, DY: double;
+  Done: array of boolean;
+begin
+  if NmFSize <> NavN then begin
+    SetLength(NmFD, 12 * NavN);
+    SetLength(NmFN, 12 * NavN);
+    for f := 0 to 11 do NmFOn[f] := false;
+    NmFSize := NavN;
+  end;
+  T := GetTickCount;
+  for f := 0 to 11 do
+    if NmFOn[f] and (NmFTX[f] = X) and (NmFTY[f] = Y) and (NmFVer[f] = NmBadVer) and (T < NmFUntil[f]) then begin
+      NmFUsed[f] := T;
+      result := f;
+      exit;
+    end;
+  Best := 0;                           // a free slot, else the one not used longest
+  for f := 0 to 11 do begin
+    if not NmFOn[f] then begin
+      Best := f;
+      break;
+    end;
+    if NmFUsed[f] < NmFUsed[Best] then Best := f;
+  end;
+  f := Best;
+  Base := f * NavN;
+  ValidTo := T + 3600000;                 // no left-out node: good for an hour
+  SetLength(Done, NavN);
+  for i := 0 to NavN - 1 do begin
+    NmFD[Base + i] := 1E18;
+    NmFN[Base + i] := -1;
+    Done[i] := false;
+    if T < NmBadUntil[i] then begin
+      if NmBadUntil[i] < ValidTo then ValidTo := NmBadUntil[i];   // it comes back then: count again
+      continue;
+    end;
+    PX := NavX[i];
+    PY := NavY[i];
+    DX := PX - X;
+    DY := PY - Y;
+    Alt := Sqrt(DX * DX + DY * DY);
+    if Alt > NAV_SEE_MAX then continue;
+    if NmLineFree(PX, PY, X, Y, false) then NmFD[Base + i] := Alt;
+  end;
+  for k := 0 to NavN - 1 do begin
+    u := -1;
+    BestD := 1E17;
+    for i := 0 to NavN - 1 do
+      if (not Done[i]) and (NmFD[Base + i] < BestD) then begin
+        BestD := NmFD[Base + i];
+        u := i;
+      end;
+    if u < 0 then break;
+    Done[u] := true;
+    e := NavHead[u];
+    while e >= 0 do begin
+      v := NavTo[e];
+      if (not Done[v]) and (T >= NmBadUntil[v]) then begin
+        Alt := BestD + NmDist(u, v);
+        if Alt < NmFD[Base + v] then begin
+          NmFD[Base + v] := Alt;
+          NmFN[Base + v] := u;
+        end;
+      end;
+      e := NavNext[e];
+    end;
+  end;
+  NmFTX[f] := X;
+  NmFTY[f] := Y;
+  NmFVer[f] := NmBadVer;
+  NmFUntil[f] := ValidTo;
+  NmFUsed[f] := T;
+  NmFOn[f] := true;
+  result := f;
+end;
+
+// the table of X, Y if one is kept and valid; -1 = none
+function NmFieldFind(X, Y: integer): integer;
+var f: integer;
+  T: cardinal;
+begin
+  result := -1;
+  if NmFSize <> NavN then exit;
+  T := GetTickCount;
+  for f := 0 to 11 do
+    if NmFOn[f] and (NmFTX[f] = X) and (NmFTY[f] = Y) and (NmFVer[f] = NmBadVer) and (T < NmFUntil[f]) then begin
+      result := f;
+      exit;
+    end;
+end;
+
+// X, Y was asked within 10 s already (a room / spot / safe point is asked again and again, a running
+// mob never at the same place); remembers this ask
+function NmAskedAgain(X, Y: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to 15 do
+    if (NmMissX[k] = X) and (NmMissY[k] = Y) and (NmMissAt[k] <> 0) and (GetTickCount - NmMissAt[k] < 10000) then begin
+      result := true;
+      exit;
+    end;
+  NmMissX[NmMissHead] := X;
+  NmMissY[NmMissHead] := Y;
+  NmMissAt[NmMissHead] := GetTickCount;
+  NmMissHead := (NmMissHead + 1) mod 16;
+end;
+
+// THE route: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way). The first node = the one in
+// sight of us with the shortest total way (straight to it + its way in the table) - the line checks go
+// from the cheapest node on and stop at the first one in sight (usually 1-3 instead of every node).
+// The same route as the full count. Only a target asked again gets a table (a running mob would push the
+// rooms / spots out of the 12 tables); a table in use by another thread at this moment -> the full count
+function NmRoute(X, Y: integer): string;
+var f, Base, i, n, v, First, UX, UY, PX, PY: integer;
+  T: cardinal;
+  D, DX, DY, BestC: double;
+  Cost: array of double;
+begin
+  result := '';
+  if (not NmReady) or (NavN = 0) then exit;
+  if NmFBusy then begin
+    result := NmRouteFull(X, Y);
+    exit;
+  end;
+  if (NmFieldFind(X, Y) < 0) and (not NmAskedAgain(X, Y)) then begin
+    result := NmRouteFull(X, Y);       // asked once: no table for it
+    exit;
+  end;
+  NmFBusy := true;
+  f := NmFieldOf(X, Y);
+  Base := f * NavN;
+  UX := User.X;
+  UY := User.Y;
+  T := GetTickCount;
+  SetLength(Cost, NavN);
+  for i := 0 to NavN - 1 do begin
+    Cost[i] := 1E18;
+    if NmFD[Base + i] >= 1E17 then continue;
+    if T < NmBadUntil[i] then continue;
+    DX := NavX[i] - UX;
+    DY := NavY[i] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D > NAV_SEE_MAX then continue;
+    Cost[i] := D + NmFD[Base + i];
+  end;
+  First := -1;
+  while true do begin
+    n := -1;
+    BestC := 1E17;
+    for i := 0 to NavN - 1 do
+      if Cost[i] < BestC then begin
+        BestC := Cost[i];
+        n := i;
+      end;
+    if n < 0 then break;
+    PX := NavX[n];
+    PY := NavY[n];
+    if NmLineFree(UX, UY, PX, PY, false) then begin
+      First := n;
+      break;
+    end;
+    Cost[n] := 1E18;                   // hidden from us: the next cheapest
+  end;
+  if First >= 0 then begin
+    v := First;
+    i := 0;
+    while (v >= 0) and (i <= NavN) do begin
+      if result = '' then result := IntToStr(v) else result := result + ',' + IntToStr(v);
+      v := NmFN[Base + v];
+      Inc(i);
+    end;
+  end;
+  NmFBusy := false;
+  // another thread (the other farm modes) rewrote this table meanwhile -> the full count
+  if (NmFTX[f] <> X) or (NmFTY[f] <> Y) or (NmFVer[f] <> NmBadVer) then result := NmRouteFull(X, Y);
 end;
 
 // nodes in a route of NmRoute
@@ -1217,7 +1415,8 @@ begin
     if not NmGo(PX, PY, Z) then begin
       if not User.Dead then begin
         // the map is wrong there (painted walkable, but it is not): routes go round it for a while
-        NmBadUntil[i] := GetTickCount + NAV_BAD_MS;
+        NmBadUntil[i] := GetTickCount + NAV_BAD_MS;   // first the ban, then the version (keep this order)
+        Inc(NmBadVer);
         Engine.Msg('[Nav]', 'Cannot get to map node ' + IntToStr(i + 1) + ' at ' + IntToStr(PX) + ', ' +
           IntToStr(PY) + ' - left out of routes for ' + IntToStr(NAV_BAD_MS div 1000) +
           ' s (fix the nav map there?)', 128);
@@ -1627,8 +1826,8 @@ begin
   if NavNeedClick(TX, TY) then NavClickAt(TX, TY, Z);
 end;
 
-// "at the point" (within 150): the click again every NAV_RESEND_MS; not moved NAV_RUN_STALL_MS = stuck
-function NmRunWait(X, Y, Z: integer): boolean;
+// "at the point" (within Reach, 150+): the click again every NAV_RESEND_MS; not moved NAV_RUN_STALL_MS = stuck
+function NmRunWait(X, Y, Z, Reach: integer): boolean;
 var Started, LastSend, StillSince: cardinal;
   UX, UY, LX, LY: integer;
 begin
@@ -1640,7 +1839,7 @@ begin
   LastSend := 0;
   while not User.Dead do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
-    if User.DistTo(X, Y, Z) < NAV_REACH_WAIT then begin
+    if User.DistTo(X, Y, Z) < Reach then begin
       result := true;
       exit;
     end;
@@ -1695,7 +1894,7 @@ end;
 
 function NmRunPlain(X, Y, Z, Reach: integer): boolean;
 begin
-  if Reach >= NAV_REACH_WAIT then result := NmRunWait(X, Y, Z)
+  if Reach >= NAV_REACH_WAIT then result := NmRunWait(X, Y, Z, Reach)
   else result := NmRunExact(X, Y, Z, Reach);
 end;
 

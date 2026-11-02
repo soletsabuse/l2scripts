@@ -260,9 +260,6 @@ const
   SP_SWEEP_TRIES    = 3;        // spoil farm: sweep casts on one corpse
   PK_TICK_MS        = 50;       // pack farm: main loop tick
   PK_REACH          = 25;       // pack farm: corner / drop reached when we stand this close to the point
-  PK_STOP_MS        = 300;      // pack farm: not moving this long = stopped -> click again
-  PK_RECLICK_DIST   = 80;       // pack farm: the mob moved this far from our click point -> click again
-  PK_NEAR_OK        = 60;       // pack farm: stopped this close to a point 3 times = as close as the server lets us
   PK_TOUCH          = 120;      // pack farm: this close to a free mob = it should aggro (body pull)
   PK_TOUCH_WAIT_MS  = 800;      // pack farm: nobody on us yet, next to a mob this long without aggro -> tap it once
   PK_TOUCH_GRACE_MS = 3000;     // pack farm: a touched mob is given this long to aggro before we run at it again
@@ -339,6 +336,22 @@ var
   TreeBusy: boolean;      // true while the tree handler shoots a mob: rebuff thread waits
   EquipBusy: boolean;     // true while some thread is swapping weapons (EquipWeapon)
   PatrolBusy: boolean;    // true while the profile patrol runs to a point (profile OFF): rebuff waits
+
+// ===================== One thread (the pack farm): the state of the ticks =====================
+var
+  DhOutSince: cardinal;           // ZoneCheck: farming outside the farm zone since then (0 = inside)
+  RbFails: integer;               // RebuffTick: failed rebuffs in a row
+  RbSuppliesDone: boolean;        // ... supplies bought in this rebuff cycle
+  RbWaitAt: cardinal;             // ... the pack farm finishes the pack / runs to the safe point since then
+  SbTold: array of boolean;       // SelfBuffTick: "no such skill" said for buff k
+  EvSeen, EvSeenChamp: array of integer;   // EventsTick: players / champions already reported
+  EvMaxOID: cardinal;             // ... the newest private message known
+  EvPmCount: integer;             // ... private history lines at the last look (-1 = not yet)
+  EvReady: boolean;               // ... EventsInit done
+  PkStopCodeSaid: integer;        // PackTick: the stop reason said last ...
+  PkStopSaidAt: cardinal;         // ... and when
+  PkEventsAt: cardinal;           // PkLightTick: the events were looked at then
+  PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -2222,32 +2235,37 @@ begin
   result := SkillList.ByID(ID, Sk);    // the bot's own search (see BuffTime)
 end;
 
-procedure SelfBuff_Thread();
+// one look (every second): a watched buff is gone and its skill is ready -> cast it
+procedure SelfBuffTick();
 var i, SkillID, ID: integer;
-  Told: array of boolean;
 begin
-  SetLength(Told, Length(SelfBuffSkill));
-  for i := 0 to Length(Told) - 1 do Told[i] := false;
-  while Delay(1000) do begin
-    if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then continue;
-    if SkillList.Count = 0 then continue;         // the skill list is not loaded yet (just logged in)
-    for i := 0 to Length(SelfBuffSkill) - 1 do begin
-      SkillID := SelfBuffSkill[i];
-      ID := SelfBuffID[i];
-      if not HasSkill(SkillID) then begin          // this character has no such skill: never cast it
-        if not Told[i] then begin
-          Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SkillID) + ' on this character - own buff skipped', 128);
-          Told[i] := true;
-        end;
-        continue;
-      end;
-      if BuffTime(ID) > 0 then continue;          // still on us
-      if SpSkillLeft(SkillID) > 0 then continue;  // reuse
-      Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
-      Engine.UseSkill(SkillID);
-      Delay(1500);
-    end;
+  if Length(SbTold) <> Length(SelfBuffSkill) then begin
+    SetLength(SbTold, Length(SelfBuffSkill));
+    for i := 0 to Length(SbTold) - 1 do SbTold[i] := false;
   end;
+  if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then exit;
+  if SkillList.Count = 0 then exit;           // the skill list is not loaded yet (just logged in)
+  for i := 0 to Length(SelfBuffSkill) - 1 do begin
+    SkillID := SelfBuffSkill[i];
+    ID := SelfBuffID[i];
+    if not HasSkill(SkillID) then begin          // this character has no such skill: never cast it
+      if not SbTold[i] then begin
+        Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SkillID) + ' on this character - own buff skipped', 128);
+        SbTold[i] := true;
+      end;
+      continue;
+    end;
+    if BuffTime(ID) > 0 then continue;          // still on us
+    if SpSkillLeft(SkillID) > 0 then continue;  // reuse
+    Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
+    Engine.UseSkill(SkillID);
+    Delay(1500);
+  end;
+end;
+
+procedure SelfBuff_Thread();                   // the other farm modes: in a thread of its own
+begin
+  while Delay(1000) do SelfBuffTick();
 end;
 
 // ===================== Caster farm (SetCasterFarm + SetSummon) =====================
@@ -2905,8 +2923,10 @@ end;
 
 function SafePointClear(): boolean;
 var OID, Tries: integer;
+  Started: cardinal;
 begin
   result := false;
+  Started := GetTickCount;
   FarmOff();
   Engine.Msg('[Rebuff]', 'Interface OFF, running to the safe point', 0);
   Tries := 0;
@@ -2919,7 +2939,11 @@ begin
   // at the safe point: a mob hits us -> kill it to the end -> back to the safe point;
   // again and again until we are out of combat
   while true do begin
-    if User.Dead or NeedReturn then exit;
+    if User.Dead or NeedReturn or (not IsOnline()) then exit;
+    if GetTickCount - Started > 120000 then begin
+      Engine.Msg('[Rebuff]', 'Safe point: still in combat after 2 min - giving up this time', 128);
+      exit;
+    end;
     OID := NearAggroOID();
     if OID <> 0 then begin
       SafeKillMob(OID);
@@ -2956,6 +2980,7 @@ begin
   Engine.Msg('[Return]', Reason + ' -> going back via Aden', 128);
   OnSpot := false;
   NeedReturn := true;
+  PkSafeReady := false;
   FarmOff();
 end;
 
@@ -3195,182 +3220,416 @@ begin
   if TelegramKey <> '' then SendToTelegram(TelegramKey, User.Name + ': ' + Title + ' ' + Text);
 end;
 
+// ===================== Events: players around, private messages =====================
+// Everything is polled from one thread, so spot scripts need no OnAction.
+// Every event goes through Alert (see above the death thread).
+
+// ---- players around (SetPlayerAlert) ----
+
+// a player near us (and not from our party / clan) appeared
+procedure OnPlayerDetected(Ch: TL2Char);
+var Info: string;
+begin
+  Info := Ch.Name + ' lvl ' + IntToStr(Ch.Level);
+  if Ch.Clan <> '' then Info := Info + ' [' + Ch.Clan + ']';
+  if Ch.PK or (Ch.Karma > 0) then Info := Info + ' PK';
+  Alert('[Player]', Info + ' near me', PlayerSound);
+end;
+
+function IsFriendly(Ch: TL2Char): boolean;
+var MyClan, ChClan: cardinal;
+begin
+  result := Ch.IsMember;   // party member
+  if result then exit;
+  MyClan := User.ClanID;
+  ChClan := Ch.ClanID;
+  result := (MyClan <> 0) and (ChClan = MyClan);
+end;
+
+// ---- private messages (SetPrivateAlert) ----
+
+procedure OnPrivateMessage(Sender, Text: string);
+begin
+  Alert('[PM]', Sender + ': ' + Text, PrivateSound);
+end;
+
+// highest OID of private messages we already know (new ones have a bigger OID)
+function LastPrivateOID(): cardinal;
+var i, n: integer;
+  M: TChatMessage;
+begin
+  result := 0;
+  n := History.Count(mtPrivate);       // the bot trims the history meanwhile: the count checked every line
+  for i := 0 to n - 1 do begin
+    if i >= History.Count(mtPrivate) then break;
+    M := History.GetMessage(i, mtPrivate);
+    if M.OID > result then result := M.OID;
+  end;
+end;
+
+// ---- champions (SetChampionAlert): a mob with a lot of HP appeared ----
+
+procedure OnChampionDetected(Name: string; MaxHP: integer);
+begin
+  Alert('[Champion]', Name + ' (' + IntToStr(MaxHP) + ' HP) spawned in the farm area', DEFAULT_CHAMPION_SOUND);
+end;
+
+// the lists (players, mobs, history) change in the bot's thread while we go over them: the count is
+// checked before every item and each one is read once into locals (a stale index broke the script
+// with "Invalid pointer operation" when mobs died / a champion came)
+// once: old messages / players are not events
+procedure EventsInit();
+begin
+  SetLength(EvSeen, 0);
+  SetLength(EvSeenChamp, 0);
+  EvMaxOID := LastPrivateOID();
+  EvPmCount := -1;
+  EvReady := true;
+end;
+
+// one look (every EVENTS_POLL_MS): a player near, a private message, a champion -> Alert
+procedure EventsTick();
+var
+  Cur: array of integer;         // OIDs of players / champions near this look
+  i, j, n, Cnt, OID, X, Y, Z, MaxHP: integer;
+  Known: boolean;
+  M: TChatMessage;
+  Me, Nm: string;
+  Ch: TL2Char;
+  Mob: TL2Npc;
+begin
+  if not EvReady then EventsInit();
+  if not IsOnline() then begin
+    SetLength(EvSeen, 0);
+    exit;
+  end;
+
+  // --- players: alert once when a player comes into range, forget when he leaves ---
+  if PlayerAlertRange > 0 then begin
+    SetLength(Cur, 0);
+    Cnt := CharList.Count;
+    for i := 0 to Cnt - 1 do begin
+      if i >= CharList.Count then break;
+      Ch := CharList(i);
+      if Ch = nil then continue;
+      X := Ch.X;
+      Y := Ch.Y;
+      Z := Ch.Z;
+      if User.DistTo(X, Y, Z) > PlayerAlertRange then continue;
+      if IsFriendly(Ch) then continue;
+
+      OID := Ch.OID;
+      n := Length(Cur);
+      SetLength(Cur, n + 1);
+      Cur[n] := OID;
+
+      Known := false;
+      for j := 0 to Length(EvSeen) - 1 do
+        if EvSeen[j] = OID then begin Known := true; break; end;
+      if not Known then OnPlayerDetected(Ch);
+    end;
+    SetLength(EvSeen, Length(Cur));
+    for i := 0 to Length(Cur) - 1 do EvSeen[i] := Cur[i];
+  end;
+
+  // --- private messages: everything with a new OID, except our own replies ---
+  Cnt := 0;
+  if PrivateAlert then Cnt := History.Count(mtPrivate);
+  if PrivateAlert and (Cnt <> EvPmCount) then begin   // the history is read only when it changed
+    EvPmCount := Cnt;
+    Me := User.Name;
+    for i := 0 to Cnt - 1 do begin
+      if i >= History.Count(mtPrivate) then break;
+      M := History.GetMessage(i, mtPrivate);
+      if M.OID <= EvMaxOID then continue;
+      EvMaxOID := M.OID;
+      if M.Sender <> Me then OnPrivateMessage(M.Sender, M.Text);
+    end;
+  end;
+
+  // --- champions: alive mob with MaxHP above ChampionMinHP, once per mob ---
+  if ChampionMinHP > 0 then begin
+    SetLength(Cur, 0);
+    Cnt := NpcList.Count;
+    for i := 0 to Cnt - 1 do begin
+      if i >= NpcList.Count then break;
+      Mob := NpcList(i);
+      if Mob = nil then continue;
+      if Mob.Dead then continue;
+      MaxHP := Mob.MaxHP;
+      if MaxHP <= ChampionMinHP then continue;
+      if IsIgnoredNpc(i) then continue;
+      // only champions in our farm area: the zone, or (no zone) FREE_RADIUS around the start point
+      X := Mob.X;
+      Y := Mob.Y;
+      Z := Mob.Z;
+      if not InFarmArea(X, Y, Z) then continue;
+
+      OID := Mob.OID;
+      Nm := Mob.Name;
+      n := Length(Cur);
+      SetLength(Cur, n + 1);
+      Cur[n] := OID;
+
+      Known := false;
+      for j := 0 to Length(EvSeenChamp) - 1 do
+        if EvSeenChamp[j] = OID then begin Known := true; break; end;
+      if not Known then OnChampionDetected(Nm, MaxHP);
+    end;
+    // remember only champions that are still around (dead / gone -> forgotten)
+    SetLength(EvSeenChamp, Length(Cur));
+    for i := 0 to Length(Cur) - 1 do EvSeenChamp[i] := Cur[i];
+  end;
+end;
+
+procedure Events_Thread();                     // the other farm modes: in a thread of its own
+begin
+  EventsInit();
+  while Delay(EVENTS_POLL_MS) do EventsTick();
+end;
+
+// during a long wait / fight: the alerts (player near, private message, champion) every second -
+// nothing that moves the character or casts here
+procedure PkLightTick();
+begin
+  if not ((PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0)) then exit;
+  if GetTickCount - PkEventsAt < EVENTS_POLL_MS then exit;
+  PkEventsAt := GetTickCount;
+  EventsTick();
+end;
+
+// farming but outside the farm zone OUT_OF_ZONE_LIMIT s by the clock -> back via Aden (looked at
+// every second by the main loop and during a fight)
+procedure ZoneCheck();
+begin
+  if OnSpot and (not IsRecovering) and IsOnline() and (not User.Dead) and (not IsInFarmZone()) then begin
+    if DhOutSince = 0 then DhOutSince := GetTickCount;
+    if GetTickCount - DhOutSince >= OUT_OF_ZONE_LIMIT * 1000 then begin
+      DhOutSince := 0;
+      RequestReturn('Outside the farm zone for ' + IntToStr(OUT_OF_ZONE_LIMIT) + ' sec');
+    end;
+  end else
+    DhOutSince := 0;
+end;
+
 // ===================== Death / return thread =====================
 // The ONLY thread that moves the character between town and spot.
 
-procedure DeathHandler_Thread();
+// one look (every second): dead -> to the village / wait for a resurrection; NeedReturn -> back to the
+// spot via Aden (blocks until there); farming outside the zone too long -> back via Aden
+procedure DeathTick();
 var
   WaitCounter: integer;
-  OutOfZone: integer;
 begin
-  OutOfZone := 0;
-  while Delay(1000) do begin
-    if not IsOnline() then continue;   // disconnected: Login_Thread handles it
+  if not IsOnline() then exit;         // disconnected: LoginTick handles it
 
-    if User.Dead then begin
-      // block the rebuff thread immediately
-      IsRecovering := true;
-      OnSpot := false;
-      NeedReturn := true;
-      FarmOff();
-      Alert('[Death]', 'Character died', DeathSound);
+  if User.Dead then begin
+    // block the rebuff thread immediately
+    IsRecovering := true;
+    OnSpot := false;
+    NeedReturn := true;
+    PkSafeReady := false;              // a rebuff "safe point clear" of before the death is not valid
+    RbWaitAt := 0;
+    FarmOff();
+    Alert('[Death]', 'Character died', DeathSound);
 
-      // stay mode: there is no way back from town -> wait for a resurrection
-      if StayMode() then begin
-        Engine.Msg('[Death]', 'Stay mode: waiting for a resurrection (no "To Village")', 128);
-        while User.Dead do Delay(1000);
-        Delay(3000);
-        IsRecovering := false;
-        continue;   // NeedReturn -> back to the start point and farm
-      end;
-
-      Engine.Msg('[Death]', 'Waiting 5 sec before "To Village"...', 128);
-
-      WaitCounter := 0;
-      while (WaitCounter < 5) and User.Dead do begin
+    // stay mode: there is no way back from town -> wait for a resurrection
+    if StayMode() then begin
+      Engine.Msg('[Death]', 'Stay mode: waiting for a resurrection (no "To Village")', 128);
+      while User.Dead and IsOnline() do begin   // offline: out, LoginTick logs in again
+        if PackEnabled then PkLightTick();   // the alerts go on (one thread; other modes: their own thread)
         Delay(1000);
-        Inc(WaitCounter);
       end;
-
-      while User.Dead do begin
-        Engine.Msg('[Death]', 'Pressing "To Village"', 128);
-        Engine.GoHome;
-        Delay(2000);
-      end;
-
-      Delay(RESPAWN_WAIT);
-      Engine.Msg('[Death]', 'Resurrected, returning to the spot via Aden', 128);
+      if not IsOnline() then exit;
+      Delay(3000);
       IsRecovering := false;
+      exit;       // NeedReturn -> back to the start point and farm
     end;
 
-    // farming but stuck outside the zone for too long -> unclear situation
-    if OnSpot and (not IsRecovering) and (not IsInFarmZone()) then begin
-      Inc(OutOfZone);
-      if OutOfZone >= OUT_OF_ZONE_LIMIT then begin
-        OutOfZone := 0;
-        RequestReturn('Outside the farm zone for ' + IntToStr(OUT_OF_ZONE_LIMIT) + ' sec');
-      end;
-    end else
-      OutOfZone := 0;
+    Engine.Msg('[Death]', 'Waiting 5 sec before "To Village"...', 128);
 
-    if NeedReturn and (not User.Dead) then begin
-      if GoToFarmSpot() then
-        NeedReturn := false
-      else begin
-        Engine.Msg('[Return]', 'Retry in 10 sec', 128);
-        Delay(10000);
-      end;
+    WaitCounter := 0;
+    while (WaitCounter < 5) and User.Dead and IsOnline() do begin
+      Delay(1000);
+      Inc(WaitCounter);
     end;
 
+    while User.Dead and IsOnline() do begin
+      Engine.Msg('[Death]', 'Pressing "To Village"', 128);
+      Engine.GoHome;
+      Delay(2000);
+    end;
+    if not IsOnline() then exit;       // disconnected while dead: LoginTick logs in, StartInGame goes on
+
+    Delay(RESPAWN_WAIT);
+    Engine.Msg('[Death]', 'Resurrected, returning to the spot via Aden', 128);
+    IsRecovering := false;
   end;
+
+  // farming but stuck outside the zone for too long -> unclear situation
+  ZoneCheck();
+
+  if NeedReturn and (not User.Dead) then begin
+    if GoToFarmSpot() then
+      NeedReturn := false
+    else begin
+      Engine.Msg('[Return]', 'Retry in 10 sec', 128);
+      Delay(10000);
+    end;
+  end;
+
+end;
+
+procedure DeathHandler_Thread();               // the other farm modes: in a thread of its own
+begin
+  DhOutSince := 0;
+  while Delay(1000) do DeathTick();
 end;
 
 // ===================== Rebuff thread =====================
 // Character is fine -> rebuff in place on the spot (kill mobs, leave combat,
 // buff, buy supplies once per cycle). If it keeps failing -> go to Aden and buff there.
 
-procedure AltB_Rebuff_Thread();
-var
-  Fails, Tries: integer;
-  SuppliesDone: boolean;
+// one look (every second): the buff is low -> rebuff on the spot (pack farm: once the farm says the
+// safe point is clear), buy supplies once per cycle; failing again and again -> back via Aden
+procedure RebuffTick();
 begin
-  Fails := 0;
-  SuppliesDone := false;
-  while delay(1000) do begin
-    if TreeBusy or SummonBusy or PatrolBusy then continue;   // tree handler / summon renew / patrol run are busy, rebuff after them
-    if (not IsOnline()) or IsRecovering or NeedReturn then begin
-      Fails := 0;
-      continue;
+  if TreeBusy or SummonBusy or PatrolBusy then exit;   // tree handler / summon renew / patrol run are busy, rebuff after them
+  if (not IsOnline()) or IsRecovering or NeedReturn then begin
+    RbFails := 0;
+    RbWaitAt := 0;
+    PkSafeReady := false;
+    exit;
+  end;
+  if User.Dead then exit;
+  if BuffID = 0 then exit;   // SetBuff not called: no rebuff
+
+  if (BuffTime(BuffID) < REBUFF_TIME) then begin
+    if RbWaitAt = 0 then Engine.Msg('[Rebuff]', 'Buff is low, preparing to rebuff...', 0);
+
+    // --- safe point set: interface OFF, run there, fight back there until out of combat ---
+    if OnSpot and PackEnabled then begin
+      // pack farm: the farm runs to the safe point (none: stays) and kills what follows there
+      // (splash, mass spoil, sweep) and says PkSafeReady when it is clear; then the farm is off for
+      // the buff. Up to 3 min: a big pack takes long, the farm is never paused in the middle of it.
+      // Not waited for here: every look (each second) checks it again, the farm goes on meanwhile
+      if not PkSafeReady then begin
+        if RbWaitAt = 0 then RbWaitAt := GetTickCount;
+        if GetTickCount - RbWaitAt < 180000 then exit;
+      end;
+      RbWaitAt := 0;
+      if User.Dead or NeedReturn then exit;
+      if PkSafeReady then FarmOff()
+      else if HasSafePoint then begin
+        if not SafePointClear() then begin   // the farm did not make it in 3 min, nor did this
+          if User.Dead or NeedReturn then exit;
+          Inc(RbFails);                    // again and again -> back via Aden (as the other failures)
+          if RbFails >= SPOT_REBUFF_FAILS then begin
+            RbFails := 0;
+            RequestReturn('Cannot clear the mobs to rebuff');
+            exit;
+          end;
+          if OnSpot then FarmOn();         // never left paused
+          exit;
+        end;
+      end else if not ClearCombat() then begin
+        if User.Dead or NeedReturn then exit;
+        Inc(RbFails);                // again and again -> back via Aden (as the other failures)
+        if RbFails >= SPOT_REBUFF_FAILS then begin
+          RbFails := 0;
+          RequestReturn('Cannot clear the mobs to rebuff');
+          exit;
+        end;
+        if OnSpot then FarmOn();           // never left paused
+        exit;
+      end;
+      Delay(500);
+    end else
+    if OnSpot and HasSafePoint then begin
+      if not SafePointClear() then begin   // died / going back via Aden / 2 min in combat / offline
+        if User.Dead or NeedReturn then exit;
+        Inc(RbFails);                // again and again -> back via Aden (as the other failures)
+        if RbFails >= SPOT_REBUFF_FAILS then begin
+          RbFails := 0;
+          RequestReturn('Cannot clear the mobs to rebuff');
+          exit;
+        end;
+        if OnSpot then FarmOn();           // never left paused
+        exit;
+      end;
+      Delay(500);
+    end else
+    // --- no safe point: fight off mobs and leave combat right here (only on the spot) ---
+    if OnSpot then begin
+      if not ClearCombat() then begin
+        if User.Dead or NeedReturn then exit;
+        Inc(RbFails);
+        if (RbFails >= SPOT_REBUFF_FAILS) then begin
+          RbFails := 0;
+          RequestReturn('Cannot leave combat to rebuff');
+          exit;
+        end;
+        Engine.Msg('[Rebuff]', 'Still in combat, back to farm, retry in 5 sec', 128);
+        FarmOn();
+        Delay(5000);
+        exit;
+      end;
+      if User.Dead or NeedReturn then exit;
+
+      // --- step aside to the safe point before buffing ---
+      if not GoToSafePoint() then begin
+        if User.Dead or NeedReturn then exit;
+        Inc(RbFails);
+        if (RbFails >= SPOT_REBUFF_FAILS) then begin
+          RbFails := 0;
+          RequestReturn('Cannot get to the safe point to rebuff');
+          exit;
+        end;
+        Engine.Msg('[Rebuff]', 'Safe point is not safe, back to farm, retry in 5 sec', 128);
+        FarmOn();
+        Delay(5000);
+        exit;
+      end;
+      Delay(1000);
     end;
-    if User.Dead then continue;
-    if BuffID = 0 then continue;   // SetBuff not called: no rebuff
+
+    SummonBeforeBuff();   // the summon is buffed together with us
+    BuffAltB();
+    Delay(2000);
 
     if (BuffTime(BuffID) < REBUFF_TIME) then begin
-      Engine.Msg('[Rebuff]', 'Buff is low, preparing to rebuff...', 0);
-
-      // --- safe point set: interface OFF, run there, fight back there until out of combat ---
-      if OnSpot and PackEnabled then begin
-        // pack farm: the pack thread runs to the safe point (none: stays) and kills what follows there
-        // (splash, mass spoil, sweep); we wait until it is clear, then the farm is off for the buff.
-        // Up to 3 min: a big pack takes long, the farm is never paused in the middle of it
-        Tries := 0;
-        while (not PkSafeReady) and (not User.Dead) and (not NeedReturn) and (Tries < 1800) do begin
-          Delay(100);
-          Inc(Tries);
+      Inc(RbFails);
+      if (RbFails >= SPOT_REBUFF_FAILS) then begin
+        RbFails := 0;
+        if OnSpot then begin
+          RequestReturn('Rebuff on the spot failed ' + IntToStr(SPOT_REBUFF_FAILS) + ' times');
+          exit;
         end;
-        if User.Dead or NeedReturn then continue;
-        if PkSafeReady then FarmOff()
-        else if HasSafePoint then begin
-          if not SafePointClear() then continue;   // the pack thread did not make it in 60 s
-        end else if not ClearCombat() then continue;
-        Delay(500);
-      end else
-      if OnSpot and HasSafePoint then begin
-        if not SafePointClear() then continue;   // died / going back via Aden
-        Delay(500);
-      end else
-      // --- no safe point: fight off mobs and leave combat right here (only on the spot) ---
-      if OnSpot then begin
-        if not ClearCombat() then begin
-          if User.Dead or NeedReturn then continue;
-          Inc(Fails);
-          if (Fails >= SPOT_REBUFF_FAILS) then begin
-            Fails := 0;
-            RequestReturn('Cannot leave combat to rebuff');
-            continue;
-          end;
-          Engine.Msg('[Rebuff]', 'Still in combat, back to farm, retry in 5 sec', 128);
-          FarmOn();
-          Delay(5000);
-          continue;
-        end;
-        if User.Dead or NeedReturn then continue;
-
-        // --- step aside to the safe point before buffing ---
-        if not GoToSafePoint() then begin
-          if User.Dead or NeedReturn then continue;
-          Inc(Fails);
-          if (Fails >= SPOT_REBUFF_FAILS) then begin
-            Fails := 0;
-            RequestReturn('Cannot get to the safe point to rebuff');
-            continue;
-          end;
-          Engine.Msg('[Rebuff]', 'Safe point is not safe, back to farm, retry in 5 sec', 128);
-          FarmOn();
-          Delay(5000);
-          continue;
-        end;
-        Delay(1000);
+        Engine.Msg('[Rebuff]', 'Rebuff failed ' + IntToStr(SPOT_REBUFF_FAILS) + ' times, pause 60 sec', 128);
+        Delay(60000);
       end;
-
-      SummonBeforeBuff();   // the summon is buffed together with us
-      BuffAltB();
-      Delay(2000);
-
-      if (BuffTime(BuffID) < REBUFF_TIME) then begin
-        Inc(Fails);
-        if (Fails >= SPOT_REBUFF_FAILS) then begin
-          Fails := 0;
-          if OnSpot then begin
-            RequestReturn('Rebuff on the spot failed ' + IntToStr(SPOT_REBUFF_FAILS) + ' times');
-            continue;
-          end;
-          Engine.Msg('[Rebuff]', 'Rebuff failed ' + IntToStr(SPOT_REBUFF_FAILS) + ' times, pause 60 sec', 128);
-          Delay(60000);
-        end;
-      end else
-        Fails := 0;
-
-      // --- supplies once per rebuff cycle, AFTER the buff ---
-      if not SuppliesDone then begin
-        SuppliesDone := true;
-        BuySupplies();
-      end;
-
-      if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();   // back to farm
     end else
-      SuppliesDone := false;     // buffed: next low-buff event is a new cycle
+      RbFails := 0;
+
+    // --- supplies once per rebuff cycle, AFTER the buff ---
+    if not RbSuppliesDone then begin
+      RbSuppliesDone := true;
+      BuySupplies();
+    end;
+
+    if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();   // back to farm
+  end else begin
+    RbSuppliesDone := false;   // buffed: next low-buff event is a new cycle
+    RbWaitAt := 0;
   end;
+end;
+
+procedure AltB_Rebuff_Thread();                // the other farm modes: in a thread of its own
+begin
+  RbFails := 0;
+  RbSuppliesDone := false;
+  RbWaitAt := 0;
+  while Delay(1000) do RebuffTick();
 end;
 
 // ===================== Tree mobs (SetTreeMobs) =====================
@@ -3642,14 +3901,18 @@ end;
 // A mob can take the weapon off (disarm): put it back on. EquipWeapon refreshes
 // the inventory first, so a weapon that is on is never toggled off.
 
-procedure WeaponWatch_Thread();
+// one look (every WEAPON_POLL_MS): the farm weapon is not on -> put it on
+procedure WeaponTick();
 begin
-  while Delay(WEAPON_POLL_MS) do begin
-    if (not IsOnline()) or User.Dead or TreeBusy or PkDaggerOn or PullTapActive() then continue;   // tree handler wears the bow / dagger on a fat mob on purpose
-    if IsEquipped(WeaponID) then continue;
-    Engine.Msg('[Weapon]', 'Weapon ' + IntToStr(WeaponID) + ' is not on (disarm?), equipping', 128);
-    EquipWeapon(WeaponID);
-  end;
+  if (not IsOnline()) or User.Dead or TreeBusy or PkDaggerOn or PullTapActive() then exit;   // tree handler wears the bow / dagger on a fat mob on purpose
+  if IsEquipped(WeaponID) then exit;
+  Engine.Msg('[Weapon]', 'Weapon ' + IntToStr(WeaponID) + ' is not on (disarm?), equipping', 128);
+  EquipWeapon(WeaponID);
+end;
+
+procedure WeaponWatch_Thread();                // the other farm modes: in a thread of its own
+begin
+  while Delay(WEAPON_POLL_MS) do WeaponTick();
 end;
 
 // ===================== Pack farm (SetPackFarm): body pull -> corner -> auto attack =====================
@@ -3714,6 +3977,19 @@ begin
   PkLastState := S;
   PkStateAt := GetTickCount;
   Engine.Msg('[State]', S, 0);
+end;
+
+// why the farm stands still, as a number: compared every tick without building a string (strings
+// built by two threads at the same moment broke the script: "Invalid pointer operation")
+function PkStopCode(): integer;
+begin
+  if User.Dead then result := 1
+  else if not IsOnline() then result := 2
+  else if NeedReturn then result := 3
+  else if IsRecovering then result := 4
+  else if not OnSpot then result := 5
+  else if FarmPaused then result := 6
+  else result := 7;
 end;
 
 // why the farm stands still (AoeMustStop)
@@ -3919,8 +4195,7 @@ var Started: cardinal;
 begin
   result := false;
   Started := GetTickCount;
-  NavMoveReset();
-  NavClickForget();
+  NavStepReset();
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
     if PkDist(X, Y) <= Radius then begin
       result := true;
@@ -3929,8 +4204,7 @@ begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
     PullTapRestore();
     if PullLeashTick() then begin      // zigzag: the click is the pull module's
-      NavMoveReset();
-      NavClickForget();
+      NavStepReset();
       Delay(PK_TICK_MS);
       continue;
     end;
@@ -4344,9 +4618,8 @@ begin
   Started := GetTickCount;
   GainAt := Started;
   SumBest := 1E18;
-  NavMoveReset();
-  NavClickForget();
-  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
+  NavStepReset();
+  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
     Total := 0;
     Near := 0;
     Sum := 0;
@@ -4369,6 +4642,22 @@ begin
     if GetTickCount - Started > PkWaitMs then exit;
     if (PkDist(PkCX, PkCY) > PK_WAIT_HOLD) and NavNeedClick(PkCX, PkCY) then NavClickAt(PkCX, PkCY, PkCZ);
     Delay(PK_TICK_MS);
+  end;
+end;
+
+// during a fight (every tick of it): the alerts, the zone, a disarm (the weapon back), an own buff that
+// ended - as their own threads did before, between the hits
+procedure PkFightTick();
+begin
+  PkLightTick();
+  if GetTickCount - PkSelfBuffAt >= 1000 then begin
+    PkSelfBuffAt := GetTickCount;
+    ZoneCheck();
+    if Length(SelfBuffSkill) > 0 then SelfBuffTick();
+  end;
+  if (WeaponID > 0) and (GetTickCount - PkWeaponAt >= WEAPON_POLL_MS) then begin
+    PkWeaponAt := GetTickCount;
+    WeaponTick();
   end;
 end;
 
@@ -4403,7 +4692,8 @@ begin
     PkRangedMs := 3000;
     PkRangedSet := true;
   end;
-  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
+  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
+    PkFightTick();
     WasRunning := Running;             // the run to the target goes on only if the last tick ran too
     Running := false;
     PkCheckShooters();
@@ -4608,8 +4898,7 @@ begin
       exit;
     end;
     Engine.Msg('[Hunt]', 'No mobs near, patrol to ' + IntToStr(PkPatrolX) + ', ' + IntToStr(PkPatrolY), 0);
-    NavMoveReset();
-    NavClickForget();
+    NavStepReset();
   end;
   NavStep(PkPatrolX, PkPatrolY, UZ, true);
   if NavStillMs() > PK_POINT_STUCK_MS then PkPatrolOn := false;   // cannot get there: the next point
@@ -4742,8 +5031,7 @@ begin
   Started := GetTickCount;
   BestD := PkDist(AX, AY);
   BestAt := GetTickCount;
-  NavMoveReset();
-  NavClickForget();
+  NavStepReset();
   while (not AoeMustStop()) and (not PkAtRoom(n)) and
         ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) do begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
@@ -4988,94 +5276,99 @@ begin
   end;
 end;
 
-// the pull module ends the pull at once when the farm must stop (pause, return, death...)
-procedure PullStop_Thread();
-begin
-  while Delay(100) do PullSetStop(AoeMustStop());
-end;
 
-procedure PackFarm_Thread();
+// one tick of the pack farm (every PK_TICK_MS)
+procedure PackTick();
+var Code: integer;
 begin
-  while Delay(PK_TICK_MS) do begin
-    if AoeMustStop() or TreeBusy then begin
+  if AoeMustStop() or TreeBusy then begin
+    // stopped (another thread runs: the return, the rebuff...): the line only when the reason changes /
+    // every 30 s, and no string built in between; look 4 times a second, not 20
+    Code := PkStopCode();
+    if (Code <> PkStopCodeSaid) or (GetTickCount - PkStopSaidAt >= 30000) then begin
+      PkStopCodeSaid := Code;
+      PkStopSaidAt := GetTickCount;
       PkState('stopped: ' + PkStopReason());
-      continue;
     end;
-    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then begin
-      PkState('rebuff: buff ' + IntToStr(BuffID) + ' has ' + IntToStr(BuffTime(BuffID) div 1000) + ' s left, ' +
-        'mobs on us ' + IntToStr(PkCountAggro()) + ' - to the safe point, no pulls');
-      // rebuff first: no new pulls. Safe point set -> run there (server path, the mobs on us come
-      // along), the safe point is the corner: finish them there, then the rebuff thread buffs
-      if not HasSafePoint then begin
-        // no safe point: finish what is on us right here (the pack fight), then tell the rebuff
-        // thread it may buff - it never pauses the farm in the middle of the pack
-        PkTapRestore();
-        if PkCountAggro() > 0 then begin
-          PkSafeReady := false;
-          PkCorner := -1;
-          PkFight();
-          PkPickup();
-          continue;
-        end;
-        PkSafeReady := (not User.InCombat) and (not PullTapActive());
-        continue;
-      end;
+    Delay(200);
+    exit;
+  end;
+  PkStopCodeSaid := 0;
+  if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then begin
+    PkState('rebuff: buff ' + IntToStr(BuffID) + ' has ' + IntToStr(BuffTime(BuffID) div 1000) + ' s left, ' +
+      'mobs on us ' + IntToStr(PkCountAggro()) + ' - to the safe point, no pulls');
+    // rebuff first: no new pulls. Safe point set -> run there (server path, the mobs on us come
+    // along), the safe point is the corner: finish them there, then the rebuff thread buffs
+    if not HasSafePoint then begin
+      // no safe point: finish what is on us right here (the pack fight), then tell the rebuff
+      // thread it may buff - it never pauses the farm in the middle of the pack
       PkTapRestore();
-      if PkDist(SafeX, SafeY) > PK_REACH * 2 then begin
-        PkSafeReady := false;
-        Engine.Msg('[Pack]', 'Rebuff due, running to the safe point', 0);
-        NavRun(SafeX, SafeY, SafeZ, PK_REACH);
-        continue;
-      end;
       if PkCountAggro() > 0 then begin
         PkSafeReady := false;
-        PkCorner := 0;                 // the safe point is the corner of this fight
-        PkCX := SafeX;
-        PkCY := SafeY;
-        PkCZ := SafeZ;
-        PkFight();
         PkCorner := -1;
-        continue;
+        PkFight();
+        PkPickup();
+        exit;
       end;
-      PkSafeReady := (not User.InCombat) and (not PullTapActive());   // the rebuff thread waits for this
-      if (PkRebuffSaidAt = 0) or (GetTickCount - PkRebuffSaidAt > 10000) then begin
-        PkRebuffSaidAt := GetTickCount;
-        Engine.Msg('[Pack]', 'At the safe point for the rebuff: buff ' + IntToStr(BuffID) + ' has ' +
-          IntToStr(BuffTime(BuffID) div 1000) + ' s left (rebuff below ' + IntToStr(REBUFF_TIME div 1000) +
-          ' s), in combat: ' + IntToStr(Ord(User.InCombat)) + ' - no pulls until it is buffed', 0);
-      end;
-      continue;
+      PkSafeReady := (not User.InCombat) and (not PullTapActive());
+      exit;
     end;
-    PkSafeReady := false;
-    if (PkFarmMode = FARM_ROOMS) and (RoomCount() > 0) then begin
-      PkRoomTick();
-      continue;
-    end;
-    // one by one (FARM_SINGLE, or FARM_AUTO with few free mobs near)
-    if (PkFarmMode = FARM_SINGLE) or ((PkFarmMode = FARM_AUTO) and PkFewFree()) then begin
-      PkSingleTick();
-      continue;
-    end;
-    if PullTapActive() and (PkCountAggro() = 0) and (not PkTapAlways) then begin
-      PkTapRestore();                  // the farm weapon goes back on before a pull without the tap
-      continue;
-    end;
-    PkState('pack: pulling (pack ' + IntToStr(PkPackSize) + ')');
-    PullRun();                         // the pull: Core\mob_pull.pas
     PkTapRestore();
-    if AoeMustStop() then continue;
-    if PkCountAggro() = 0 then begin   // nothing to pull and nobody on us
-      PkState('pack: nothing to pull - idle at the safe point / patrol');
-      PkIdle();
-      Delay(300);
-      continue;
+    if PkDist(SafeX, SafeY) > PK_REACH * 2 then begin
+      PkSafeReady := false;
+      Engine.Msg('[Pack]', 'Rebuff due, running to the safe point', 0);
+      NavRun(SafeX, SafeY, SafeZ, PK_REACH);
+      exit;
     end;
     if PkCountAggro() > 0 then begin
-      PkState('pack: ' + IntToStr(PkCountAggro()) + ' on us - to the corner, fight');
-      PkGather();
+      PkSafeReady := false;
+      PkCorner := 0;                 // the safe point is the corner of this fight
+      PkCX := SafeX;
+      PkCY := SafeY;
+      PkCZ := SafeZ;
       PkFight();
-      PkPickup();
+      PkCorner := -1;
+      exit;
     end;
+    PkSafeReady := (not User.InCombat) and (not PullTapActive());   // the rebuff thread waits for this
+    if (PkRebuffSaidAt = 0) or (GetTickCount - PkRebuffSaidAt > 10000) then begin
+      PkRebuffSaidAt := GetTickCount;
+      Engine.Msg('[Pack]', 'At the safe point for the rebuff: buff ' + IntToStr(BuffID) + ' has ' +
+        IntToStr(BuffTime(BuffID) div 1000) + ' s left (rebuff below ' + IntToStr(REBUFF_TIME div 1000) +
+        ' s), in combat: ' + IntToStr(Ord(User.InCombat)) + ' - no pulls until it is buffed', 0);
+    end;
+    exit;
+  end;
+  PkSafeReady := false;
+  if (PkFarmMode = FARM_ROOMS) and (RoomCount() > 0) then begin
+    PkRoomTick();
+    exit;
+  end;
+  // one by one (FARM_SINGLE, or FARM_AUTO with few free mobs near)
+  if (PkFarmMode = FARM_SINGLE) or ((PkFarmMode = FARM_AUTO) and PkFewFree()) then begin
+    PkSingleTick();
+    exit;
+  end;
+  if PullTapActive() and (PkCountAggro() = 0) and (not PkTapAlways) then begin
+    PkTapRestore();                  // the farm weapon goes back on before a pull without the tap
+    exit;
+  end;
+  PkState('pack: pulling (pack ' + IntToStr(PkPackSize) + ')');
+  PullSetStop(AoeMustStop());        // one thread: nothing else changes it during the pull
+  PullRun();                         // the pull: Core\mob_pull.pas
+  PkTapRestore();
+  if AoeMustStop() then exit;
+  if PkCountAggro() = 0 then begin   // nothing to pull and nobody on us
+    PkState('pack: nothing to pull - idle at the safe point / patrol');
+    PkIdle();
+    Delay(300);
+    exit;
+  end;
+  if PkCountAggro() > 0 then begin
+    PkState('pack: ' + IntToStr(PkCountAggro()) + ' on us - to the corner, fight');
+    PkGather();
+    PkFight();
+    PkPickup();
   end;
 end;
 
@@ -5289,166 +5582,6 @@ begin
   end;
 end;
 
-// ===================== Events: players around, private messages =====================
-// Everything is polled from one thread, so spot scripts need no OnAction.
-// Every event goes through Alert (see above the death thread).
-
-// ---- players around (SetPlayerAlert) ----
-
-// a player near us (and not from our party / clan) appeared
-procedure OnPlayerDetected(Ch: TL2Char);
-var Info: string;
-begin
-  Info := Ch.Name + ' lvl ' + IntToStr(Ch.Level);
-  if Ch.Clan <> '' then Info := Info + ' [' + Ch.Clan + ']';
-  if Ch.PK or (Ch.Karma > 0) then Info := Info + ' PK';
-  Alert('[Player]', Info + ' near me', PlayerSound);
-end;
-
-function IsFriendly(Ch: TL2Char): boolean;
-var MyClan, ChClan: cardinal;
-begin
-  result := Ch.IsMember;   // party member
-  if result then exit;
-  MyClan := User.ClanID;
-  ChClan := Ch.ClanID;
-  result := (MyClan <> 0) and (ChClan = MyClan);
-end;
-
-// ---- private messages (SetPrivateAlert) ----
-
-procedure OnPrivateMessage(Sender, Text: string);
-begin
-  Alert('[PM]', Sender + ': ' + Text, PrivateSound);
-end;
-
-// highest OID of private messages we already know (new ones have a bigger OID)
-function LastPrivateOID(): cardinal;
-var i, n: integer;
-  M: TChatMessage;
-begin
-  result := 0;
-  n := History.Count(mtPrivate);       // the bot trims the history meanwhile: the count checked every line
-  for i := 0 to n - 1 do begin
-    if i >= History.Count(mtPrivate) then break;
-    M := History.GetMessage(i, mtPrivate);
-    if M.OID > result then result := M.OID;
-  end;
-end;
-
-// ---- champions (SetChampionAlert): a mob with a lot of HP appeared ----
-
-procedure OnChampionDetected(Name: string; MaxHP: integer);
-begin
-  Alert('[Champion]', Name + ' (' + IntToStr(MaxHP) + ' HP) spawned in the farm area', DEFAULT_CHAMPION_SOUND);
-end;
-
-// the lists (players, mobs, history) change in the bot's thread while we go over them: the count is
-// checked before every item and each one is read once into locals (a stale index broke the script
-// with "Invalid pointer operation" when mobs died / a champion came)
-procedure Events_Thread();
-var
-  Seen, Cur: array of integer;   // OIDs of players near us: last poll / this poll
-  SeenChamp: array of integer;   // OIDs of champions we already reported
-  i, j, n, Cnt, OID, X, Y, Z, MaxHP: integer;
-  Known: boolean;
-  MaxOID: cardinal;
-  M: TChatMessage;
-  Me, Nm: string;
-  PmCount: integer;              // private history lines at the last look
-  Ch: TL2Char;
-  Mob: TL2Npc;
-begin
-  SetLength(Seen, 0);
-  SetLength(SeenChamp, 0);
-  MaxOID := LastPrivateOID();   // old messages are not events
-  PmCount := -1;
-
-  while Delay(EVENTS_POLL_MS) do begin
-    if not IsOnline() then begin
-      SetLength(Seen, 0);
-      continue;
-    end;
-
-    // --- players: alert once when a player comes into range, forget when he leaves ---
-    if PlayerAlertRange > 0 then begin
-      SetLength(Cur, 0);
-      Cnt := CharList.Count;
-      for i := 0 to Cnt - 1 do begin
-        if i >= CharList.Count then break;
-        Ch := CharList(i);
-        if Ch = nil then continue;
-        X := Ch.X;
-        Y := Ch.Y;
-        Z := Ch.Z;
-        if User.DistTo(X, Y, Z) > PlayerAlertRange then continue;
-        if IsFriendly(Ch) then continue;
-
-        OID := Ch.OID;
-        n := Length(Cur);
-        SetLength(Cur, n + 1);
-        Cur[n] := OID;
-
-        Known := false;
-        for j := 0 to Length(Seen) - 1 do
-          if Seen[j] = OID then begin Known := true; break; end;
-        if not Known then OnPlayerDetected(Ch);
-      end;
-      SetLength(Seen, Length(Cur));
-      for i := 0 to Length(Cur) - 1 do Seen[i] := Cur[i];
-    end;
-
-    // --- private messages: everything with a new OID, except our own replies ---
-    Cnt := 0;
-    if PrivateAlert then Cnt := History.Count(mtPrivate);
-    if PrivateAlert and (Cnt <> PmCount) then begin   // the history is read only when it changed
-      PmCount := Cnt;
-      Me := User.Name;
-      for i := 0 to Cnt - 1 do begin
-        if i >= History.Count(mtPrivate) then break;
-        M := History.GetMessage(i, mtPrivate);
-        if M.OID <= MaxOID then continue;
-        MaxOID := M.OID;
-        if M.Sender <> Me then OnPrivateMessage(M.Sender, M.Text);
-      end;
-    end;
-
-    // --- champions: alive mob with MaxHP above ChampionMinHP, once per mob ---
-    if ChampionMinHP > 0 then begin
-      SetLength(Cur, 0);
-      Cnt := NpcList.Count;
-      for i := 0 to Cnt - 1 do begin
-        if i >= NpcList.Count then break;
-        Mob := NpcList(i);
-        if Mob = nil then continue;
-        if Mob.Dead then continue;
-        MaxHP := Mob.MaxHP;
-        if MaxHP <= ChampionMinHP then continue;
-        if IsIgnoredNpc(i) then continue;
-        // only champions in our farm area: the zone, or (no zone) FREE_RADIUS around the start point
-        X := Mob.X;
-        Y := Mob.Y;
-        Z := Mob.Z;
-        if not InFarmArea(X, Y, Z) then continue;
-
-        OID := Mob.OID;
-        Nm := Mob.Name;
-        n := Length(Cur);
-        SetLength(Cur, n + 1);
-        Cur[n] := OID;
-
-        Known := false;
-        for j := 0 to Length(SeenChamp) - 1 do
-          if SeenChamp[j] = OID then begin Known := true; break; end;
-        if not Known then OnChampionDetected(Nm, MaxHP);
-      end;
-      // remember only champions that are still around (dead / gone -> forgotten)
-      SetLength(SeenChamp, Length(Cur));
-      for i := 0 to Length(Cur) - 1 do SeenChamp[i] := Cur[i];
-    end;
-  end;
-end;
-
 // ===================== Start =====================
 
 // Decides what to do once we are in game (script start or after a relogin):
@@ -5473,21 +5606,63 @@ end;
 // ===================== Login thread =====================
 // SetLogin only: disconnected -> log in again and start over.
 
-procedure Login_Thread();
+// one look (every 5 s): out of the game -> log in again (blocks until in game) and start over
+procedure LoginTick();
 begin
-  while Delay(5000) do begin
-    if IsOnline() then continue;
+  if IsOnline() then exit;
 
-    // block the other threads while we are out of the game
-    IsRecovering := true;
-    OnSpot := false;
-    NeedReturn := false;
-    Engine.Msg('[Login]', 'Disconnected', 128);
+  // block the other ticks / threads while we are out of the game
+  IsRecovering := true;
+  OnSpot := false;
+  NeedReturn := false;
+  Engine.Msg('[Login]', 'Disconnected', 128);
 
-    while not DoLogin() do Delay(LOGIN_RETRY_WAIT);
+  while not DoLogin() do Delay(LOGIN_RETRY_WAIT);
 
-    IsRecovering := false;
-    StartInGame();
+  IsRecovering := false;
+  StartInGame();
+end;
+
+procedure Login_Thread();                      // the other farm modes: in a thread of its own
+begin
+  while Delay(5000) do LoginTick();
+end;
+
+// ===================== The pack farm: ONE thread =====================
+// Everything of the pack farm runs here, one after another - the farm tick, and once a second the
+// login, death / return, rebuff, own buffs, the weapon, the alerts. No second thread: nothing can
+// change under another (two threads at once broke the script: "Invalid pointer operation").
+// A long action (the return via Aden, the rebuff) simply runs to its end, the farm waits for it
+
+procedure PackMain();
+var NextSec, NextLogin, NextWeapon: cardinal;
+begin
+  DhOutSince := 0;
+  RbFails := 0;
+  RbSuppliesDone := false;
+  RbWaitAt := 0;
+  PkStopCodeSaid := 0;
+  NextSec := 0;
+  NextLogin := 0;
+  NextWeapon := 0;
+  if (PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0) then EventsInit();
+  while Delay(PK_TICK_MS) do begin
+    if HasLogin and (GetTickCount >= NextLogin) then begin
+      NextLogin := GetTickCount + 5000;
+      LoginTick();
+    end;
+    if GetTickCount >= NextSec then begin
+      NextSec := GetTickCount + 1000;
+      DeathTick();
+      RebuffTick();
+      if Length(SelfBuffSkill) > 0 then SelfBuffTick();
+      PkLightTick();
+    end;
+    if (WeaponID > 0) and (GetTickCount >= NextWeapon) then begin
+      NextWeapon := GetTickCount + WEAPON_POLL_MS;
+      WeaponTick();
+    end;
+    PackTick();
   end;
 end;
 
@@ -5538,16 +5713,24 @@ begin
 
   StartInGame();
 
+  if PackEnabled then begin
+    // the pack farm: everything in this one thread (PackMain), no other thread at all
+    RememberWeapon();                  // no SetWeapon -> the weapon in hands right now
+    PullSetFarmWeapon(WeaponID);       // the pull puts it back after the tap weapon
+    if TreeEnabled then Engine.Msg('[Init]', 'SetTreeMobs is not used by the pack farm', 128);
+    if AoeEnabled or SpoilEnabled or CasterEnabled then
+      Engine.Msg('[Init]', 'SetPackFarm wins: SetAoeFarm / SetSpoilFarm / SetCasterFarm are not used with it', 128);
+    Engine.Msg('[Init]', 'Pack farm: one thread', 0);
+    PackMain();
+    exit;
+  end;
+
   Script.NewThread(@AltB_Rebuff_Thread);
   Script.NewThread(@DeathHandler_Thread);
   if HasLogin then Script.NewThread(@Login_Thread);
   if TreeEnabled then Script.NewThread(@TreeWatch_Thread);
   if AoeEnabled then Script.NewThread(@AoeFarm_Thread);
   if SpoilEnabled then Script.NewThread(@SpoilFarm_Thread);
-  if PackEnabled then begin
-    Script.NewThread(@PullStop_Thread);
-    Script.NewThread(@PackFarm_Thread);
-  end;
   if Length(SelfBuffSkill) > 0 then Script.NewThread(@SelfBuff_Thread);
   if SpoilEnabled then SpSpoilMsg();   // old system messages are not events
   if CasterEnabled then begin
