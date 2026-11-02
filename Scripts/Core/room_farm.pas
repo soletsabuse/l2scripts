@@ -73,6 +73,12 @@ var
   RPlayersSet: boolean;
   RAvoidMs: integer;                 // RoomSetAvoid; 0 = not set: RM_BUSY_MS
 
+// a square in double (an integer square overflows past 46340: far coordinates, a point not set yet)
+function RmSq(V: double): double;
+begin
+  result := V * V;
+end;
+
 procedure RoomClear();
 begin
   RN := 0;
@@ -171,7 +177,7 @@ begin
     AY := RPY[k];
     BX := RPX[j];
     BY := RPY[j];
-    if ((AY > Y) <> (BY > Y)) and (X < (BX - AX) * (Y - AY) / (BY - AY) + AX) then result := not result;
+    if ((AY > Y) <> (BY > Y)) and (X < 1.0 * (BX - AX) * (Y - AY) / (BY - AY) + AX) then result := not result;
     j := k;
   end;
 end;
@@ -194,14 +200,14 @@ begin
     AY := RPY[j];
     BX := RPX[k];
     BY := RPY[k];
-    L2 := Sqr(BX - AX) + Sqr(BY - AY);
+    L2 := RmSq(BX - AX) + RmSq(BY - AY);
     if L2 < 1 then T := 0
-    else T := ((X - AX) * (BX - AX) + (Y - AY) * (BY - AY)) / L2;
+    else T := (1.0 * (X - AX) * (BX - AX) + 1.0 * (Y - AY) * (BY - AY)) / L2;
     if T < 0 then T := 0;
     if T > 1 then T := 1;
     PX := AX + (BX - AX) * T;
     PY := AY + (BY - AY) * T;
-    D := Sqrt(Sqr(X - PX) + Sqr(Y - PY));
+    D := Sqrt(RmSq(X - PX) + RmSq(Y - PY));
     if D < result then result := D;
     j := k;
   end;

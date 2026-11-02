@@ -113,6 +113,7 @@ var
   GgX0, GgY0, GgCell, GgW, GgH: integer;
   GgFree: array of boolean;
   GgOn: boolean;
+  GgNav: boolean;               // the pull area is the nav map's grid (NavGridFree): no own copy
   PpX, PpY: array of integer;   // PullPolyAdd: the room we farm (3+ points = on)
   PpN: integer;
   // run state
@@ -130,6 +131,11 @@ var
   MpHardOID: array[0..31] of integer;     // PullForget
   MpHardUntil: array[0..31] of cardinal;
   MpHardHead: integer;
+  MpHitOID: array[0..31] of integer;      // mobs our tap hit: one hit = ours (the pull counts them)
+  MpHitAt: array[0..31] of cardinal;
+  MpHitHead: integer;
+  MpHitLast: cardinal;                    // the last hit (none within tap_skip_ms: nothing to look at)
+  MpAtkWorks: boolean;                    // an attack of ours on a tapped mob was seen (the bot fills it)
   MpTrkOID: array[0..31] of integer;
   MpTrkX, MpTrkY: array[0..31] of integer;
   MpTrkAt: array[0..31] of cardinal;
@@ -142,6 +148,12 @@ var
   MpWearID: integer;
   MpWearUseAt, MpWearRefAt: cardinal;
   MpWearOK: boolean;
+
+// a square in double (an integer square overflows past 46340: far coordinates, a point not set yet)
+function MpSq(V: double): double;
+begin
+  result := V * V;
+end;
 
 procedure MpInit();
 begin
@@ -156,8 +168,8 @@ begin
   MpIgnoreMs := 30000;     // a passive / not hit mob -> skipped this long
   MpApproachMs := 15000;   // cannot get next to a mob this long -> skipped
   MpTapAfterMs := 1000;    // tap weapon: ran past a mob, no aggro this long -> tap it
-  MpTapMs := 4000;         // tap weapon: swap + hit must land within this
-  MpTapSkipMs := 10000;    // a tapped mob is not run at again this long (it comes to us)
+  MpTapMs := 1000;         // tap: the hit must land within the run to the mob (way / our speed) + this
+  MpTapSkipMs := 10000;    // a mob our tap hit counts as the pack this long (not run at again, it comes)
   MpStaticMs := 2000;      // a mob hitting us from afar without moving this long ...
   MpStaticDist := 150;     // ... farther than this = a shooter: never pulled / fought
   MpExtraRange := 300;     // pack full: still take free mobs this close (on the way)
@@ -166,7 +178,7 @@ begin
   MpStuckMs := 1500;       // running to a mob without moving this long (wall) -> skip it
   MpMinHP := 50;           // HP % below this -> pull ends
   MpNoGainMs := 15000;     // no new aggro this long -> pull ends
-  MpMaxMs := 60000;        // max time of one pull
+  MpMaxMs := 120000;       // max time of one pull (a big room with respawns needs more than a minute)
   MpAggroDist := 1500;     // a mob "on us" farther than this does not count (stuck / teleported)
   MpPackMult := 2;         // this many packs on us -> pull ends at once
   MpStopMs := 300;         // not moving this long = stopped -> click again
@@ -349,6 +361,28 @@ begin
     end;
 end;
 
+// a mob our tap hit: it is ours from now on - the pull counts it in the pack and does not run at it
+// again for tap_skip_ms (it comes to us)
+procedure MpHitAdd(OID: integer);
+begin
+  MpHitOID[MpHitHead] := OID;
+  MpHitAt[MpHitHead] := GetTickCount;
+  MpHitHead := (MpHitHead + 1) mod 32;
+  MpHitLast := GetTickCount;
+end;
+
+function MpWasHit(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  if (MpHitLast = 0) or (GetTickCount - MpHitLast >= MpTapSkipMs) then exit;
+  for k := 0 to 31 do
+    if (MpHitOID[k] = OID) and (GetTickCount - MpHitAt[k] < MpTapSkipMs) then begin
+      result := true;
+      exit;
+    end;
+end;
+
 function MpField(S: string; k: integer): string;
 var p, n: integer;
   T: string;
@@ -376,6 +410,13 @@ var L: TStringList;
 begin
   MpInit();
   GgOn := false;
+  GgNav := false;
+  if NavGridIs(GridFile) then begin    // loaded by NavBuild already (from its cache): not read again
+    GgNav := true;
+    GgOn := true;
+    Engine.Msg('[Pull]', 'Pull area: ' + GridFile + ' (the nav map)', 128);
+    exit;
+  end;
   F := Script.Path + '..\Nav\' + GridFile;
   if not FileExists(F) then begin
     Engine.Msg('[Pull]', 'No grid file ' + F + ' - pulling in the bot zone', 255);
@@ -414,6 +455,10 @@ end;
 function MpGridFree(X, Y: integer): boolean;
 var cx, cy: integer;
 begin
+  if GgNav then begin
+    result := NavGridFree(X, Y);
+    exit;
+  end;
   result := false;
   if (X < GgX0) or (Y < GgY0) then exit;
   cx := (X - GgX0) div GgCell;
@@ -447,7 +492,7 @@ begin
   j := PpN - 1;
   for k := 0 to PpN - 1 do begin
     if ((PpY[k] > Y) <> (PpY[j] > Y)) and
-       (X < (PpX[j] - PpX[k]) * (Y - PpY[k]) / (PpY[j] - PpY[k]) + PpX[k]) then result := not result;
+       (X < 1.0 * (PpX[j] - PpX[k]) * (Y - PpY[k]) / (PpY[j] - PpY[k]) + PpX[k]) then result := not result;
     j := k;
   end;
 end;
@@ -579,7 +624,7 @@ var UX, UY: integer;
 begin
   UX := User.X;
   UY := User.Y;
-  if (UX - MpLX) * (UX - MpLX) + (UY - MpLY) * (UY - MpLY) >= 100 then begin
+  if MpSq(UX - MpLX) + MpSq(UY - MpLY) >= 100 then begin
     MpLX := UX;
     MpLY := UY;
     MpMovedAt := GetTickCount;
@@ -621,7 +666,7 @@ begin
   UY := User.Y;
   if NavIsReady() then begin
     Again := First or (GetTickCount - MpWpAt > 500);
-    if MpWpOn and (Sqrt(Sqr(MpWpX - UX) + Sqr(MpWpY - UY)) < 120) then Again := true;
+    if MpWpOn and (Sqrt(MpSq(MpWpX - UX) + MpSq(MpWpY - UY)) < 120) then Again := true;
     if Again then begin
       MpWpOn := NavWaypoint(MX, MY);
       if MpWpOn then begin
@@ -634,15 +679,15 @@ begin
   if MpWpOn then begin
     TX := MpWpX;
     TY := MpWpY;
-    if First or (Sqrt(Sqr(TX - MpClickX) + Sqr(TY - MpClickY)) > MpReclickDist) or
+    if First or (Sqrt(MpSq(TX - MpClickX) + MpSq(TY - MpClickY)) > MpReclickDist) or
        (MpStillMs() >= MpStopMs) then MpClick(TX, TY, MZ);
     exit;
   end;
   // straight at the mob: the overshoot direction is kept between clicks (no turning back after we
   // ran past it)
   Again := First or (MpStillMs() >= MpStopMs);
-  if Sqrt(Sqr(MX - MpChaseMX) + Sqr(MY - MpChaseMY)) > MpReclickDist then Again := true;
-  if Sqrt(Sqr(MpClickX - UX) + Sqr(MpClickY - UY)) < 100 then Again := true;
+  if Sqrt(MpSq(MX - MpChaseMX) + MpSq(MY - MpChaseMY)) > MpReclickDist then Again := true;
+  if Sqrt(MpSq(MpClickX - UX) + MpSq(MpClickY - UY)) < 100 then Again := true;
   if not Again then exit;
   DX := MX - UX;
   DY := MY - UY;
@@ -769,6 +814,20 @@ begin
     if PullIsAggro(i) then Inc(result);
 end;
 
+// mobs our tap hit that do not target us yet (alive, near): the pull counts them as aggro already
+function MpCountHit(): integer;
+var i, OID: integer;
+begin
+  result := 0;
+  if (MpHitLast = 0) or (GetTickCount - MpHitLast >= MpTapSkipMs) then exit;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    OID := NpcList(i).OID;
+    if (not MpWasHit(OID)) or MpSkippedHard(OID) or PullIsAggro(i) then continue;
+    if MpDist(NpcList(i).X, NpcList(i).Y) < MpAggroDist then Inc(result);
+  end;
+end;
+
 // ---------- touch list (mobs we ran past) ----------
 
 procedure MpTouch(OID: integer);
@@ -830,6 +889,7 @@ begin
       if not MpWhitelisted(i) then continue;
       if Pass = 0 then Inc(MpCntAll);
       OID := NpcList(i).OID;
+      if MpWasHit(OID) then continue;          // hit by our tap: ours already, it comes
       if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then begin
         if Pass = 0 then Inc(MpCntSkip);
         continue;
@@ -901,7 +961,7 @@ begin
   if NpcList(i).Dead or MpNameIgnored(i) then exit;
   if PullIsAggro(i) or (not MpWhitelisted(i)) then exit;
   OID := NpcList(i).OID;
-  if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
+  if MpWasHit(OID) or MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
@@ -1233,7 +1293,7 @@ begin
   VY := VY / L;
   // the side is changed before we reach the side point (no stop there)
   if (MpZigAt = 0) or (GetTickCount - MpZigAt > 1500) or (MpStillMs() >= MpStopMs) or
-     (Sqrt(Sqr(MpClickX - UX) + Sqr(MpClickY - UY)) < 60) then begin
+     (Sqrt(MpSq(MpClickX - UX) + MpSq(MpClickY - UY)) < 60) then begin
     if MpZigSign = 0 then MpZigSign := 1 else MpZigSign := -MpZigSign;
     TX := UX + Round(-VY * MpZig * MpZigSign + VX * 40);
     TY := UY + Round(VX * MpZig * MpZigSign + VY * 40);
@@ -1294,13 +1354,31 @@ end;
 
 // ---------- the pull ----------
 
+// the time a tap gets to land its hit: the run to the mob by the map at our speed + tap_ms (the swing)
+function MpTapTime(MX, MY: integer): cardinal;
+var Spd, Path: double;
+begin
+  Spd := User.Speed;
+  if (Spd < 50) or (Spd > 2000) then Spd := 120;   // not known: a slow run (more time, never less)
+  Path := MpDist(MX, MY);
+  if NavIsReady() then begin
+    Path := NavPathLen(MX, MY);
+    if Path < 0 then Path := MpDist(MX, MY);      // no way by the map: straight
+  end;
+  result := Round(Path / Spd * 1000) + MpTapMs;
+  Dbg('[Pull]', 'tap time ' + IntToStr(result) + ' ms: way ' + IntToStr(Round(Path)) + ' at speed ' +
+    IntToStr(Round(User.Speed)) + ' + ' + IntToStr(MpTapMs));
+end;
+
 function PullRun(): integer;
 var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
   Tapped, Tapping, TapOk: boolean;
   TapTries: integer;                   // tap again from right next to it (the whole room must aggro)
-  TapHitSaid: boolean;                 // debug log: "hit, waiting for the aggro" said for this tap
-  TapHitAt: cardinal;                  // the tap hit landed then: no more hits, wait for its aggro
+  TapTime: cardinal;                   // the time this tap gets to land its hit (MpTapTime)
+  TapUA0, UA: integer;                 // User.AtkOID at the tap start / now
+  TapUT0, TapMy0: cardinal;            // User.AtkTime / the mob's MyAtkTime at the tap start
+  TapMine: boolean;                    // an attack of ours on the tapped mob was seen
   DbgAt: cardinal;                     // debug log: the last state line
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
@@ -1313,6 +1391,7 @@ begin
   TapArmedAt := 0;
   TapCloseUntil := 0;
   TapTries := 0;
+  TapTime := MpTapMs;
   Started := GetTickCount;
   LastGain := GetTickCount;
   Prev := -1;
@@ -1332,7 +1411,7 @@ begin
   while not MpMustStop() do begin
     DbgTick();
     PullCheckShooters();
-    Cnt := PullCountAggro();
+    Cnt := PullCountAggro() + MpCountHit();   // + the mobs our tap hit (they come)
     result := Cnt;
     if MpPackLive then begin             // a mob that came up meanwhile is taken too
       Limit := Cnt + MpCountFreeAll();
@@ -1454,10 +1533,11 @@ begin
     // the pull mob aggroed / died / vanished / too far for an extra -> the next one
     if OID <> 0 then begin
       Idx := MpIdx(OID);
-      if (Idx < 0) or NpcList(Idx).Dead or PullIsAggro(Idx) or PullIsShooter(OID) then begin
+      if (Idx < 0) or NpcList(Idx).Dead or PullIsAggro(Idx) or MpWasHit(OID) or PullIsShooter(OID) then begin
         if Idx < 0 then Dbg('[Pull]', 'target ' + IntToStr(OID) + ' dropped: gone')
         else Dbg('[Pull]', 'target ' + IntToStr(OID) + ' dropped: dead ' + IntToStr(Ord(NpcList(Idx).Dead)) +
-          ' aggro ' + IntToStr(Ord(PullIsAggro(Idx))) + ' shooter/champ ' + IntToStr(Ord(PullIsShooter(OID))));
+          ' aggro ' + IntToStr(Ord(PullIsAggro(Idx))) + ' hit ' + IntToStr(Ord(MpWasHit(OID))) +
+          ' shooter/champ ' + IntToStr(Ord(PullIsShooter(OID))));
         OID := 0;
       end else begin
         MX := NpcList(Idx).X;
@@ -1528,46 +1608,59 @@ begin
           continue;
         end;
         Tapping := true;
-        Dbg('[Pull]', 'tap start on ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(MX, MY))));
         TapStart := GetTickCount;
         TapArmedAt := 0;
         TapCloseUntil := 0;
         TapTries := 0;
-        TapHitSaid := false;
-        TapHitAt := 0;
         TapHP0 := NpcList(Idx).CurHP;
+        TapUA0 := User.AtkOID;
+        TapUT0 := User.AtkTime;
+        TapMy0 := NpcList(Idx).MyAtkTime;
+        TapMine := false;
+        Dbg('[Pull]', 'tap start on ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(MX, MY))) +
+          ' (we attacked ' + IntToStr(TapUA0) + ' at ' + IntToStr(TapUT0) + ', its MyAtkTime ' + IntToStr(TapMy0) + ')');
         Engine.SetTarget(OID);
       end;
-      // the tap counts ONLY when the mob really aggroes on us: then the check at the top of the loop
-      // drops it as "on us" and it is in the pack. Its HP going down is not enough - after one hit it may
-      // stay where it is (a priest): we go on hitting it until it comes or the tap time is over
+      // the mob is ours when it targets us (the check at the top of the loop) OR OUR hit landed: our attack
+      // on it was seen (User.AtkOID / its MyAtkTime changed) and its HP went down after that. A drop without
+      // an attack of ours is somebody else's (the party assists our target at once: -2500 in 140 ms) - it
+      // does not count. One hit is enough - the target goes off (no 2nd swing), it counts in the pack
+      // (MpCountHit) and we run on to the next one at once; no waiting for its aggro
       LastGain := GetTickCount;        // a tap going on is not "no new aggro" (it has its own time limits)
       HP := NpcList(Idx).CurHP;
-      // one hit is enough: as soon as it landed the target goes off (no 2nd swing) and we wait for its
-      // aggro up to 1.5 s; it does not come -> it is hit again
-      if (HP < TapHP0) and (TapHitAt = 0) then begin
-        TapHitAt := GetTickCount;
-        Engine.CancelTarget;
-        Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ', waiting for its aggro');
+      UA := User.AtkOID;
+      if (not TapMine) and (((UA = OID) and ((TapUA0 <> OID) or (User.AtkTime <> TapUT0))) or
+         (NpcList(Idx).MyAtkTime <> TapMy0)) then begin
+        TapMine := true;
+        MpAtkWorks := true;
+        TapHP0 := HP;                  // only a drop from here on is our hit
+        Dbg('[Pull]', 'our attack on ' + IntToStr(OID) + ' seen after ' + IntToStr(GetTickCount - TapStart) +
+          ' ms (we attack it ' + IntToStr(Ord(UA = OID)) + ', its MyAtkTime ' + IntToStr(NpcList(Idx).MyAtkTime) + ')');
       end;
-      if TapHitAt <> 0 then begin
-        if GetTickCount - TapHitAt < 1500 then begin
-          Delay(MpTickMs);
+      if HP < TapHP0 then begin
+        // no attack of ours seen at all yet (the bot may not fill these): a drop counts only from 300 ms
+        // after our weapon is on (our swing), never right after the target
+        if TapMine or ((not MpAtkWorks) and (TapArmedAt <> 0) and (GetTickCount - TapArmedAt >= 300)) then begin
+          MpHitAdd(OID);
+          Engine.CancelTarget;
+          Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ' after ' +
+            IntToStr(GetTickCount - TapStart) + ' ms - ours, on to the next');
+          Tapping := false;
+          OID := 0;
           continue;
         end;
-        Dbg('[Pull]', 'no aggro 1.5 s after the hit on ' + IntToStr(OID) + ' - hitting again');
-        TapHitAt := 0;
-        TapHP0 := HP;                  // the next hit is seen against the HP now
-        TapArmedAt := GetTickCount;    // its own tap time
-        Engine.SetTarget(OID);
+        Dbg('[Pull]', 'hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ' on ' + IntToStr(OID) + ' after ' +
+          IntToStr(GetTickCount - TapStart) + ' ms: not our hit (no attack of ours yet) - hitting it ourselves');
+        TapHP0 := HP;
       end;
-      // tap_ms counts from the moment the tap weapon is really on (a short run to the mob: the swap was not
-      // done yet and the time ran out before a single hit - it ran up to the mob and away); the swap
-      // itself gets 6 s more at most
+      // the tap time (MpTapTime: the way to the mob / our speed + tap_ms) counts from the moment the tap
+      // weapon is really on (a short run to the mob: the swap was not done yet and the time ran out before
+      // a single hit - it ran up to the mob and away); the swap itself gets 6 s more at most
       if TapArmedAt = 0 then begin
         if MpTapReady() then begin
           Dbg('[Pull]', 'tap weapon on after ' + IntToStr(GetTickCount - TapStart) + ' ms');
           TapArmedAt := GetTickCount;
+          TapTime := MpTapTime(MX, MY);
           Engine.SetTarget(OID);       // the swap (UseItem) may have dropped the target
         end else if GetTickCount - TapStart > MpTapMs + 6000 then begin
           MpMsg('Tap weapon did not go on for ' + PullNpcName(Idx) + ', skipping it');
@@ -1578,13 +1671,13 @@ begin
           continue;
         end;
       end;
-      // did not land (behind something, out of sight, a bad spot): right up to it and hit again, twice;
-      // only then it is skipped - every mob of the room must come
-      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) and (TapTries < 2) then begin
+      // did not land in its time (behind something, out of sight, a bad spot): right up to it and hit
+      // again, twice; only then it is skipped - every mob of the room must come
+      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > TapTime) and (TapTries < 2) then begin
         Inc(TapTries);
-        MpMsg('Tap on ' + PullNpcName(Idx) + ': no aggro - right up to it, again (' +
+        MpMsg('Tap on ' + PullNpcName(Idx) + ': no hit in ' + IntToStr(TapTime) + ' ms - right up to it, again (' +
           IntToStr(TapTries) + '/2)');
-        TapCloseUntil := GetTickCount + 2000;
+        TapCloseUntil := GetTickCount + MpTapTime(MX, MY);   // the run right up to it
         TapArmedAt := GetTickCount;
         MpMoveReset();
         MpClick(MX, MY, MZ);
@@ -1599,10 +1692,11 @@ begin
       end;
       if (TapCloseUntil <> 0) and (GetTickCount >= TapCloseUntil) or ((TapCloseUntil <> 0) and (MpDist(MX, MY) <= 40)) then begin
         TapCloseUntil := 0;
+        TapTime := MpTapTime(MX, MY);  // its time from where we stand now
         Engine.SetTarget(OID);
       end;
-      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
-        MpMsg('Tap on ' + PullNpcName(Idx) + ': no aggro after 3 tries, skipping it');
+      if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > TapTime) then begin
+        MpMsg('Tap on ' + PullNpcName(Idx) + ': no hit after 3 tries, skipping it');
         PullIgnore(OID, MpIgnoreMs);
         Engine.CancelTarget;           // the skipped mob does not stay in the target (the fight later)
         Tapping := false;

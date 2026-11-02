@@ -41,6 +41,8 @@ procedure NavSetRunClear(Units: integer);
 function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
+function NavGridIs(GridFile: string): boolean;  // this .navgrid is the loaded nav map (its cells are here)
+function NavGridFree(X, Y: integer): boolean;   // a walkable cell of the loaded .navgrid (outside it: false)
 // ---------- runs: every move of the farm goes through these. Safe from any thread: while a blocking
 // run ticks, a tick run (NavStep) of another thread does not click ----------
 // run to X, Y: along the graph when a wall is between, the server path, stuck -> the graph again ->
@@ -115,6 +117,7 @@ const
   NAV_BAD_MS        = 60000;    // a node we could not get to is left out of routes this long
   NAV_SPOT_R        = 110;      // corner spot: this far from the corner node, round the corner
   NAV_STITCH        = 64;       // trace: a stroke end this close to another trace point is joined to it
+  NAV_CACHE_FMT     = 1;        // the graph cache (Library\Nav\cache): +1 when the build changes (old ones are not taken)
 
 var
   NmUserX, NmUserY: array of integer;   // "N x y" lines of the grid file: own graph nodes
@@ -158,6 +161,11 @@ var
   NavLinkN: integer;
   NavBuilt, NavOn, NavBusyFlag: boolean;
   NmReady: boolean;                     // NavBuild finished: the graph may be used (not while it is built)
+  // the .navgrid: its version (the "V" line of the viewer: a hash of the rows / own nodes / removed
+  // nodes) and size; the graph built from it is kept in Library\Nav\cache and taken from there next time
+  NmGridVer, NmGridSig: string;
+  NmGridOn: boolean;                    // the map is this .navgrid
+  NmCached: boolean;                    // NavBuild took the graph from the cache
   // runs: the click we sent and when we really moved last (the thread that drives now owns them)
   NmClX, NmClY, NmLX, NmLY: integer;
   NmClAt, NmMovedAt: cardinal;
@@ -175,6 +183,12 @@ var
   NmMissX, NmMissY: array[0..15] of integer;   // targets asked once (no table yet) ...
   NmMissAt: array[0..15] of cardinal;          // ... and when: asked again soon -> it gets a table
   NmMissHead: integer;
+
+// a square in double (an integer square overflows past 46340: far coordinates, a point not set yet)
+function NmSq(V: double): double;
+begin
+  result := V * V;
+end;
 
 procedure NavSetZone(ZoneFile: string);
 begin
@@ -352,7 +366,7 @@ begin
     end else begin
       AX := ZOX[i]; AY := ZOY[i]; BX := ZOX[j]; BY := ZOY[j];
     end;
-    if ((AY > Y) <> (BY > Y)) and (X < (BX - AX) * (Y - AY) / (BY - AY) + AX) then result := not result;
+    if ((AY > Y) <> (BY > Y)) and (X < 1.0 * (BX - AX) * (Y - AY) / (BY - AY) + AX) then result := not result;
     j := i;
   end;
 end;
@@ -461,24 +475,36 @@ begin
   result := true;
 end;
 
-// lidar grid: "G x0 y0 cell cols rows z", then one "R ...." line per row ('.' = free)
+// lidar grid: "G x0 y0 cell cols rows z", then one "R ...." line per row ('.' = free). Here everything
+// but the rows: the size, the version (V), own nodes (N), removed nodes (X); the rows only when the graph
+// is not in the cache (NmGridRows) - the rows are the slow part of reading the file
 function NmFromFile(F: string): boolean;
 var L: TStringList;
-  i, cx, cy: integer;
-  S, K, Row: string;
+  i, Total, Cnt: integer;
+  S, K: string;
 begin
   result := false;
   NmUserN := 0;
   NmBanN := 0;
+  NmGridVer := '';
+  NmGridSig := '';
+  NmGridOn := false;
   if not FileExists(F) then begin
     Engine.Msg('[Nav]', 'No grid file ' + F, 128);
     exit;
   end;
   L := TStringList.Create;
   L.LoadFromFile(F);
-  cy := -1;
+  Total := 0;                          // the size of the lines the graph is made of (G R N X; not the settings)
+  Cnt := 0;
   for i := 0 to L.Count - 1 do begin
     S := L[i];
+    K := Copy(S, 1, 2);
+    if (K = 'R ') or (K = 'G ') or (K = 'N ') or (K = 'X ') then begin
+      Total := Total + Length(S);
+      Inc(Cnt);
+    end;
+    if K = 'R ' then continue;         // the rows: NmGridRows
     K := NmField(S, 0);
     if K = 'G' then begin
       NgX0 := StrToIntDef(NmField(S, 1), 0);
@@ -489,14 +515,8 @@ begin
       NgZ := StrToIntDef(NmField(S, 6), 0);
       SetLength(NgFree, NgW * NgH);
       SetLength(NgSafe, NgW * NgH);
-      for cx := 0 to NgW * NgH - 1 do NgFree[cx] := false;
-      cy := 0;
-    end else if (K = 'R') and (cy >= 0) and (cy < NgH) then begin
-      Row := Copy(S, 3, NgW);
-      for cx := 0 to Length(Row) - 1 do
-        if (cx < NgW) and (Row[cx + 1] = '.') then NgFree[cy * NgW + cx] := true;
-      Inc(cy);
-    end else if (K = 'N') and (NmUserN < NAV_MAX_NODES) then begin   // a node drawn in the viewer
+    end else if K = 'V' then NmGridVer := NmField(S, 1)
+    else if (K = 'N') and (NmUserN < NAV_MAX_NODES) then begin   // a node drawn in the viewer
       SetLength(NmUserX, NmUserN + 1);
       SetLength(NmUserY, NmUserN + 1);
       NmUserX[NmUserN] := StrToIntDef(NmField(S, 1), 0);
@@ -510,8 +530,32 @@ begin
       Inc(NmBanN);
     end;
   end;
+  NmGridSig := IntToStr(Cnt) + '.' + IntToStr(Total);   // a grid changed by hand (no new V) is not taken for the old one
   L.Free;
   result := (NgW > 0) and (NgH > 0);
+  NmGridOn := result;
+end;
+
+// the rows of the grid file into NgFree
+procedure NmGridRows(F: string);
+var L: TStringList;
+  i, cx, cy: integer;
+  S, Row: string;
+begin
+  for cx := 0 to NgW * NgH - 1 do NgFree[cx] := false;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  cy := 0;
+  for i := 0 to L.Count - 1 do begin
+    S := L[i];
+    if (Copy(S, 1, 2) = 'R ') and (cy < NgH) then begin
+      Row := Copy(S, 3, NgW);
+      for cx := 0 to Length(Row) - 1 do
+        if (cx < NgW) and (Row[cx + 1] = '.') then NgFree[cy * NgW + cx] := true;
+      Inc(cy);
+    end;
+  end;
+  L.Free;
 end;
 
 // graph cells: free and NAV_CLEAR units off the walls, whatever the cell size
@@ -769,7 +813,7 @@ begin
       Best := -1;
       for j := 0 to TrPN - 1 do begin
         if (j >= TrStart[k]) and (j < TrStart[k + 1]) and (Abs(j - i) < 15) then continue;
-        D := Sqrt(Sqr(TrcX[j] - TrcX[i]) + Sqr(TrcY[j] - TrcY[i]));
+        D := Sqrt(NmSq(TrcX[j] - TrcX[i]) + NmSq(TrcY[j] - TrcY[i]));
         if D < BD then begin
           BD := D;
           Best := j;
@@ -906,6 +950,190 @@ begin
     end;
 end;
 
+// ---------- the graph cache: Library\Nav\cache\<grid>.navcache ----------
+// line 1 = the key (cache format, the grid's V and size, the run margin, the grid box, own / removed
+// nodes); "N x y" = a node; "L" + node + its links to later nodes; "F" + row + walkable runs (from, to);
+// "R" + row + the run-margin runs; "END". Numbers in the L / F / R lines: 5 digits each, no separators
+
+function NmPad5(V: integer): string;
+begin
+  result := IntToStr(V);
+  while Length(result) < 5 do result := '0' + result;
+end;
+
+function NmCachePath(): string;
+begin
+  result := Script.Path + '..\Nav\cache\' + NmGridFile + '.navcache';
+end;
+
+function NmCacheKey(): string;
+begin
+  result := 'NAVCACHE ' + IntToStr(NAV_CACHE_FMT) + ' ' + NmGridVer + ' ' + NmGridSig + ' ' + IntToStr(NmRunClear) +
+    ' ' + IntToStr(NgX0) + ' ' + IntToStr(NgY0) + ' ' + IntToStr(NgCell) + ' ' + IntToStr(NgW) + ' ' +
+    IntToStr(NgH) + ' ' + IntToStr(NmUserN) + ' ' + IntToStr(NmBanN);
+end;
+
+// the graph of this very grid from its cache: the cells, the run-margin cells, the nodes, the links -
+// the whole slow part of NavBuild skipped. false = no cache / the grid has another version / another
+// run margin / a broken file (no END: written by another window at this moment) -> NavBuild builds it
+function NmLoadCache(): boolean;
+var C: TStringList;
+  i, k, n, p, cy, A, B, Base, Len: integer;
+  S: string;
+  Ok: boolean;
+begin
+  result := false;
+  if (NmGridVer = '') or (not FileExists(NmCachePath())) then exit;
+  C := TStringList.Create;
+  Ok := true;
+  try
+    C.LoadFromFile(NmCachePath());
+  except
+    Ok := false;
+  end;
+  if Ok then Ok := (C.Count >= 2) and (C[0] = NmCacheKey()) and (C[C.Count - 1] = 'END');
+  if not Ok then begin
+    C.Free;
+    exit;
+  end;
+  n := NgW * NgH;
+  SetLength(NgRun, n);
+  for i := 0 to n - 1 do begin
+    NgFree[i] := false;
+    NgSafe[i] := false;
+    NgRun[i] := false;
+  end;
+  NavN := 0;
+  SetLength(NavX, NAV_MAX_NODES);
+  SetLength(NavY, NAV_MAX_NODES);
+  for i := 1 to C.Count - 2 do begin   // the nodes first (the links need them)
+    S := C[i];
+    if (Copy(S, 1, 2) = 'N ') and (NavN < NAV_MAX_NODES) then begin
+      NavX[NavN] := StrToIntDef(NmField(S, 1), 0);
+      NavY[NavN] := StrToIntDef(NmField(S, 2), 0);
+      Inc(NavN);
+    end;
+  end;
+  SetLength(NavHead, NavN);
+  SetLength(NmBadUntil, NavN);
+  for i := 0 to NavN - 1 do begin
+    NavHead[i] := -1;
+    NmBadUntil[i] := 0;
+  end;
+  NavLinkN := 0;
+  for i := 1 to C.Count - 2 do begin
+    S := C[i];
+    Len := Length(S);
+    if Len < 11 then continue;
+    if S[1] = 'L' then begin
+      A := StrToIntDef(Copy(S, 2, 5), -1);
+      if (A < 0) or (A >= NavN) then continue;
+      p := 7;
+      while p + 4 <= Len do begin
+        B := StrToIntDef(Copy(S, p, 5), -1);
+        if (B >= 0) and (B < NavN) then NmLink(A, B);
+        p := p + 5;
+      end;
+    end else if (S[1] = 'F') or (S[1] = 'R') then begin
+      cy := StrToIntDef(Copy(S, 2, 5), -1);
+      if (cy < 0) or (cy >= NgH) then continue;
+      Base := cy * NgW;
+      p := 7;
+      while p + 9 <= Len do begin
+        A := StrToIntDef(Copy(S, p, 5), -1);
+        B := StrToIntDef(Copy(S, p + 5, 5), -1);
+        p := p + 10;
+        if (A < 0) or (B < A) or (B >= NgW) then continue;
+        if S[1] = 'F' then begin
+          for k := Base + A to Base + B do begin
+            NgFree[k] := true;
+            NgSafe[k] := true;
+          end;
+        end else
+          for k := Base + A to Base + B do NgRun[k] := true;
+      end;
+    end;
+  end;
+  C.Free;
+  result := true;
+end;
+
+// the runs of one grid row as "F" / "R" line ('' = nothing in this row)
+function NmRunsLine(Kind: string; Run: boolean; cy: integer): string;
+var cx, A, Base: integer;
+  Fr: boolean;
+begin
+  result := '';
+  Base := cy * NgW;
+  A := -1;
+  for cx := 0 to NgW do begin
+    Fr := false;
+    if cx < NgW then begin
+      if Run then Fr := NgRun[Base + cx] else Fr := NgFree[Base + cx];
+    end;
+    if Fr and (A < 0) then A := cx
+    else if (not Fr) and (A >= 0) then begin
+      result := result + NmPad5(A) + NmPad5(cx - 1);
+      A := -1;
+    end;
+  end;
+  if result <> '' then result := Kind + NmPad5(cy) + result;
+end;
+
+// the graph just built -> its cache (a grid without V: none; the folder is not there / the file is busy
+// in another window: not saved, the next start builds again)
+procedure NmSaveCache();
+var C: TStringList;
+  i, e, cy: integer;
+  S: string;
+begin
+  if NmGridVer = '' then exit;
+  C := TStringList.Create;
+  C.Add(NmCacheKey());
+  for i := 0 to NavN - 1 do C.Add('N ' + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]));
+  for i := 0 to NavN - 1 do begin
+    S := '';
+    e := NavHead[i];
+    while e >= 0 do begin
+      if NavTo[e] > i then S := S + NmPad5(NavTo[e]);
+      e := NavNext[e];
+    end;
+    if S <> '' then C.Add('L' + NmPad5(i) + S);
+  end;
+  for cy := 0 to NgH - 1 do begin
+    S := NmRunsLine('F', false, cy);
+    if S <> '' then C.Add(S);
+  end;
+  for cy := 0 to NgH - 1 do begin
+    S := NmRunsLine('R', true, cy);
+    if S <> '' then C.Add(S);
+  end;
+  C.Add('END');
+  try
+    C.SaveToFile(NmCachePath());
+  except
+    Engine.Msg('[Nav]', 'Cannot write the graph cache ' + NmCachePath(), 128);
+  end;
+  C.Free;
+end;
+
+function NavGridIs(GridFile: string): boolean;
+begin
+  result := NmReady and NmGridOn and (LowerCase(GridFile) = LowerCase(NmGridFile));
+end;
+
+function NavGridFree(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := false;
+  if not NmGridOn then exit;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  result := NgFree[cy * NgW + cx];
+end;
+
 function NavBuild(): boolean;
 var cx, cy, dx, dy, i, j, k, X, Y, X2, Y2, R, PX, PY: integer;
   Started: cardinal;
@@ -916,7 +1144,16 @@ begin
   NavBuilt := true;
   Started := GetTickCount;
   NavOn := false;
+  NmCached := false;
   if NmGridFile <> '' then NavOn := NmFromFile(Script.Path + '..\Nav\' + NmGridFile);
+  if NavOn then begin
+    if not NmRunClearSet then begin    // the run margin is a part of the cache key
+      NmRunClear := NAV_RUN_CLEAR;
+      NmRunClearSet := true;
+    end;
+    NmCached := NmLoadCache();         // the same grid as at an earlier start: its graph from the cache
+    if not NmCached then NmGridRows(Script.Path + '..\Nav\' + NmGridFile);
+  end;
   if (not NavOn) and (NmTraceFile <> '') and NmLoadTrace(Script.Path + '..\Nav\' + NmTraceFile) then begin
     NavOn := NmFromZone();
     if not NavOn then NavOn := NmFromTraceBox();
@@ -926,6 +1163,13 @@ begin
   result := NavOn;
   if not NavOn then begin
     Engine.Msg('[Nav]', 'No map (zone / grid): runs go by the plain server path only', 128);
+    exit;
+  end;
+  if NmCached then begin
+    NmReady := true;
+    Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) + ': ' +
+      IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) +
+      ' links - from the cache (' + IntToStr(GetTickCount - Started) + ' ms)', 128);
     exit;
   end;
   // corners and lines by the real map: a narrow passage must never vanish. A corner node is moved
@@ -998,8 +1242,9 @@ begin
   NmBuildRun();
   NmReady := true;                     // the other threads may use the graph from now on
   Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) +
-    ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links (' +
-    IntToStr((GetTickCount - Started) div 1000) + ' s)', 128);
+    ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links - built (' +
+    IntToStr(GetTickCount - Started) + ' ms)', 128);
+  if NmGridOn then NmSaveCache();      // the next start with this very grid takes it from the cache
 end;
 
 // server path to one node without stopping at it: true as soon as we are near it
@@ -1532,13 +1777,13 @@ begin
   if (LA < 1) or (LB < 1) then exit;
   CosT := (AX * BX + AY * BY) / (LA * LB);
   if CosT > 0.17 then exit;                  // less than ~80 degrees of turn: they just run on to us
-  DUC := Sqrt(Sqr(FX - CX) + Sqr(FY - CY));
-  DPC := Sqrt(Sqr(PX - CX) + Sqr(PY - CY));
+  DUC := Sqrt(NmSq(FX - CX) + NmSq(FY - CY));
+  DPC := Sqrt(NmSq(PX - CX) + NmSq(PY - CY));
   if DPC < DUC * 0.8 then exit;              // through the pack
   if not NmLineFree(NX, NY, PX, PY, not Given) then exit;
   if not NmLineFree(CX, CY, NX, NY, false) then exit;   // the pack must see the corner itself
   if not NmHiddenAll(PX, PY, CX, CY) then exit;
-  DUP := Sqrt(Sqr(FX - PX) + Sqr(FY - PY));
+  DUP := Sqrt(NmSq(FX - PX) + NmSq(FY - PY));
   result := (1 - CosT) * 90 + NmShield(PX, PY, CX, CY) * 25 - DUP / 20;
   if result < 0 then result := 0;
 end;
@@ -1555,7 +1800,7 @@ begin
   for i := 0 to NavN - 1 do begin
     NX := NavX[i];
     NY := NavY[i];
-    D := Sqrt(Sqr(NX - FromX) + Sqr(NY - FromY));
+    D := Sqrt(NmSq(NX - FromX) + NmSq(NY - FromY));
     if D > MaxDist then continue;
     if not NmLineFree(MX, MY, NX, NY, false) then continue;   // the pack must see the corner itself
     for r := 0 to 1 do begin
@@ -1586,7 +1831,7 @@ begin
   for i := 0 to NavN - 1 do begin
     NX := NavX[i];
     NY := NavY[i];
-    D := Sqrt(Sqr(NX - PX) + Sqr(NY - PY));
+    D := Sqrt(NmSq(NX - PX) + NmSq(NY - PY));
     if D > 220 then continue;
     Sc := NmSpotScore(NX, NY, PX, PY, MX, MY, FromX, FromY, true);
     if Sc > result then result := Sc;
@@ -1612,13 +1857,13 @@ begin
     exit;
   end;
   i := NmRouteAt(R, 0);
-  result := Sqrt(Sqr(NavX[i] - UX) + Sqr(NavY[i] - UY));
+  result := Sqrt(NmSq(NavX[i] - UX) + NmSq(NavY[i] - UY));
   for k := 1 to n - 1 do begin
     j := NmRouteAt(R, k);
     result := result + NmDist(i, j);
     i := j;
   end;
-  result := result + Sqrt(Sqr(NavX[i] - X) + Sqr(NavY[i] - Y));
+  result := result + Sqrt(NmSq(NavX[i] - X) + NmSq(NavY[i] - Y));
 end;
 
 // patrol: the next graph node at least MinDist away, going round the node list (spread over the map)
@@ -1632,7 +1877,7 @@ begin
   UY := User.Y;
   for k := 0 to NavN - 1 do begin
     i := (NmFarNext + k * 7 + 3) mod NavN;   // a big step through the list: far apart one after another
-    D := Sqrt(Sqr(NavX[i] - UX) + Sqr(NavY[i] - UY));
+    D := Sqrt(NmSq(NavX[i] - UX) + NmSq(NavY[i] - UY));
     if D < MinDist then continue;
     if GetTickCount < NmBadUntil[i] then continue;
     NmFarXv := NavX[i];
@@ -1726,7 +1971,7 @@ begin
       for i := 0 to NmUserN - 1 do begin
         PX := NmUserX[i];
         PY := NmUserY[i];
-        D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
+        D := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
         if (D < 150) or (D > 2000) or (D >= Best) then continue;
         if NmUnstickRecent(PX, PY) then continue;
         Best := D;
@@ -1738,7 +1983,7 @@ begin
         if GetTickCount < NmBadUntil[i] then continue;
         PX := NavX[i];
         PY := NavY[i];
-        D := Sqrt(Sqr(PX - UX) + Sqr(PY - UY));
+        D := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
         if (D < 150) or (D >= Best) then continue;
         if NmUnstickRecent(PX, PY) then continue;
         Best := D;
@@ -1816,7 +2061,7 @@ var UX, UY: integer;
 begin
   UX := User.X;
   UY := User.Y;
-  if (UX - NmLX) * (UX - NmLX) + (UY - NmLY) * (UY - NmLY) >= 100 then begin
+  if NmSq(UX - NmLX) + NmSq(UY - NmLY) >= 100 then begin
     NmLX := UX;
     NmLY := UY;
     NmMovedAt := GetTickCount;

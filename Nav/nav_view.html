@@ -397,18 +397,32 @@ function parseFile(text, name) {
       seeds.push({ t: m[1] === 'AddCorner' ? 'C' : 'S', x: +m[2], y: +m[3] }); if (grid && !grid.z) grid.z = +m[4]; }
   } else toast('Не понял файл ' + name);
 }
+// the grid version (V line): a hash of what the bot's graph is made of - G, the rows, own nodes (N), removed
+// nodes (X). The bot keeps the graph it built in Library\Nav\cache and takes it from there while V is the same
+function gridVer(lines) {
+  let h = 0x811c9dc5;
+  for (const s of lines) {
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    h ^= 10; h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
 function gridText() {
-  const g = grid, L = ['# navgrid: . walkable, # not', 'G ' + g.x0 + ' ' + g.y0 + ' ' + g.cell + ' ' + g.w + ' ' + g.h + ' ' + (g.z || 0)];
-  const ch = ['?', '.', '#'];
-  for (let cy = 0; cy < g.h; cy++) { let r = 'R '; for (let cx = 0; cx < g.w; cx++) r += ch[g.f[cy * g.w + cx]]; L.push(r); }
+  const g = grid, G = 'G ' + g.x0 + ' ' + g.y0 + ' ' + g.cell + ' ' + g.w + ' ' + g.h + ' ' + (g.z || 0);
+  const ch = ['?', '.', '#'], rows = [];
+  for (let cy = 0; cy < g.h; cy++) { let r = 'R '; for (let cx = 0; cx < g.w; cx++) r += ch[g.f[cy * g.w + cx]]; rows.push(r); }
+  const nl = unodes.map(p => 'N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  const xl = bans.map(p => 'X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  const L = ['# navgrid: . walkable, # not', G, 'V ' + gridVer([G, ...rows, ...nl, ...xl])];
+  for (const r of rows) L.push(r);
   // the farm script settings (tab Settings), then the map extras: rooms (name min mode prio polygon), farm spots, safe point
   L.push(...cfgLines());
   for (const r of rooms) if (r.pts.length >= 3)
     L.push('Q ' + r.name.replace(/\s+/g, '_') + ' ' + r.min + ' ' + r.mode + ' ' + r.prio + ' ' + r.pts.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
   for (const p of spots) L.push('F ' + Math.round(p.x) + ' ' + Math.round(p.y) + ' ' + (p.z || 0) + (p.room ? ' ' + p.room : ''));
   if (safe) L.push('S ' + Math.round(safe.x) + ' ' + Math.round(safe.y) + ' ' + (safe.z || 0));
-  for (const p of unodes) L.push('N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
-  for (const p of bans) L.push('X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  for (const l of nl) L.push(l);
+  for (const l of xl) L.push(l);
   return L.join('\r\n') + '\r\n';
 }
 // the folder of the maps (Library\Nav): the handle of the last opened / saved file, kept in IndexedDB -
@@ -568,13 +582,13 @@ const PULL = [
   ['extra_range', 'Добор по пути', 300, 'пачка полная, но свободных так близко ещё берём'],
   ['min_hp', 'Мин. HP %', 50, 'HP ниже — заводка заканчивается'],
   ['nogain_ms', 'Без нового агра, мс', 15000, 'столько нет нового агра — заводка заканчивается'],
-  ['max_ms', 'Макс. заводка, мс', 60000, 'максимум одной заводки'],
+  ['max_ms', 'Макс. заводка, мс', 120000, 'максимум одной заводки'],
   ['pack_mult', 'Перебор пачек', 2, 'столько пачек на нас — заводка сразу заканчивается'],
   ['grid_tol', 'Допуск к сетке', 48, 'моб так близко к зелёной клетке ещё считается']];
 const PULL_ADV = [
   ['touch_grace_ms', 'Время на агр после касания, мс', 3000], ['touch_max', 'Касаний без агра', 3], ['skip_ms', 'Пропуск застрявшего, мс', 8000],
   ['ignore_ms', 'Пропуск пассивного, мс', 30000], ['approach_ms', 'Не подойти к мобу, мс', 15000], ['tap_after_ms', 'Тап после пробега, мс', 1000],
-  ['tap_ms', 'Тап: смена+удар, мс', 4000], ['tap_skip_ms', 'Тапнутого не трогать, мс', 10000], ['back_penalty', 'Штраф за моба сзади', 400],
+  ['tap_ms', 'Тап: запас на удар сверх бега, мс', 1000], ['tap_skip_ms', 'Ударенный считается сагренным, мс', 10000], ['back_penalty', 'Штраф за моба сзади', 400],
   ['hit_range', 'Дистанция удара', 80], ['stuck_ms', 'Застрял, мс', 1500], ['aggro_dist', 'Агр дальше не считается', 1500],
   ['stop_ms', 'Остановился, мс', 300], ['reclick_dist', 'Переклик, если моб ушёл на', 80], ['tick_ms', 'Тик, мс', 50]];
 const BOOLS = { debug_file: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };

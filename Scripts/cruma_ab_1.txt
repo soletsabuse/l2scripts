@@ -81,7 +81,7 @@ begin
   // SetPull('extra_range', 300);       // pack full: still take free mobs this close on the way [300]
   // SetPull('min_hp', 50);             // HP % below this -> pull ends [50]
   // SetPull('nogain_ms', 15000);       // no new aggro this long -> pull ends [15000]
-  // SetPull('max_ms', 60000);          // max time of one pull [60000]
+  // SetPull('max_ms', 120000);         // max time of one pull [120000]
   // SetPull('pack_mult', 2);           // this many packs on us -> pull ends at once [2]
   // SetPull('grid_tol', 48);           // a mob this close to a walkable cell still counts [48]
 

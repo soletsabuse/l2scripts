@@ -356,6 +356,7 @@ var
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
   PkActed: boolean;               // SelfBuffTick cast / WeaponTick put the weapon on (the target changed)
   PkDbgFile: string;              // debug_file: '1' = the debug log file (default: off)
+  PkPullGridSet: boolean;         // PullSetGrid done (once, after NavBuild)
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -513,6 +514,12 @@ var
   TreeBowID, TreeMeleeID, TreeBowRange: integer;
 
 // ===================== Setters =====================
+
+// a square in double (an integer square overflows past 46340: far coordinates, a point not set yet)
+function PkSq(V: double): double;
+begin
+  result := V * V;
+end;
 
 procedure SetZone(Name: string);
 begin
@@ -2760,15 +2767,17 @@ begin
   else NavSetZone(ZoneName);           //   else the farm zone (SetNavGrid wins over both)
   if not PkAreaSet then begin
     PkAreaSet := true;
-    if PkPullGrid <> '' then begin
-      PullSetGrid(PkPullGrid);         // mobs only on the grid's walkable cells
-      PkLoadMapExtras(PkPullGrid);     // rooms / farm spots / safe point drawn in the viewer
-    end
+    if PkPullGrid <> '' then
+      PkLoadMapExtras(PkPullGrid)      // rooms / farm spots / safe point drawn in the viewer
     else if UseRadius then PullSetRadius(HomeX, HomeY, FREE_RADIUS);   // else the bot zone
   end;
   for i := 0 to Length(PkCorners) div 3 - 1 do NavAddSeed(PkCorners[i * 3], PkCorners[i * 3 + 1]);
   if HasSafePoint then NavAddSeed(SafeX, SafeY);   // these places are walkable: the trace keeps their pieces
   NavBuild();                          // once: the graph
+  if (PkPullGrid <> '') and (not PkPullGridSet) then begin
+    PkPullGridSet := true;
+    PullSetGrid(PkPullGrid);           // mobs only on the grid's walkable cells (the nav map's, after NavBuild)
+  end;
   FarmOn();
   Engine.Msg('[Farm]', '=== In the zone, profile ON ===', 128);
   result := true;
@@ -4154,14 +4163,14 @@ begin
       EY := SY + Round(Sin(Ang) * (50 + r * 100));
       if not NavIsFree(EX, EY) then continue;
       if not NavSee(SX, SY, EX, EY) then continue;
-      DES := Sqrt(Sqr(SX - EX) + Sqr(SY - EY));
+      DES := Sqrt(PkSq(SX - EX) + PkSq(SY - EY));
       for b := 0 to 15 do begin
         Ang := b * 3.14159265 / 8;
         BX := EX + Round(Cos(Ang) * PK_LEAD_B);
         BY := EY + Round(Sin(Ang) * PK_LEAD_B);
-        C := ((BX - EX) * (SX - EX) + (BY - EY) * (SY - EY)) / (PK_LEAD_B * DES);
+        C := (1.0 * (BX - EX) * (SX - EX) + 1.0 * (BY - EY) * (SY - EY)) / (PK_LEAD_B * DES);
         if C > 0.17 then continue;     // the turn at E under 80 degrees
-        DU := Sqrt(Sqr(BX - UX) + Sqr(BY - UY));
+        DU := Sqrt(PkSq(BX - UX) + PkSq(BY - UY));
         Sc := DU + C * 200;            // near us, the sharper turn the better
         if Sc >= Best then continue;
         if DU > DS + 600 then continue;   // a long way round is not worth it
@@ -4414,7 +4423,7 @@ begin
     Atk := NpcList(i).AtkOID;
     Tgt := PullMobTarget(i);
     Dbg(Tag, '  ' + IntToStr(OID) + ' ' + PullNpcName(i) + ' d=' + IntToStr(Round(PkDist(NX, NY))) + ' dSpot=' +
-      IntToStr(Round(Sqrt(Sqr(NX - PkCX) + Sqr(NY - PkCY)))) + ' atk=' + IntToStr(Ord(Atk = User.OID)) + ' tgt=' +
+      IntToStr(Round(Sqrt(PkSq(NX - PkCX) + PkSq(NY - PkCY)))) + ' atk=' + IntToStr(Ord(Atk = User.OID)) + ' tgt=' +
       IntToStr(Ord(Tgt = User.OID)) + ' fight=' + IntToStr(Ord(PkFightMob(i))) + ' shooter/champ=' +
       IntToStr(Ord(PullIsShooterAt(i))) + ' ign=' + IntToStr(Ord(SpIgnored(OID))) + ' hp%=' + IntToStr(NpcList(i).CurHP));
   end;
