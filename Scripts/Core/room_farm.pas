@@ -295,7 +295,7 @@ function RoomFree(i: integer): integer;
 var k, NX, NY: integer;
 begin
   result := 0;
-  for k := 0 to NpcList.Count - 1 do begin
+  for k := 0 to NpcList.Count - 1 do if k < NpcList.Count then begin
     if not PullIsFree(k) then continue;
     NX := NpcList(k).X;
     NY := NpcList(k).Y;
@@ -308,7 +308,7 @@ function RoomMobs(i: integer): integer;
 var k, NX, NY: integer;
 begin
   result := 0;
-  for k := 0 to NpcList.Count - 1 do begin
+  for k := 0 to NpcList.Count - 1 do if k < NpcList.Count then begin
     if not (PullIsFree(k) or PullIsChampion(k)) then continue;
     NX := NpcList(k).X;
     NY := NpcList(k).Y;
@@ -320,7 +320,7 @@ function RmPlayersIn(i: integer): integer;
 var k, X, Y: integer;
 begin
   result := 0;
-  for k := 0 to CharList.Count - 1 do begin
+  for k := 0 to CharList.Count - 1 do if k < CharList.Count then begin
     X := CharList(k).X;
     Y := CharList(k).Y;
     if RoomInside(i, X, Y) then Inc(result);

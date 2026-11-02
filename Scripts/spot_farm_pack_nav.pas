@@ -867,7 +867,7 @@ begin
   result := true;
   if (i < 0) or (i >= NpcList.Count) then exit;   // the list shrank meanwhile: skip it
   OID := NpcList(i).OID;
-  for j := 0 to PetList.Count - 1 do begin
+  for j := 0 to PetList.Count - 1 do if j < PetList.Count then begin
     PetOID := PetList(j).OID;
     if OID = PetOID then exit;
   end;
@@ -1540,7 +1540,7 @@ var
   i, ID, Cnt: integer;
 begin
   result := 0;
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     ID := Inventory.User.Items(i).ID;
     if ID = ItemID then begin
       Cnt := Inventory.User.Items(i).Count;
@@ -1608,7 +1608,7 @@ function BuffTime(ID: integer): cardinal;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to User.Buffs.Count - 1 do begin
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
     if (User.Buffs.Items(i).id = ID) then begin
       result := User.Buffs.Items(i).EndTime;
       break;
@@ -1636,7 +1636,7 @@ function HaveAgroMobs(): boolean;
 var i: integer;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if (IsAgr(NpcList(i))) then begin
       result := true;
       break;
@@ -1707,7 +1707,7 @@ function AoeCountAggro(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if AoeMobIsAggroed(i) then Inc(result);
 end;
 
@@ -1715,7 +1715,7 @@ function AoeHasUnspoiledMob(): boolean;
 var i: integer;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if AoeMobIsAggroed(i) and (not NpcList(i).Sweepable) then begin
       result := true;
       exit;
@@ -1726,7 +1726,7 @@ function AoeHasSweepableCorpse(): boolean;
 var i, NX, NY, NZ: integer;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not NpcList(i).Dead then continue;
     if not NpcList(i).Sweepable then continue;
     NX := NpcList(i).X;
@@ -1777,7 +1777,7 @@ var
 begin
   result := false;
   BestDist := 999999;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if NpcList(i).Dead then continue;
     if IsIgnoredNpc(i) then continue;
     if AoeMobIsAggroed(i) then continue;
@@ -1842,7 +1842,7 @@ var i, ai, OID: integer;
 begin
   while (AoeCountAggro() > 0) and (not User.Dead) and (not NeedReturn) do begin
     OID := 0;
-    for i := 0 to NpcList.Count - 1 do
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
       if AoeMobIsAggroed(i) then begin
         OID := NpcList(i).OID;
         break;
@@ -1878,7 +1878,7 @@ procedure AoePickupLoot();
 var i, DX, DY, DZ: integer;
 begin
   if NoPickup then exit;
-  for i := DropList.Count - 1 downto 0 do begin
+  for i := DropList.Count - 1 downto 0 do if i < DropList.Count then begin
     if User.Dead or NeedReturn then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
     DX := DropList(i).X;
@@ -1921,7 +1921,7 @@ function SpSkillLeft(ID: integer): cardinal;
 var i, SID: integer;
 begin
   result := 0;
-  for i := 0 to SkillList.Count - 1 do begin
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
     SID := SkillList(i).ID;
     if SID = ID then begin
       result := SkillList(i).EndTime;
@@ -1953,7 +1953,7 @@ function SpMobIdx(OID: integer): integer;
 var i: integer;
 begin
   result := -1;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = OID then begin result := i; exit; end;
 end;
 
@@ -1996,7 +1996,7 @@ begin
     Aggro := Pass = 0;           // pass 0: mobs hitting us, pass 1: new mobs
     if (not Aggro) and OnlyAggro then exit;
     BestD := 999999;
-    for i := 0 to NpcList.Count - 1 do begin
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
       if NpcList(i).Dead or IsIgnoredNpc(i) then continue;
       if SpIgnored(NpcList(i).OID) then continue;
       if Aggro then begin
@@ -2162,7 +2162,7 @@ begin
     end;
   end;
   if NoPickup then exit;
-  for i := DropList.Count - 1 downto 0 do begin
+  for i := DropList.Count - 1 downto 0 do if i < DropList.Count then begin
     if User.Dead or NeedReturn then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
     DX := DropList(i).X;
@@ -2311,7 +2311,7 @@ function HasSkill(ID: integer): boolean;
 var i, SID: integer;
 begin
   result := false;
-  for i := 0 to SkillList.Count - 1 do begin
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
     SID := SkillList(i).ID;
     if SID = ID then begin
       result := true;
@@ -2429,7 +2429,7 @@ begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if NpcList(i).Dead then continue;
     if IsIgnoredNpc(i) then continue;
     if not CasterMobIsWhitelisted(i) then continue;
@@ -2457,7 +2457,7 @@ begin
   result := 0;
   BestHP := MaxInt;
   BestDist := 999999;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if NpcList(i).Dead then continue;
     if IsIgnoredNpc(i) then continue;
     if not CasterIsAggro(i) then continue;
@@ -2482,7 +2482,7 @@ var i, NX, NY, NZ: integer;
 begin
   result := false;
   if CasterTarget = 0 then exit;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = CasterTarget then begin
       if NpcList(i).Dead then exit;
       NX := NpcList(i).X;
@@ -2514,7 +2514,7 @@ function IsChampionOID(OID: integer): boolean;
 var i, MaxHP: integer;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = OID then begin
       MaxHP := NpcList(i).MaxHP;
       result := MaxHP > PET_MELEE_MIN_HP;
@@ -2948,7 +2948,7 @@ var i, NX, NY, NZ: integer;
 begin
   result := 0;
   BestD := 999999;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not IsAgr(NpcList(i)) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -2994,7 +2994,7 @@ begin
   Started := GetTickCount;
   while (not User.Dead) and (not NeedReturn) and (GetTickCount - Started < 60000) do begin
     Idx := -1;
-    for i := 0 to NpcList.Count - 1 do
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
       if NpcList(i).OID = OID then begin Idx := i; break; end;
     if (Idx < 0) or NpcList(Idx).Dead then exit;
     SafeFightStep(OID);
@@ -3135,7 +3135,7 @@ begin
   Engine.Msg('[Return]', 'Teleporting to the spot...', 0);
 
   NpcOID := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if (NpcList(i).ID = GK_ID) then begin
       NpcOID := NpcList(i).OID;
       break;
@@ -3193,7 +3193,7 @@ begin
     // the NPC may show up a moment after the landing
     Idx := -1;
     for k := 1 to 20 do begin
-      for i := 0 to NpcList.Count - 1 do
+      for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
         if NpcList(i).ID = SecondNpcID then begin Idx := i; break; end;
       if Idx >= 0 then break;
       Delay(250);
@@ -3481,7 +3481,7 @@ function FindNpcIdxByOID(NpcOID: integer): integer;
 var i: integer;
 begin
   result := -1;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = NpcOID then begin
       result := i;
       exit;
@@ -3503,7 +3503,7 @@ function IsEquipped(ItemID: integer): boolean;
 var i, ID: integer;
 begin
   result := false;
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     ID := Inventory.User.Items(i).ID;
     if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
       result := true;
@@ -3708,7 +3708,7 @@ begin
   if WeaponID > 0 then exit;
   RefreshInventory();
   Parts := '';
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     if not Inventory.User.Items(i).Equipped then continue;
     ID := Inventory.User.Items(i).ID;
     Part := Inventory.User.Items(i).BodyPart;
@@ -3916,7 +3916,7 @@ var i, Part: integer;
 begin
   result := 0;
   RefreshInventory();
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     if not Inventory.User.Items(i).Equipped then continue;
     Part := Inventory.User.Items(i).BodyPart;
     if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
@@ -3954,7 +3954,7 @@ function PkStacked(): boolean;
 var i, NX, NY: integer;
 begin
   result := true;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PkAggro(i) then begin
       NX := NpcList(i).X;
       NY := NpcList(i).Y;
@@ -4150,7 +4150,7 @@ begin
     CY := 0;
     n := 0;
     NavSpotClear();                    // every mob of the pack: none of them may see the spot
-    for i := 0 to NpcList.Count - 1 do
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
       if PkAggro(i) then begin
         NX := NpcList(i).X;
         NY := NpcList(i).Y;
@@ -4257,7 +4257,7 @@ var i, k, OID, NX, NY: integer;
   Found: boolean;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PkFightMob(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -4313,7 +4313,7 @@ function PkSnapSpoilArea(): integer;
 var i, NX, NY: integer;
 begin
   PkSnapN := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if NpcList(i).Dead or IsIgnoredNpc(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -4329,7 +4329,7 @@ function PkCountFight(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PkFightMob(i) then Inc(result);
 end;
 
@@ -4348,7 +4348,7 @@ begin
   BestScore := -1;
   BestTie := 999999999;
   CurScore := -1;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PkFightMob(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -4368,7 +4368,7 @@ begin
       Tie := LA;                       // out of the splash: the nearest first
     end else begin
       Score := 1;
-      for j := 0 to NpcList.Count - 1 do begin
+      for j := 0 to NpcList.Count - 1 do if j < NpcList.Count then begin
         if (j = i) or (not PkFightMob(j)) then continue;
         MX := NpcList(j).X;
         MY := NpcList(j).Y;
@@ -4402,7 +4402,7 @@ begin
   Lim := PkFatHP;
   if Lim <= 0 then Lim := ChampionMinHP;
   if Lim <= 0 then Lim := DEFAULT_CHAMPION_HP;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PkFightMob(i) then begin
       MaxHP := NpcList(i).MaxHP;
       if MaxHP <= Lim then begin
@@ -4430,7 +4430,7 @@ var i, NX, NY, OID: integer;
 begin
   result := 0;
   PkCorpseOID := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if (not NpcList(i).Dead) or (not NpcList(i).Sweepable) then continue;
     OID := NpcList(i).OID;
     if PkSwept(OID) then continue;
@@ -4452,7 +4452,7 @@ begin
   Engine.SetTarget(COID);
   Engine.UseSkill(PkMassSweep);
   Delay(PK_CAST_MS);
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if (not NpcList(i).Dead) or (not NpcList(i).Sweepable) then continue;
     OID := NpcList(i).OID;
     if PkSwept(OID) then continue;
@@ -4509,7 +4509,7 @@ var i, NX, NY: integer;
 begin
   result := 0;
   PkNearD := 1E18;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PkFightMob(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -4547,7 +4547,7 @@ begin
     Total := 0;
     Near := 0;
     Sum := 0;
-    for i := 0 to NpcList.Count - 1 do begin
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
       if not PkFightMob(i) then continue;
       NX := NpcList(i).X;
       NY := NpcList(i).Y;
@@ -4763,7 +4763,7 @@ procedure PkPickup();
 var i, DX, DY, DZ: integer;
 begin
   if NoPickup then exit;
-  for i := DropList.Count - 1 downto 0 do begin
+  for i := DropList.Count - 1 downto 0 do if i < DropList.Count then begin
     if User.Dead or NeedReturn or (PkCountAggro() > 0) then exit;
     if i >= DropList.Count then continue;   // the list shrinks while we pick up
     DX := DropList(i).X;
@@ -5005,7 +5005,7 @@ procedure PkForgetPhantoms();
 var i, OID, n: integer;
 begin
   n := 0;
-  for i := NpcList.Count - 1 downto 0 do begin
+  for i := NpcList.Count - 1 downto 0 do if i < NpcList.Count then begin
     if i >= NpcList.Count then continue;
     if PkAggro(i) and (not PkFightMob(i)) then begin
       OID := NpcList(i).OID;
@@ -5390,7 +5390,7 @@ procedure RememberPatrolStartMobs();
 var i, n: integer;
 begin
   SetLength(PatrolStartOIDs, 0);
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PatrolMobOK(i) then begin
       n := Length(PatrolStartOIDs);
       SetLength(PatrolStartOIDs, n + 1);
@@ -5404,7 +5404,7 @@ var i, j, OID: integer;
   Old: boolean;
 begin
   result := false;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PatrolMobOK(i) then continue;
     OID := NpcList(i).OID;
     Old := false;

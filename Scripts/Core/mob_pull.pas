@@ -479,7 +479,7 @@ function MpIdx(OID: integer): integer;
 var i: integer;
 begin
   result := -1;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = OID then begin
       result := i;
       exit;
@@ -730,7 +730,7 @@ function PullCountAggro(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PullIsAggro(i) then Inc(result);
 end;
 
@@ -789,7 +789,7 @@ begin
   MpCntSkip := 0;
   for Pass := 0 to 1 do begin
     BestD := 999999999;
-    for i := 0 to NpcList.Count - 1 do begin
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
       if NpcList(i).Dead or MpNameIgnored(i) then continue;
       if PullIsAggro(i) then continue;
       if not MpWhitelisted(i) then continue;
@@ -890,7 +890,7 @@ function MpCountFreeAll(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if MpFreeOK(i) then Inc(result);
 end;
 
@@ -900,7 +900,7 @@ var i, NX, NY: integer;
 begin
   MpInit();
   result := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not MpFreeOK(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -929,7 +929,7 @@ begin
   MpInit();
   result := 0;
   n := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not MpFreeOK(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -986,7 +986,7 @@ function MpEquipped(ItemID: integer): boolean;
 var i, ID: integer;
 begin
   result := false;
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     ID := Inventory.User.Items(i).ID;
     if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
       result := true;
@@ -1002,7 +1002,7 @@ begin
   result := 0;
   NavSend('14');
   Delay(1500);
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     if not Inventory.User.Items(i).Equipped then continue;
     Part := Inventory.User.Items(i).BodyPart;
     if (Part = $0080) or (Part = $4000) then begin
@@ -1111,7 +1111,7 @@ var i, NX, NY: integer;
 begin
   MpHavePack := false;
   MpFarD := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PullIsAggro(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
