@@ -41,6 +41,22 @@ procedure NavSetRunClear(Units: integer);
 function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
+// ---------- runs: every move of the farm goes through these. Safe from any thread: while a blocking
+// run ticks, a tick run (NavStep) of another thread does not click ----------
+// run to X, Y: along the graph when a wall is between, the server path, stuck -> the graph again ->
+// out of the stuck place. Reach >= 150: done within 150 (click repeated on a timer); smaller: stand
+// within Reach (click repeated only when we stopped short). true = got there
+function NavRun(X, Y, Z, Reach: integer): boolean;
+function NavRunPlain(X, Y, Z, Reach: integer): boolean;   // the same, the server path only (no graph / unstick)
+// a run in ticks (the caller watches mobs meanwhile): NavStepReset at its start, then NavStep every
+// tick - it clicks only when needed (target moved away / we stopped); Graph = round walls by the map
+procedure NavStepReset();
+procedure NavStep(X, Y, Z: integer; Graph: boolean);
+function NavStillMs(): cardinal;                     // ms since we really moved (stuck check)
+procedure NavMoveReset();                            // the stuck clock starts again (a new goal)
+procedure NavClickForget();                          // the next NavStep / NavClickAt clicks for sure
+procedure NavClickAt(X, Y, Z: integer);              // one click, remembered (NavNeedClick)
+function NavNeedClick(X, Y: integer): boolean;       // the goal moved away from our click / we stopped short
 function NavGraphTo(X, Y, Z: integer): boolean;      // along the graph until the target is in sight
 // stuck (a statue / a ledge the map does not know): server path (it goes round by the geodata) to the
 // nearest own node of the viewer, none near -> the nearest graph node; true = got there
@@ -74,6 +90,14 @@ const
   NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
   NAV_NODE_GAP      = 64;
   NAV_BAN_R         = 40;
+  NAV_REACH_WAIT    = 150;      // NavRun: a Reach this big = "at the point" (timer clicks), smaller = stand there
+  NAV_RUN_MS        = 15000;    // ... a run gives up after this
+  NAV_RUN_STALL_MS  = 2500;     // ... timer clicks: not moved this long = stuck
+  NAV_TICK_MS       = 50;       // ... stand-there runs: the tick
+  NAV_STOP_MS       = 300;      // ... not moving this long = stopped -> click again
+  NAV_RECLICK       = 80;       // ... the goal moved this far from our click -> click again
+  NAV_POINT_STUCK   = 3000;     // ... not moved this long = a wall -> give up
+  NAV_NEAR_OK       = 60;       // ... stopped this close 3 times = as close as the server lets us
   NAV_RUN_CLEAR     = 40;       // a run line keeps this far off the red cells (default, NavSetRunClear)
   NAV_WP_CACHE_MS   = 500;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
   NAV_LINK_MAX      = 2500;     // longest graph link
@@ -131,12 +155,12 @@ var
   NavN: integer;
   NavHead, NavTo, NavNext: array of integer;
   NavLinkN: integer;
-  NavD: array of double;
-  NavPrev: array of integer;
-  NavDone: array of boolean;
-  NavRoute: array of integer;
-  NavRouteN: integer;
   NavBuilt, NavOn, NavBusyFlag: boolean;
+  NmReady: boolean;                     // NavBuild finished: the graph may be used (not while it is built)
+  // runs: the click we sent and when we really moved last (the thread that drives now owns them)
+  NmClX, NmClY, NmLX, NmLY: integer;
+  NmClAt, NmMovedAt: cardinal;
+  NmDriveAt: cardinal;                  // a blocking run ticked then (its pulse; a dead thread holds nothing)
 
 procedure NavSetZone(ZoneFile: string);
 begin
@@ -192,7 +216,7 @@ end;
 
 function NavIsReady(): boolean;
 begin
-  result := NavOn;
+  result := NavOn and NmReady;
 end;
 
 function NavIsBusy(): boolean;
@@ -595,13 +619,13 @@ end;
 function NavSee(X1, Y1, X2, Y2: integer): boolean;
 begin
   result := true;
-  if NavOn then result := NmLineFree(X1, Y1, X2, Y2, false);
+  if NmReady then result := NmLineFree(X1, Y1, X2, Y2, false);
 end;
 
 function NavIsFree(X, Y: integer): boolean;
 begin
   result := true;
-  if NavOn then result := NmFreeAt(X, Y, false);
+  if NmReady then result := NmFreeAt(X, Y, false);
 end;
 
 // a straight run from us (MoveWait / the graph run: go straight or along the graph) - with the margin
@@ -611,7 +635,7 @@ begin
   UX := User.X;
   UY := User.Y;
   result := true;
-  if NavOn then result := NmRunFree(UX, UY, X, Y);
+  if NmReady then result := NmRunFree(UX, UY, X, Y);
 end;
 
 function NmDist(i, j: integer): double;
@@ -958,6 +982,7 @@ begin
       if NmLineFree(X, Y, X2, Y2, true) then NmLink(i, j);
     end;
   NmBuildRun();
+  NmReady := true;                     // the other threads may use the graph from now on
   Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) +
     ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links (' +
     IntToStr((GetTickCount - Started) div 1000) + ' s)', 128);
@@ -976,6 +1001,7 @@ begin
   LY := User.Y;
   NavClick(PX, PY, PZ);
   while User.DistTo(PX, PY, PZ) > NAV_POINT_REACH do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     if User.Dead then exit;
     if GetTickCount - Started > NAV_POINT_MS then exit;
     UX := User.X;
@@ -995,14 +1021,18 @@ begin
   result := true;
 end;
 
-// the route on the graph from us to the target into NavRoute: first nodes = every node in sight of
-// us, last node = the one in sight of the target with the shortest total way; false = no way
-function NmPlanTo(X, Y: integer): boolean;
+// THE route count: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way); first node = in sight
+// of us, last = in sight of the target, the shortest total way. Only its own local arrays, the graph is
+// only read (fixed after NavBuild): any thread may call it at the same time - no lock, nothing shared
+function NmRoute(X, Y: integer): string;
 var i, u, v, e, k, Best, UX, UY, PX, PY: integer;
   Alt, BestD, DX, DY: double;
+  NavD: array of double;
+  NavPrev: array of integer;
+  NavDone: array of boolean;
 begin
-  result := false;
-  if (not NavOn) or (NavN = 0) then exit;
+  result := '';
+  if (not NmReady) or (NavN = 0) then exit;
   SetLength(NavD, NavN);
   SetLength(NavPrev, NavN);
   SetLength(NavDone, NavN);
@@ -1060,28 +1090,51 @@ begin
     end;
   end;
   if Best < 0 then exit;
-  NavRouteN := 0;
   v := Best;
   while v >= 0 do begin
-    Inc(NavRouteN);
+    if result = '' then result := IntToStr(v) else result := IntToStr(v) + ',' + result;
     v := NavPrev[v];
   end;
-  SetLength(NavRoute, NavRouteN);
-  v := Best;
-  for i := NavRouteN - 1 downto 0 do begin
-    NavRoute[i] := v;
-    v := NavPrev[v];
-  end;
-  result := true;
+end;
+
+// nodes in a route of NmRoute
+function NmRouteCount(R: string): integer;
+var p: integer;
+begin
+  result := 0;
+  if R = '' then exit;
+  result := 1;
+  for p := 1 to Length(R) do
+    if R[p] = ',' then Inc(result);
+end;
+
+// node k (0 = first) of a route of NmRoute; -1 = none
+function NmRouteAt(R: string; k: integer): integer;
+var p, n, St: integer;
+begin
+  result := -1;
+  n := 0;
+  St := 1;
+  for p := 1 to Length(R) do
+    if R[p] = ',' then begin
+      if n = k then begin
+        result := StrToIntDef(Copy(R, St, p - St), -1);
+        exit;
+      end;
+      Inc(n);
+      St := p + 1;
+    end;
+  if n = k then result := StrToIntDef(Copy(R, St, Length(R) - St + 1), -1);
 end;
 
 // where to click now on the way to X, Y: the farthest node of the route that is in sight of us
 // (a short cut over the nodes before it); false = the target is in sight itself, or no way
 function NavWaypoint(X, Y: integer): boolean;
 var k, i, UX, UY, PX, PY: integer;
+  R: string;
 begin
   result := false;
-  if not NavOn then exit;
+  if not NmReady then exit;
   UX := User.X;
   UY := User.Y;
   // the same answer as a moment ago when neither the target nor we moved much (it is called every
@@ -1102,9 +1155,10 @@ begin
   NmWcUY := UY;
   NmWcRes := false;
   if NmRunFree(UX, UY, X, Y) then exit;   // straight to it
-  if not NmPlanTo(X, Y) then exit;
-  for k := NavRouteN - 1 downto 0 do begin
-    i := NavRoute[k];
+  R := NmRoute(X, Y);
+  for k := NmRouteCount(R) - 1 downto 0 do begin
+    i := NmRouteAt(R, k);
+    if i < 0 then continue;
     PX := NavX[i];
     PY := NavY[i];
     if (k = 0) or NmRunFree(UX, UY, PX, PY) then begin
@@ -1130,23 +1184,26 @@ end;
 // along the graph to the target; a node is skipped as soon as the next one is in sight.
 // true = the target is in sight now (the caller runs the rest)
 function NavGraphTo(X, Y, Z: integer): boolean;
-var i, k, PX, PY, NX2, NY2: integer;
+var i, k, PX, PY, NX2, NY2, RN: integer;
   Ok: boolean;
+  R: string;                             // the route (own: other threads count theirs meanwhile)
 begin
   result := false;
-  if NavBusyFlag or (not NavOn) or (NavN = 0) then exit;
-  if not NmPlanTo(X, Y) then begin
+  if NavBusyFlag or (not NmReady) or (NavN = 0) then exit;
+  R := NmRoute(X, Y);
+  RN := NmRouteCount(R);
+  if RN = 0 then begin
     Engine.Msg('[Nav]', 'No way on the map to ' + IntToStr(X) + ', ' + IntToStr(Y) + ' - plain server path', 128);
     exit;
   end;
-  Engine.Msg('[Nav]', 'Wall on the way, along the map (' + IntToStr(NavRouteN) + ' nodes)', 0);
+  Engine.Msg('[Nav]', 'Wall on the way, along the map (' + IntToStr(RN) + ' nodes)', 0);
   NavBusyFlag := true;
   Ok := true;
   k := 0;
-  while k < NavRouteN do begin
+  while k < RN do begin
     if NavSeeFromUs(X, Y) then break;  // the target is in sight: the rest goes straight
-    if k + 1 < NavRouteN then begin
-      i := NavRoute[k + 1];
+    if k + 1 < RN then begin
+      i := NmRouteAt(R, k + 1);
       NX2 := NavX[i];
       NY2 := NavY[i];
       if NavSeeFromUs(NX2, NY2) then begin
@@ -1154,7 +1211,7 @@ begin
         continue;
       end;
     end;
-    i := NavRoute[k];
+    i := NmRouteAt(R, k);
     PX := NavX[i];
     PY := NavY[i];
     if not NmGo(PX, PY, Z) then begin
@@ -1274,7 +1331,7 @@ var i, a, r, NX, NY, PX, PY: integer;
   D, Best, Sc, Ang, Rad: double;
 begin
   result := false;
-  if (not NavOn) or (NavN = 0) then exit;
+  if (not NmReady) or (NavN = 0) then exit;
   Best := -1;
   for i := 0 to NavN - 1 do begin
     NX := NavX[i];
@@ -1306,7 +1363,7 @@ var i, NX, NY: integer;
   D, Sc: double;
 begin
   result := -1;
-  if (not NavOn) or (NavN = 0) then exit;
+  if (not NmReady) or (NavN = 0) then exit;
   for i := 0 to NavN - 1 do begin
     NX := NavX[i];
     NY := NavY[i];
@@ -1319,27 +1376,29 @@ end;
 
 // run length to X, Y: straight if in sight, else along the planned route
 function NavPathLen(X, Y: integer): double;
-var k, i, j, UX, UY: integer;
+var k, i, j, n, UX, UY: integer;
   DX, DY: double;
+  R: string;
 begin
   UX := User.X;
   UY := User.Y;
   DX := X - UX;
   DY := Y - UY;
   result := Sqrt(DX * DX + DY * DY);
-  if (not NavOn) or NmLineFree(UX, UY, X, Y, false) then exit;
-  if not NmPlanTo(X, Y) then begin
+  if (not NmReady) or NmLineFree(UX, UY, X, Y, false) then exit;
+  R := NmRoute(X, Y);
+  n := NmRouteCount(R);
+  if n = 0 then begin
     result := -1;
     exit;
   end;
-  i := NavRoute[0];
+  i := NmRouteAt(R, 0);
   result := Sqrt(Sqr(NavX[i] - UX) + Sqr(NavY[i] - UY));
-  for k := 1 to NavRouteN - 1 do begin
-    i := NavRoute[k - 1];
-    j := NavRoute[k];
+  for k := 1 to n - 1 do begin
+    j := NmRouteAt(R, k);
     result := result + NmDist(i, j);
+    i := j;
   end;
-  i := NavRoute[NavRouteN - 1];
   result := result + Sqrt(Sqr(NavX[i] - X) + Sqr(NavY[i] - Y));
 end;
 
@@ -1349,7 +1408,7 @@ var k, i, UX, UY: integer;
   D: double;
 begin
   result := false;
-  if (not NavOn) or (NavN = 0) then exit;
+  if (not NmReady) or (NavN = 0) then exit;
   UX := User.X;
   UY := User.Y;
   for k := 0 to NavN - 1 do begin
@@ -1415,13 +1474,13 @@ end;
 
 // the whole run: behind a wall -> along the graph first; then the plain server path; stuck -> the
 // graph and the plain path once more
-function NavUnstick(): boolean;
+function NmUnstick(): boolean;
 var i, UX, UY, UZ, PX, PY, BX, BY, Pass: integer;
   D, Best: double;
   Own: boolean;
 begin
   result := false;
-  if not NavOn then exit;
+  if not NmReady then exit;
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
@@ -1470,11 +1529,211 @@ begin
   result := NmGo(BX, BY, UZ);
 end;
 
+// ---------- runs ----------
+
+// the pulse of a blocking run: set on every tick of it. No waiting, no flag to release: a thread that
+// died in the middle of a run (a script error) stops the pulse, and after 1 s nobody "drives" any more
+procedure NmDriveBegin();
+begin
+  NmDriveAt := GetTickCount;
+end;
+
+procedure NmDriveEnd();
+begin
+  NmDriveAt := 0;
+end;
+
+function NmDriving(): boolean;
+begin
+  result := (NmDriveAt <> 0) and (GetTickCount - NmDriveAt < 1000);
+end;
+
+function NmDistTo(X, Y: integer): double;
+var UX, UY: integer;
+  DX, DY: double;
+begin
+  UX := User.X;
+  UY := User.Y;
+  DX := X - UX;
+  DY := Y - UY;
+  result := Sqrt(DX * DX + DY * DY);
+end;
+
+procedure NavMoveReset();
+begin
+  NmLX := User.X;
+  NmLY := User.Y;
+  NmMovedAt := GetTickCount;
+end;
+
+procedure NavClickForget();
+begin
+  NmClAt := 0;
+end;
+
+procedure NavStepReset();
+begin
+  NavMoveReset();
+  NavClickForget();
+end;
+
+// ms since we really moved (10+ on the ground)
+function NavStillMs(): cardinal;
+var UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  if (UX - NmLX) * (UX - NmLX) + (UY - NmLY) * (UY - NmLY) >= 100 then begin
+    NmLX := UX;
+    NmLY := UY;
+    NmMovedAt := GetTickCount;
+  end;
+  result := GetTickCount - NmMovedAt;
+end;
+
+// one server-path click, remembered. Not repeated on a timer: every new click makes the server build
+// the path again from where we are, and its first node may lie behind us (the run forth and back)
+procedure NavClickAt(X, Y, Z: integer);
+begin
+  NavClick(X, Y, Z);
+  NmClX := X;
+  NmClY := Y;
+  NmClAt := GetTickCount;
+end;
+
+// click again only when the goal moved away from our click point, or we stopped short
+function NavNeedClick(X, Y: integer): boolean;
+var DX, DY: double;
+begin
+  result := true;
+  if NmClAt = 0 then exit;
+  DX := X - NmClX;
+  DY := Y - NmClY;
+  if Sqrt(DX * DX + DY * DY) > NAV_RECLICK then exit;
+  result := (NavStillMs() >= NAV_STOP_MS) and (GetTickCount - NmClAt >= NAV_STOP_MS);
+end;
+
+// one tick of a tick run; a blocking run of another thread drives now -> nothing
+procedure NavStep(X, Y, Z: integer; Graph: boolean);
+var TX, TY: integer;
+begin
+  if NmDriving() then exit;
+  TX := X;
+  TY := Y;
+  if Graph and NmReady and NavWaypoint(X, Y) then begin
+    TX := NmWpX;
+    TY := NmWpY;
+  end;
+  if NavNeedClick(TX, TY) then NavClickAt(TX, TY, Z);
+end;
+
+// "at the point" (within 150): the click again every NAV_RESEND_MS; not moved NAV_RUN_STALL_MS = stuck
+function NmRunWait(X, Y, Z: integer): boolean;
+var Started, LastSend, StillSince: cardinal;
+  UX, UY, LX, LY: integer;
+begin
+  result := false;
+  Started := GetTickCount;
+  StillSince := GetTickCount;
+  LX := User.X;
+  LY := User.Y;
+  LastSend := 0;
+  while not User.Dead do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
+    if User.DistTo(X, Y, Z) < NAV_REACH_WAIT then begin
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > NAV_RUN_MS then exit;
+    UX := User.X;
+    UY := User.Y;
+    if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
+      LX := UX;
+      LY := UY;
+      StillSince := GetTickCount;
+    end else if GetTickCount - StillSince > NAV_RUN_STALL_MS then exit;
+    if (LastSend = 0) or (GetTickCount - LastSend >= NAV_RESEND_MS) then begin
+      NavClick(X, Y, Z);
+      LastSend := GetTickCount;
+    end;
+    Delay(100);
+  end;
+end;
+
+// stand within Radius (on the ground): the click again only when we stopped short
+function NmRunExact(X, Y, Z, Radius: integer): boolean;
+var Started: cardinal;
+  Stops: integer;
+  D: double;
+begin
+  result := false;
+  Started := GetTickCount;
+  Stops := 0;
+  NavMoveReset();
+  NavClickAt(X, Y, Z);
+  while not User.Dead do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
+    D := NmDistTo(X, Y);
+    if D <= Radius then begin
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > NAV_RUN_MS then exit;
+    if NavStillMs() > NAV_POINT_STUCK then exit;     // wall: the server finds no way there
+    if NavNeedClick(X, Y) then begin
+      // stopped short: a few times close to the point = the server cannot put us nearer
+      Inc(Stops);
+      if (Stops >= 3) and (D <= NAV_NEAR_OK) then begin
+        result := true;
+        exit;
+      end;
+      NavClickAt(X, Y, Z);
+    end;
+    Delay(NAV_TICK_MS);
+  end;
+end;
+
+function NmRunPlain(X, Y, Z, Reach: integer): boolean;
+begin
+  if Reach >= NAV_REACH_WAIT then result := NmRunWait(X, Y, Z)
+  else result := NmRunExact(X, Y, Z, Reach);
+end;
+
+function NavRunPlain(X, Y, Z, Reach: integer): boolean;
+begin
+  NmDriveBegin();
+  result := NmRunPlain(X, Y, Z, Reach);
+  NmDriveEnd();
+end;
+
+// behind a wall on the map -> along the graph first; then the server path; stuck -> the graph again;
+// still stuck -> out of the stuck place (to the nearest own node) for the caller's next try
+function NavRun(X, Y, Z, Reach: integer): boolean;
+begin
+  NmDriveBegin();
+  if NmReady and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
+  result := NmRunPlain(X, Y, Z, Reach);
+  if (not result) and (not User.Dead) and (not NavBusyFlag) and NmReady then begin
+    if NavGraphTo(X, Y, Z) then result := NmRunPlain(X, Y, Z, Reach);
+    if (not result) and (not User.Dead) then
+      if NmUnstick() then begin end;
+  end;
+  NmDriveEnd();
+end;
+
+// out of a stuck place, as a run of its own
+function NavUnstick(): boolean;
+begin
+  NmDriveBegin();
+  result := NmUnstick();
+  NmDriveEnd();
+end;
+
 function NavMoveTo(X, Y, Z, Radius: integer): boolean;
 begin
-  if NavOn and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
+  if NmReady and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
   result := NmPlain(X, Y, Z, Radius);
-  if result or User.Dead or NavBusyFlag or (not NavOn) then exit;
+  if result or User.Dead or NavBusyFlag or (not NmReady) then exit;
   if NavGraphTo(X, Y, Z) then result := NmPlain(X, Y, Z, Radius);
 end;
 

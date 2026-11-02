@@ -232,7 +232,6 @@ const
   PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
   PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
   PATH_REACHED      = 150;     // "I am at the point"
-  NAV_STALL_MS      = 2500;     // MoveWait: not moved this long = the plain server path is stuck
   SOUND_DIR         = '..\Sounds\';   // relative to Library\Scripts (Script.Path)
   DEFAULT_PLAYER_ALERT_RANGE = 0;     // players around: OFF by default (SetPlayerAlert(2000) turns it on)
   DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
@@ -250,8 +249,7 @@ const
   EVENTS_POLL_MS    = 1000;   // how often players around / private messages are checked
   LOGIN_KEY_WAIT    = 4;       // seconds before each Enter (proxy, character) - same as login_test.txt
   LOGIN_RETRY_WAIT  = 30000;    // ms between failed login attempts
-  MOVE_RESEND_MS    = 1500;     // server-path move: the click packet is sent again every N ms
-  MOVE_WAIT_MS      = 15000;    // MoveWait: give up reaching the point after this
+  MOVE_WAIT_MS      = 15000;    // a tick run (into a room, the lead) gives up after this
   SP_MOVE_MS        = 600;      // spoil farm: run order to the mob repeated every N ms (it moves)
   SP_APPROACH_MS    = 15000;    // spoil farm: cannot get next to a mob this long -> skip it
   SP_IGNORE_MS      = 30000;    // spoil farm: a skipped mob is not taken again for this long
@@ -430,10 +428,6 @@ var
   PkWearUseAt, PkWearRefAt: cardinal;   // PkWear: last UseItem / last inventory request
   PkWearOK: boolean;              // PkWear: PkWearID is on (seen in a fresh inventory)
   PkCorpseSince: cardinal;
-  PkLX, PkLY: integer;            // our position at the last real move (wall check)
-  PkMovedAt: cardinal;
-  PkClickX, PkClickY: integer;    // the point of our last click
-  PkClickAt: cardinal;
   PkTouchOID: array[0..15] of integer;    // mobs we ran past during the pull (they should follow us)
   PkTouchAt: array[0..15] of cardinal;
   PkTouchCnt: array[0..15] of integer;
@@ -931,67 +925,7 @@ end;
 // Every move goes as the packet the client sends on a mouse click (MoveBackwardToLocation 0F:
 // target X Y Z, our X Y Z, 1 = by mouse): the server builds the path itself (hills, walls).
 
-function ClickHex(Value: integer): string;
-begin
-  result := IntToHex(Value and $FF, 2) + IntToHex((Value shr 8) and $FF, 2) +
-            IntToHex((Value shr 16) and $FF, 2) + IntToHex((Value shr 24) and $FF, 2);
-end;
-
 // one run order (non-blocking)
-procedure MoveServer(X, Y, Z: integer);
-var UX, UY, UZ: integer;
-begin
-  UX := User.X;
-  UY := User.Y;
-  UZ := User.Z;
-  NavSend('0F' + ClickHex(X) + ClickHex(Y) + ClickHex(Z) +
-    ClickHex(UX) + ClickHex(UY) + ClickHex(UZ) + ClickHex(1));
-end;
-
-// run to the point and wait until we are there (order repeated every MOVE_RESEND_MS),
-// max MOVE_WAIT_MS; true = reached. Not moving for NAV_STALL_MS = stuck -> false
-function MoveWaitPlain(X, Y, Z: integer): boolean;
-var Started, LastSend, StillSince: cardinal;
-  UX, UY, LX, LY: integer;
-begin
-  result := false;
-  Started := GetTickCount;
-  StillSince := GetTickCount;
-  LX := User.X;
-  LY := User.Y;
-  LastSend := 0;
-  while not User.Dead do begin
-    if User.DistTo(X, Y, Z) < PATH_REACHED then begin
-      result := true;
-      exit;
-    end;
-    if GetTickCount - Started > MOVE_WAIT_MS then exit;
-    UX := User.X;
-    UY := User.Y;
-    if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
-      LX := UX;
-      LY := UY;
-      StillSince := GetTickCount;
-    end else if GetTickCount - StillSince > NAV_STALL_MS then exit;
-    if (LastSend = 0) or (GetTickCount - LastSend >= MOVE_RESEND_MS) then begin
-      MoveServer(X, Y, Z);
-      LastSend := GetTickCount;
-    end;
-    Delay(100);
-  end;
-end;
-
-// behind a wall on the map -> along the graph first; then the plain server path; stuck -> the graph
-function MoveWait(X, Y, Z: integer): boolean;
-begin
-  if NavIsReady() and (not NavIsBusy()) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
-  result := MoveWaitPlain(X, Y, Z);
-  if result or User.Dead or NavIsBusy() or (not NavIsReady()) then exit;
-  if NavGraphTo(X, Y, Z) then result := MoveWaitPlain(X, Y, Z);
-  if (not result) and (not User.Dead) then
-    if NavUnstick() then begin end;    // stuck: out of there for the next try
-end;
-
 // no SetPath and no SetTeleport: we never travel, we farm where the script was started
 function StayMode(): boolean;
 begin
@@ -1158,10 +1092,7 @@ begin
   end;
   L.Free;
   k := RoomCount();
-  if k > 0 then begin
-    RoomLoadStats(F + '.roomstat');
-    if not PkFarmModeSet then PkFarmMode := FARM_ROOMS;
-  end;
+  if (k > 0) and (not PkFarmModeSet) then PkFarmMode := FARM_ROOMS;
   Engine.Msg('[Init]', 'Nav map ' + Name + ': ' + IntToStr(k) + ' rooms, ' + IntToStr(PkSpotN) + ' farm spots' +
     ', safe point ' + IntToStr(Ord(HasSafePoint)), 128);
 end;
@@ -1179,7 +1110,7 @@ begin
   if n = 0 then exit;
   if PatrolIdx >= n then PatrolIdx := 0;
   Engine.Msg('[Patrol]', 'No mobs, patrol point ' + IntToStr(PatrolIdx + 1) + '/' + IntToStr(n), 0);
-  MoveWait(PatrolPoints[PatrolIdx * 3], PatrolPoints[PatrolIdx * 3 + 1], PatrolPoints[PatrolIdx * 3 + 2]);
+  NavRun(PatrolPoints[PatrolIdx * 3], PatrolPoints[PatrolIdx * 3 + 1], PatrolPoints[PatrolIdx * 3 + 2], PATH_REACHED);
   PatrolIdx := (PatrolIdx + 1) mod n;
 end;
 
@@ -1765,7 +1696,7 @@ procedure AoeRunToSpot();
 var n: integer;
 begin
   n := Length(Path);
-  if n >= 3 then MoveWait(Path[n - 3], Path[n - 2], Path[n - 1]);
+  if n >= 3 then NavRun(Path[n - 3], Path[n - 2], Path[n - 1], PATH_REACHED);
 end;
 
 // nearest live, not yet aggroed, whitelisted mob inside the zone
@@ -1821,7 +1752,7 @@ begin
 
     // run to the mob: getting close should aggro it
     AggroBefore := AoeCountAggro();
-    MoveWait(MX, MY, MZ);
+    NavRun(MX, MY, MZ, PATH_REACHED);
     Delay(150);
 
     // did not aggro -> tap it once
@@ -1884,7 +1815,7 @@ begin
     DY := DropList(i).Y;
     DZ := DropList(i).Z;
     if User.DistTo(DX, DY, DZ) > AOE_PICKUP_RANGE then continue;
-    MoveWait(DX, DY, DZ);
+    NavRun(DX, DY, DZ, PATH_REACHED);
     Delay(300);
     Engine.Pickup;
     Delay(500);
@@ -2058,7 +1989,7 @@ begin
   // before every action: are we right next to it? no -> run there first
   if (not Force) and (SpDist(Idx) > SpRange) then begin
     if (OID <> SpMoveOID) or (GetTickCount - LastSpMove >= SP_MOVE_MS) then begin
-      MoveServer(MX, MY, MZ);
+      NavClick(MX, MY, MZ);
       SpMoveOID := OID;
       LastSpMove := GetTickCount;
     end;
@@ -2126,7 +2057,7 @@ begin
         CX := NpcList(Idx).X;
         CY := NpcList(Idx).Y;
         CZ := NpcList(Idx).Z;
-        MoveWait(CX, CY, CZ);
+        NavRun(CX, CY, CZ, PATH_REACHED);
       end;
       i := 0;
       while (SpSkillLeft(SpSweepSkill) > 0) and (i < 20) do begin   // up to 2 sec of reuse
@@ -2147,7 +2078,7 @@ begin
     DY := DropList(i).Y;
     DZ := DropList(i).Z;
     if User.DistTo(DX, DY, DZ) > SP_PICKUP_RANGE then continue;
-    MoveWait(DX, DY, DZ);
+    NavRun(DX, DY, DZ, PATH_REACHED);
     Engine.Pickup;
     Delay(400);
   end;
@@ -2271,7 +2202,7 @@ begin
     OID := SpPickTarget(false);
     if OID = 0 then begin
       // no mobs: safe point (SetSafePoint) / patrol / back to the spot start
-      if HasSafePoint then MoveWait(SafeX, SafeY, SafeZ)
+      if HasSafePoint then NavRun(SafeX, SafeY, SafeZ, PATH_REACHED)
       else if HasPatrol() then PatrolStep()
       else AoeRunToSpot();
       continue;
@@ -2627,7 +2558,7 @@ begin
     if User.Dead or AoeMustStop() or TreeBusy or SummonBusy then exit;
     if CasterChooseTarget() <> 0 then exit;     // a mob within range / attacking us -> fight it
     if GetTickCount - Started > 60000 then exit;
-    MoveServer(TX, TY, TZ);
+    NavClick(TX, TY, TZ);
     Delay(PATROL_STEP_MS);
   end;
 end;
@@ -2838,7 +2769,7 @@ begin
         ' in ' + IntToStr(PATH_POINT_TIMEOUT) + ' sec', 128);
       exit;
     end;
-    MoveWait(X, Y, Z);
+    NavRun(X, Y, Z, PATH_REACHED);
     Delay(300);
   end;
 end;
@@ -2897,7 +2828,7 @@ begin
     if User.Dead or NeedReturn then exit;
     Engine.Msg('[Rebuff]', 'Going to the safe point', 0);
     FarmOff();
-    MoveWait(SafeX, SafeY, SafeZ);
+    NavRun(SafeX, SafeY, SafeZ, PATH_REACHED);
     Delay(1000);
     if User.Dead or NeedReturn then exit;
 
@@ -2981,7 +2912,7 @@ begin
   Tries := 0;
   while (User.DistTo(SafeX, SafeY, SafeZ) > 150) and (Tries < 5) do begin
     if User.Dead or NeedReturn then exit;
-    MoveWait(SafeX, SafeY, SafeZ);
+    NavRun(SafeX, SafeY, SafeZ, PATH_REACHED);
     Inc(Tries);
   end;
 
@@ -2994,11 +2925,11 @@ begin
       SafeKillMob(OID);
       if User.Dead or NeedReturn then exit;
       Engine.CancelTarget;
-      MoveWait(SafeX, SafeY, SafeZ);
+      NavRun(SafeX, SafeY, SafeZ, PATH_REACHED);
       continue;
     end;
     if User.DistTo(SafeX, SafeY, SafeZ) > 150 then begin
-      MoveWait(SafeX, SafeY, SafeZ);
+      NavRun(SafeX, SafeY, SafeZ, PATH_REACHED);
       continue;
     end;
     if not User.InCombat then break;
@@ -3091,7 +3022,7 @@ procedure GoToGatekeeper();
 begin
   Engine.Msg('[Return]', 'Going to gatekeeper...', 0);
   FarmOff();
-  MoveWait(GK_X, GK_Y, GK_Z);
+  NavRun(GK_X, GK_Y, GK_Z, PATH_REACHED);
   Delay(1000);
 end;
 
@@ -3177,7 +3108,7 @@ begin
     NX := NpcList(Idx).X;
     NY := NpcList(Idx).Y;
     NZ := NpcList(Idx).Z;
-    MoveWait(NX, NY, NZ);
+    NavRun(NX, NY, NZ, PATH_REACHED);
     Engine.SetTarget(NpcOID);
     Delay(800);
     if Engine.DlgOpen(SecondNpcID) then begin
@@ -3568,7 +3499,7 @@ begin
 
   BackoffX := MX + Round(NX * TreeBowRange);
   BackoffY := MY + Round(NY * TreeBowRange);
-  MoveWait(BackoffX, BackoffY, UZ);
+  NavRun(BackoffX, BackoffY, UZ, PATH_REACHED);
   Engine.SetTarget(OID);
   Engine.Attack;
 
@@ -3603,7 +3534,7 @@ begin
         BackoffX := MX + Round(RotX * TreeBowRange);
         BackoffY := MY + Round(RotY * TreeBowRange);
         Engine.Msg('[Tree]', 'No HP drop, reposition #' + IntToStr(Repositions), 0);
-        MoveWait(BackoffX, BackoffY, UZ);
+        NavRun(BackoffX, BackoffY, UZ, PATH_REACHED);
         Engine.SetTarget(OID);
         Engine.Attack;
         StuckMs := 0;
@@ -3617,7 +3548,7 @@ begin
   EquipWeapon(TreeMeleeID);
 
   // gave up: walk away to break its aggro (safe point if we have one)
-  if GaveUp and HasSafePoint then MoveWait(SafeX, SafeY, SafeZ);
+  if GaveUp and HasSafePoint then NavRun(SafeX, SafeY, SafeZ, PATH_REACHED);
 end;
 
 // Watches the target while farming and calls HandleTreeMob for a stuck one.
@@ -3749,50 +3680,6 @@ begin
   result := (PkZRange <= 0) or (Abs(Z - UZ) <= PkZRange);
 end;
 
-// wall check: a new run starts now
-procedure PkMoveReset();
-begin
-  PkLX := User.X;
-  PkLY := User.Y;
-  PkMovedAt := GetTickCount;
-end;
-
-// wall check: ms since we really moved (10+ on the ground)
-function PkStillMs(): cardinal;
-var UX, UY: integer;
-begin
-  UX := User.X;
-  UY := User.Y;
-  if (UX - PkLX) * (UX - PkLX) + (UY - PkLY) * (UY - PkLY) >= 100 then begin
-    PkLX := UX;
-    PkLY := UY;
-    PkMovedAt := GetTickCount;
-  end;
-  result := GetTickCount - PkMovedAt;
-end;
-
-// one server-path click, remembered. The click is NOT repeated on a timer: every new click makes
-// the server build the path again from where we are, and its first node may lie behind us -
-// that was the run forth and back
-procedure PkClick(X, Y, Z: integer);
-begin
-  MoveServer(X, Y, Z);
-  PkClickX := X;
-  PkClickY := Y;
-  PkClickAt := GetTickCount;
-end;
-
-// click again only when the goal moved away from our click point, or we stopped short
-function PkNeedClick(X, Y: integer): boolean;
-var DX, DY: double;
-begin
-  result := true;
-  if PkClickAt = 0 then exit;
-  DX := X - PkClickX;
-  DY := Y - PkClickY;
-  if Sqrt(DX * DX + DY * DY) > PK_RECLICK_DIST then exit;
-  result := (PkStillMs() >= PK_STOP_MS) and (GetTickCount - PkClickAt >= PK_STOP_MS);
-end;
 
 // shooters / aggro are kept by the pull module (Core\mob_pull.pas)
 function PkIsShooter(OID: integer): boolean;
@@ -3813,51 +3700,6 @@ end;
 function PkCountAggro(): integer;
 begin
   result := PullCountAggro();
-end;
-
-// run to the point with the server path and stand within Radius of it (on the ground).
-// The click is repeated only when we stopped short of the point (see PkClick)
-function MoveExactPlain(X, Y, Z, Radius: integer): boolean;
-var Started: cardinal;
-  Stops: integer;
-  D: double;
-begin
-  result := false;
-  Started := GetTickCount;
-  Stops := 0;
-  PkMoveReset();
-  PkClick(X, Y, Z);
-  while not User.Dead do begin
-    D := PkDist(X, Y);
-    if D <= Radius then begin
-      result := true;
-      exit;
-    end;
-    if GetTickCount - Started > MOVE_WAIT_MS then exit;
-    if PkStillMs() > PK_POINT_STUCK_MS then exit;     // wall: the server finds no way there
-    PullTapRestore();                  // the farm weapon goes back on while we run (no-op if done)
-    if PkNeedClick(X, Y) then begin
-      // stopped short: a few times close to the point = the server cannot put us nearer
-      Inc(Stops);
-      if (Stops >= 3) and (D <= PK_NEAR_OK) then begin
-        result := true;
-        exit;
-      end;
-      PkClick(X, Y, Z);
-    end;
-    Delay(PK_TICK_MS);
-  end;
-end;
-
-// MoveExactPlain; behind a wall on the map -> along the graph first; stuck -> the graph
-function MoveExact(X, Y, Z, Radius: integer): boolean;
-begin
-  if NavIsReady() and (not NavIsBusy()) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
-  result := MoveExactPlain(X, Y, Z, Radius);
-  if result or User.Dead or NavIsBusy() or (not NavIsReady()) then exit;
-  if NavGraphTo(X, Y, Z) then result := MoveExactPlain(X, Y, Z, Radius);
-  if (not result) and (not User.Dead) then
-    if NavUnstick() then begin end;    // stuck: out of there for the next try
 end;
 
 // [State]: what the farm does now and why - said when it changes, repeated every 30 s
@@ -3889,7 +3731,7 @@ end;
 // no mobs at all: stand at the safe point / patrol / the spot start
 procedure PkIdle();
 begin
-  if HasSafePoint then MoveExact(SafeX, SafeY, SafeZ, PK_REACH)
+  if HasSafePoint then NavRun(SafeX, SafeY, SafeZ, PK_REACH)
   else if HasPatrol() then PatrolStep()
   else AoeRunToSpot();
 end;
@@ -4077,8 +3919,8 @@ var Started: cardinal;
 begin
   result := false;
   Started := GetTickCount;
-  PkMoveReset();
-  PkClickAt := 0;
+  NavMoveReset();
+  NavClickForget();
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
     if PkDist(X, Y) <= Radius then begin
       result := true;
@@ -4087,20 +3929,14 @@ begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
     PullTapRestore();
     if PullLeashTick() then begin      // zigzag: the click is the pull module's
-      PkMoveReset();
-      PkClickAt := 0;
+      NavMoveReset();
+      NavClickForget();
       Delay(PK_TICK_MS);
       continue;
     end;
-    TX := X;
-    TY := Y;
-    if NavIsReady() and NavWaypoint(X, Y) then begin
-      TX := NavWpX();
-      TY := NavWpY();
-    end;
-    if PkNeedClick(TX, TY) then PkClick(TX, TY, Z);
-    if PkStillMs() > PK_POINT_STUCK_MS then begin
-      if NavUnstick() then begin end;  // out of the stuck place; the caller goes on (or MoveExact)
+    NavStep(X, Y, Z, true);
+    if NavStillMs() > PK_POINT_STUCK_MS then begin
+      if NavUnstick() then begin end;  // out of the stuck place; the caller goes on (or NavRun)
       exit;
     end;
     Delay(PK_TICK_MS);
@@ -4108,7 +3944,7 @@ begin
 end;
 
 // to the farm spot with the pack: round the corner when there is such a way in, the leash all the way.
-// NOT USED now: the mobs behaved worse with it - PkGather runs with MoveExact as before
+// NOT USED now: the mobs behaved worse with it - PkGather runs with NavRun as before
 procedure PkLeadRun(SX, SY, SZ: integer);
 var BX, BY, EX, EY: integer;
   Ok: boolean;
@@ -4123,7 +3959,7 @@ begin
     Ok := PkLeadTo(BX, BY, SZ, 70);
     if Ok then Ok := PkLeadTo(EX, EY, SZ, 50);
   end;
-  if not PkLeadTo(SX, SY, SZ, PK_REACH) then MoveExact(SX, SY, SZ, PK_REACH);
+  if not PkLeadTo(SX, SY, SZ, PK_REACH) then NavRun(SX, SY, SZ, PK_REACH);
 end;
 
 procedure PkGather();
@@ -4161,7 +3997,7 @@ begin
         PkCZ := PkSpotZ[k];
         if PkCZ = 0 then PkCZ := UZ;
         Engine.Msg('[Pack]', 'Pack ' + IntToStr(n) + ' -> farm spot ' + IntToStr(k + 1), 0);
-        MoveExact(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
+        NavRun(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
         exit;
       end;
       if PkSpotsOnly and (PkSpotN > 0) then begin   // only the spots: none here -> fight where we are
@@ -4182,7 +4018,7 @@ begin
         PkCY := NavSpotY();
         PkCZ := UZ;
         Engine.Msg('[Pack]', 'Pack ' + IntToStr(n) + ' -> round the corner at ' + IntToStr(PkCX) + ', ' + IntToStr(PkCY), 0);
-        MoveExact(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
+        NavRun(PkCX, PkCY, PkCZ, PK_REACH);   // a server-path click (as it always was); stuck -> NavUnstick
         exit;
       end;
     end;
@@ -4196,7 +4032,7 @@ begin
   PkCY := PkCorners[PkCorner * 3 + 1];
   PkCZ := PkCorners[PkCorner * 3 + 2];
   Engine.Msg('[Pack]', 'Pack ' + IntToStr(PkCountAggro()) + ' -> corner ' + IntToStr(PkCorner + 1), 0);
-  MoveExact(PkCX, PkCY, PkCZ, PK_REACH);
+  NavRun(PkCX, PkCY, PkCZ, PK_REACH);
 end;
 
 // a mob of the pack we fight: alive, on us, within PK_FIGHT_RANGE, not a shooter. Skipped
@@ -4508,8 +4344,8 @@ begin
   Started := GetTickCount;
   GainAt := Started;
   SumBest := 1E18;
-  PkMoveReset();
-  PkClickAt := 0;
+  NavMoveReset();
+  NavClickForget();
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) do begin
     Total := 0;
     Near := 0;
@@ -4531,7 +4367,7 @@ begin
     end;
     if GetTickCount - GainAt > PK_WAIT_STILL_MS then exit;  // nobody comes closer any more
     if GetTickCount - Started > PkWaitMs then exit;
-    if (PkDist(PkCX, PkCY) > PK_WAIT_HOLD) and PkNeedClick(PkCX, PkCY) then PkClick(PkCX, PkCY, PkCZ);
+    if (PkDist(PkCX, PkCY) > PK_WAIT_HOLD) and NavNeedClick(PkCX, PkCY) then NavClickAt(PkCX, PkCY, PkCZ);
     Delay(PK_TICK_MS);
   end;
 end;
@@ -4633,7 +4469,7 @@ begin
         Engine.Msg('[Pack]', 'Nobody comes to the corner, fight over', 0);
         break;
       end;
-      if (PkDist(PkCX, PkCY) > PK_REACH * 2) and PkNeedClick(PkCX, PkCY) then PkClick(PkCX, PkCY, PkCZ);
+      if (PkDist(PkCX, PkCY) > PK_REACH * 2) and NavNeedClick(PkCX, PkCY) then NavClickAt(PkCX, PkCY, PkCZ);
       PkTrySweep();
       OID := 0;
       Delay(PK_TICK_MS);
@@ -4657,9 +4493,9 @@ begin
     // no corner / inside the corner zone, target farther than the hit -> run to it by the server
     // path (Attack runs straight)
     if PkDist(TX, TY) > PK_HIT_RANGE then begin
-      if (not WasRunning) or (OID <> RunOID) then PkMoveReset();
+      if (not WasRunning) or (OID <> RunOID) then NavMoveReset();
       Running := true;
-      if PkStillMs() > PK_STUCK_MS then begin
+      if NavStillMs() > PK_STUCK_MS then begin
         // the server finds no way to it (behind a wall): skip it
         Engine.Msg('[Pack]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
         SpIgnore(OID);
@@ -4670,9 +4506,9 @@ begin
         Running := false;
         continue;
       end;
-      if (OID <> RunOID) or PkNeedClick(TX, TY) then begin
+      if (OID <> RunOID) or NavNeedClick(TX, TY) then begin
         TZ := NpcList(Idx).Z;
-        PkClick(TX, TY, TZ);
+        NavClickAt(TX, TY, TZ);
         RunOID := OID;
       end;
       Delay(PK_TICK_MS);
@@ -4731,7 +4567,7 @@ begin
     DY := DropList(i).Y;
     DZ := DropList(i).Z;
     if PkDist(DX, DY) > PK_PICKUP_RANGE then continue;
-    MoveExactPlain(DX, DY, DZ, PK_REACH);   // drop behind a wall is not worth a detour
+    NavRunPlain(DX, DY, DZ, PK_REACH);   // drop behind a wall is not worth a detour
     Engine.Pickup;
     Delay(300);
   end;
@@ -4772,17 +4608,11 @@ begin
       exit;
     end;
     Engine.Msg('[Hunt]', 'No mobs near, patrol to ' + IntToStr(PkPatrolX) + ', ' + IntToStr(PkPatrolY), 0);
-    PkMoveReset();
-    PkClickAt := 0;
+    NavMoveReset();
+    NavClickForget();
   end;
-  TX := PkPatrolX;
-  TY := PkPatrolY;
-  if NavIsReady() and NavWaypoint(TX, TY) then begin
-    TX := NavWpX();
-    TY := NavWpY();
-  end;
-  if PkNeedClick(TX, TY) then PkClick(TX, TY, UZ);
-  if PkStillMs() > PK_POINT_STUCK_MS then PkPatrolOn := false;   // cannot get there: the next point
+  NavStep(PkPatrolX, PkPatrolY, UZ, true);
+  if NavStillMs() > PK_POINT_STUCK_MS then PkPatrolOn := false;   // cannot get there: the next point
 end;
 
 // FARM_AUTO: few free mobs near us -> one by one (a pack pull is not worth it)
@@ -4831,7 +4661,7 @@ begin
     end else begin
       PullChase(OID, First);           // by the nav map, through it, no stops
       First := false;
-      if PkStillMs() > PK_POINT_STUCK_MS then begin
+      if NavStillMs() > PK_POINT_STUCK_MS then begin
         Engine.Msg('[Hunt]', 'Cannot get to ' + PullNpcName(Idx) + ', skipping it', 0);
         PullForget(OID, SP_IGNORE_MS);
         exit;
@@ -4878,7 +4708,7 @@ begin
     end;
   end;
   UZ := User.Z;
-  if PkDist(X, Y) > 150 then MoveExact(X, Y, UZ, PK_REACH);
+  if PkDist(X, Y) > 150 then NavRun(X, Y, UZ, PK_REACH);
 end;
 
 // at the room: inside its polygon, or at one of its farm spots (they may lie in the passage outside)
@@ -4912,27 +4742,21 @@ begin
   Started := GetTickCount;
   BestD := PkDist(AX, AY);
   BestAt := GetTickCount;
-  PkMoveReset();
-  PkClickAt := 0;
+  NavMoveReset();
+  NavClickForget();
   while (not AoeMustStop()) and (not PkAtRoom(n)) and
         ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) do begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
     PullTapRestore();
-    TX := AX;
-    TY := AY;
-    if NavIsReady() and NavWaypoint(AX, AY) then begin
-      TX := NavWpX();
-      TY := NavWpY();
-    end;
-    if PkNeedClick(TX, TY) then PkClick(TX, TY, UZ);
+    NavStep(AX, AY, UZ, true);
     D := PkDist(AX, AY);
     if D < BestD - 100 then begin      // getting closer
       BestD := D;
       BestAt := GetTickCount;
     end;
     // stands, or jerks at a wall without getting closer: out by the server path to the nearest own node
-    if (PkStillMs() > PK_POINT_STUCK_MS) or (GetTickCount - BestAt > PK_NO_GAIN_MS) then begin
-      if not NavUnstick() then MoveWait(AX, AY, UZ);
+    if (NavStillMs() > PK_POINT_STUCK_MS) or (GetTickCount - BestAt > PK_NO_GAIN_MS) then begin
+      if not NavUnstick() then NavRun(AX, AY, UZ, PATH_REACHED);
       exit;                            // the next tick goes on from there as before
     end;
     Delay(PK_TICK_MS);
@@ -4953,7 +4777,6 @@ begin
     end;
   end;
   RoomMarkCleared(n);
-  RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
   PkRoomSel := 0;
 end;
 
@@ -5128,7 +4951,6 @@ begin
       Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ': only ' + IntToStr(RoomFree(cur)) + ' left (min ' +
         IntToStr(RoomMin(cur)) + '), room ' + RoomName(n) + ' is ready - going there', 0);
       RoomMarkCleared(cur);
-      RoomSaveStats(Script.Path + '..\Nav\' + PkPullGrid + '.roomstat');
       PkRoomSet(n);
       exit;
     end;
@@ -5202,7 +5024,7 @@ begin
       if PkDist(SafeX, SafeY) > PK_REACH * 2 then begin
         PkSafeReady := false;
         Engine.Msg('[Pack]', 'Rebuff due, running to the safe point', 0);
-        MoveExact(SafeX, SafeY, SafeZ, PK_REACH);
+        NavRun(SafeX, SafeY, SafeZ, PK_REACH);
         continue;
       end;
       if PkCountAggro() > 0 then begin
@@ -5433,7 +5255,7 @@ begin
         if OnSpot and (not User.Dead) and (not NeedReturn) then FarmOn();
         continue;
       end;
-      MoveServer(TX, TY, TZ);
+      NavClick(TX, TY, TZ);
       continue;
     end;
 

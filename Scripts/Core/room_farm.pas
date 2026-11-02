@@ -3,8 +3,8 @@ unit RoomFarm;
 // Rooms: polygons inside the farm map (drawn in Library\Nav\nav_view.html, stored in the .navgrid as
 // "Q name minMobs mode prio x y x y ..." lines). The bot farms one room at a time: picks the room
 // where the most mobs are expected, farms it empty, goes on to the next; mobs nowhere enough ->
-// waits in the best room. Far rooms are not seen, so each room remembers what it saw and learns its
-// respawn speed (mobs per minute after it was cleared) - saved to a file, kept between runs.
+// waits in the best room. Far rooms are not seen: each room remembers what it saw last; one not seen
+// for RM_STALE_MS is taken as back to its minimum (worth a look). No statistics, nothing saved.
 // Another player in a room: the room is left after RoomSetPlayers seconds and avoided for a while.
 //
 // Shared library: scripts only call it, nobody edits it.
@@ -31,21 +31,19 @@ function RoomPX(i, k: integer): integer;
 function RoomPY(i, k: integer): integer;
 function RoomAnchorX(i: integer): integer;    // a walkable point inside the room (to run to / wait at)
 function RoomAnchorY(i: integer): integer;
-procedure RoomUpdate();                       // every tick: what we see in the rooms, respawn, players
+procedure RoomUpdate();                       // every tick: what we see in the rooms, players
 function RoomSeen(i: integer): boolean;       // we see the room now (near enough)
 function RoomFree(i: integer): integer;       // free mobs in it now (when seen)
 function RoomMobs(i: integer): integer;       // RoomFree + skipped champions: for its minimum
 function RoomStalest(MinAgeMs: integer): integer;   // not seen for the longest (MinAgeMs+), -1 none
 function RoomExpected(i: integer): double;    // free mobs expected in it now
 function RoomBusy(i: integer): boolean;       // another player farms it
-procedure RoomMarkCleared(i: integer);        // we farmed it empty: the respawn clock starts
+procedure RoomMarkCleared(i: integer);        // we farmed it: what is left there now
 function RoomPick(): integer;                 // the best room with at least its minimum expected; -1 none
 function RoomPickExcept(Skip: integer): integer;   // the same, not this room
 function RoomTaken(i: integer): boolean;      // another player seen in it right now
 function RoomWaitPick(): integer;             // the best room to wait in (most expected), -1 none
-function RoomInfo(i: integer): string;        // one line for the debug: seen / expected / min / respawn / busy
-procedure RoomLoadStats(F: string);           // learned respawn speeds
-procedure RoomSaveStats(F: string);
+function RoomInfo(i: integer): string;        // one line for the debug: seen / min / busy
 
 implementation
 
@@ -53,6 +51,7 @@ const
   RM_SPOT_NEAR = 500;     // a farm spot this close outside a room belongs to it
   RM_SEE      = 1800;     // a room is seen when its anchor is this close to us
   RM_FRESH_MS = 3000;     // a count seen this recently is taken as it is
+  RM_STALE_MS = 60000;    // a room not seen this long: taken as back to its minimum
   RM_BUSY_MS  = 30000;    // a room with another player is avoided this long (RoomSetAvoid changes it)
   RM_MAX      = 64;
 
@@ -63,10 +62,8 @@ var
   RPN, RN: integer;
   RAX, RAY: array[0..63] of integer;
   RAnchorOK: array[0..63] of boolean;
-  RLast, RMaxSeen: array[0..63] of integer;
-  RLastAt, RClearAt, RPlayerSince, RBusyUntil: array[0..63] of cardinal;
-  RRate: array[0..63] of double;     // learned respawn: mobs per second
-  RBase: array[0..63] of integer;    // mobs left at the clear (skipped champions): not respawn
+  RLast: array[0..63] of integer;    // mobs seen there last ...
+  RLastAt, RPlayerSince, RBusyUntil: array[0..63] of cardinal;   // ... and when
   RScL: array[0..63] of double;      // RmScore: the way to the room along the map ...
   RScX, RScY: array[0..63] of integer;   // ... from here ...
   RScAt: array[0..63] of cardinal;   // ... counted then (a graph count each: kept 10 s)
@@ -96,12 +93,9 @@ begin
   RCnt[RN] := 0;
   RAnchorOK[RN] := false;
   RLast[RN] := 0;
-  RMaxSeen[RN] := 0;
   RLastAt[RN] := 0;
-  RClearAt[RN] := 0;
   RPlayerSince[RN] := 0;
   RBusyUntil[RN] := 0;
-  RRate[RN] := 0;
   Inc(RN);
 end;
 
@@ -327,11 +321,10 @@ begin
   end;
 end;
 
-// what we see now: the count, the respawn speed (from the clear to now), other players
+// what we see now: the count, other players
 procedure RoomUpdate();
-var i, c: integer;
+var i: integer;
   T: cardinal;
-  Sample: double;
 begin
   T := GetTickCount;
   if not RPlayersSet then begin
@@ -342,15 +335,7 @@ begin
   RUpdAt := T;
   for i := 0 to RN - 1 do begin
     if not RoomSeen(i) then continue;
-    c := RoomMobs(i);
-    if c > RMaxSeen[i] then RMaxSeen[i] := c;
-    // respawn: mobs back since the clear (one sample per new mob, not before 10 s)
-    if (RClearAt[i] > 0) and (c > RLast[i]) and (c > RBase[i]) and (T - RClearAt[i] > 10000) then begin
-      Sample := (c - RBase[i]) / ((T - RClearAt[i]) / 1000);
-      if RRate[i] <= 0 then RRate[i] := Sample else RRate[i] := RRate[i] * 0.7 + Sample * 0.3;
-      if c >= RMin[i] then RClearAt[i] := 0;     // back to its minimum: enough measured
-    end;
-    RLast[i] := c;
+    RLast[i] := RoomMobs(i);
     RLastAt[i] := T;
     if RPlayers >= 0 then begin
       if RmPlayersIn(i) > 0 then begin
@@ -372,29 +357,16 @@ end;
 
 procedure RoomMarkCleared(i: integer);
 begin
-  RClearAt[i] := GetTickCount;
-  RBase[i] := RoomMobs(i);             // champions left there are not the respawn
-  RLast[i] := RBase[i];
+  RLast[i] := RoomMobs(i);
   RLastAt[i] := GetTickCount;
 end;
 
-// seen just now -> that count; else the last count + the learned respawn since; a room never seen
-// is worth a look (its minimum); never more than the most ever seen there
+// what we saw there last; a room never seen / not seen for RM_STALE_MS is worth a look (its minimum)
 function RoomExpected(i: integer): double;
-var T: cardinal;
-  Cap: double;
 begin
-  T := GetTickCount;
-  if RLastAt[i] = 0 then begin
-    result := RMin[i];
-    exit;
-  end;
   result := RLast[i];
-  if T - RLastAt[i] < RM_FRESH_MS then exit;
-  result := RLast[i] + RRate[i] * ((T - RLastAt[i]) / 1000);
-  Cap := RMaxSeen[i];
-  if Cap < RMin[i] then Cap := RMin[i];
-  if result > Cap then result := Cap;
+  if (RLastAt[i] = 0) or (GetTickCount - RLastAt[i] >= RM_STALE_MS) then
+    if result < RMin[i] then result := RMin[i];
 end;
 
 // expected x priority, a far room counts less
@@ -460,7 +432,7 @@ begin
   Best := -1;
   for i := 0 to RN - 1 do begin
     if RoomBusy(i) or (RCnt[i] < 3) or RmTaken(i) then continue;
-    S := RmScore(i) + RRate[i] * 60;  // waiting: the room that respawns fastest helps most
+    S := RmScore(i);
     if S > Best then begin
       Best := S;
       result := i;
@@ -494,64 +466,8 @@ begin
   if RoomSeen(i) then S := 'seen ' + IntToStr(RoomMobs(i))
   else if RLastAt[i] = 0 then S := 'never seen'
   else S := 'seen ' + IntToStr((GetTickCount - RLastAt[i]) div 1000) + ' s ago: ' + IntToStr(RLast[i]);
-  result := RName[i] + ': ' + S + ', expected ' + IntToStr(Round(RoomExpected(i))) + ' of min ' + IntToStr(RMin[i]) +
-    ', respawn ' + IntToStr(Round(RRate[i] * 3600)) + '/h';
+  result := RName[i] + ': ' + S + ', min ' + IntToStr(RMin[i]);
   if RoomBusy(i) then result := result + ', BUSY (player)';
-end;
-
-function RmField(S: string; k: integer): string;
-var p, n: integer;
-  T: string;
-begin
-  T := Trim(S);
-  n := k;
-  while n > 0 do begin
-    p := Pos(' ', T);
-    if p = 0 then begin
-      result := '';
-      exit;
-    end;
-    T := Trim(Copy(T, p + 1, Length(T)));
-    Dec(n);
-  end;
-  p := Pos(' ', T);
-  if p > 0 then result := Copy(T, 1, p - 1) else result := T;
-end;
-
-// "name rate_per_hour maxseen" per line
-procedure RoomLoadStats(F: string);
-var L: TStringList;
-  i, k: integer;
-  S, N: string;
-begin
-  if not FileExists(F) then exit;
-  L := TStringList.Create;
-  L.LoadFromFile(F);
-  for i := 0 to L.Count - 1 do begin
-    S := L[i];
-    N := RmField(S, 0);
-    for k := 0 to RN - 1 do
-      if RName[k] = N then begin
-        RRate[k] := StrToIntDef(RmField(S, 1), 0) / 3600;
-        RMaxSeen[k] := StrToIntDef(RmField(S, 2), 0);
-      end;
-  end;
-  L.Free;
-end;
-
-procedure RoomSaveStats(F: string);
-var L: TStringList;
-  k: integer;
-begin
-  L := TStringList.Create;
-  L.Add('# room respawn learned by the bot: name mobs_per_hour most_seen');
-  for k := 0 to RN - 1 do
-    L.Add(RName[k] + ' ' + IntToStr(Round(RRate[k] * 3600)) + ' ' + IntToStr(RMaxSeen[k]));
-  try
-    L.SaveToFile(F);
-  except
-  end;
-  L.Free;
 end;
 
 end.

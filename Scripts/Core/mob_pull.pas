@@ -566,12 +566,6 @@ end;
 
 // ---------- run by the server path ----------
 
-function MpHex(Value: integer): string;
-begin
-  result := IntToHex(Value and $FF, 2) + IntToHex((Value shr 8) and $FF, 2) +
-            IntToHex((Value shr 16) and $FF, 2) + IntToHex((Value shr 24) and $FF, 2);
-end;
-
 procedure MpMoveReset();
 begin
   MpLX := User.X;
@@ -595,12 +589,8 @@ end;
 // one server path click (mouse click packet), remembered: it is NOT repeated on a timer - a new click
 // makes the server build the path anew, and its first node may lie behind us
 procedure MpClick(X, Y, Z: integer);
-var UX, UY, UZ: integer;
 begin
-  UX := User.X;
-  UY := User.Y;
-  UZ := User.Z;
-  NavSend('0F' + MpHex(X) + MpHex(Y) + MpHex(Z) + MpHex(UX) + MpHex(UY) + MpHex(UZ) + MpHex(1));
+  NavClick(X, Y, Z);                   // the move module sends the click
   MpClickX := X;
   MpClickY := Y;
   MpClickAt := GetTickCount;

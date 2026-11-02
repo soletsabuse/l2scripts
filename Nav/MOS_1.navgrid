@@ -1733,11 +1733,11 @@ K room_players 30
 K room_avoid 30
 K champ_hp 100000
 K room_order SEQ
-K nav_wp_cache_ms 100
 K debug 2
 K champion_alert 0
 K tap_always 1
 K spots_only 1
+K pickup 0
 K skip_champions 1
 K room_recount 1
 K room_ignore_way 1

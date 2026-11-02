@@ -1,12 +1,6 @@
          uses SysUtils;
 uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
 
-// the bot sends game events only to the script itself - pass them on to the library; do not remove
-procedure OnAction(Action: TL2Action; P1, P2: cardinal);
-begin
-  SpoilOnAction(Action, P1, P2);
-end;
-
 // All settings, rooms, farm spots and the safe point are in WORSHIP.navgrid (Library\Nav):
 // open it in Library\Nav\nav_view.html, button "Settings". A line after SetNavGrid overrides the file.
 
