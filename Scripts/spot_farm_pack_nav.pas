@@ -352,6 +352,7 @@ var
   PkEventsAt: cardinal;           // PkLightTick: the events were looked at then
   PkRunFailRoom, PkRunFails: integer;   // PkRunIntoRoom: stuck on the way to this room so many times in a row
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
+  PkActed: boolean;               // SelfBuffTick cast / WeaponTick put the weapon on (the target changed)
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -2258,6 +2259,7 @@ begin
     if BuffTime(ID) > 0 then continue;          // still on us
     if SpSkillLeft(SkillID) > 0 then continue;  // reuse
     Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
+    PkActed := true;
     Engine.UseSkill(SkillID);
     Delay(1500);
   end;
@@ -3893,6 +3895,7 @@ begin
   if (not IsOnline()) or User.Dead or TreeBusy or PkDaggerOn or PullTapActive() then exit;   // tree handler wears the bow / dagger on a fat mob on purpose
   if IsEquipped(WeaponID) then exit;
   Engine.Msg('[Weapon]', 'Weapon ' + IntToStr(WeaponID) + ' is not on (disarm?), equipping', 128);
+  PkActed := true;
   EquipWeapon(WeaponID);
 end;
 
@@ -4632,9 +4635,11 @@ begin
 end;
 
 // during a fight (every tick of it): the alerts, the zone, a disarm (the weapon back), an own buff that
-// ended - as their own threads did before, between the hits
-procedure PkFightTick();
+// ended - as their own threads did before, between the hits. true = a cast / the weapon put on: the
+// target in the game changed, the fight selects its own target again
+function PkFightTick(): boolean;
 begin
+  PkActed := false;
   PkLightTick();
   if GetTickCount - PkSelfBuffAt >= 1000 then begin
     PkSelfBuffAt := GetTickCount;
@@ -4645,13 +4650,14 @@ begin
     PkWeaponAt := GetTickCount;
     WeaponTick();
   end;
+  result := PkActed;
 end;
 
 procedure PkFight();
 var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, BestOID: integer;
   NextSpoil, IdleSince, SpoilCastAt, RangedSince, BestAt: cardinal;
   NearD0: double;
-  Running, WasRunning: boolean;
+  Running, WasRunning, TapWas: boolean;
   R, SpoilN: integer;
 begin
   OID := 0;
@@ -4679,12 +4685,14 @@ begin
     PkRangedSet := true;
   end;
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
-    PkFightTick();
+    if PkFightTick() then OID := 0;    // a cast / the weapon: our target is selected again below
     WasRunning := Running;             // the run to the target goes on only if the last tick ran too
     Running := false;
     PkCheckShooters();
     if PkCountFight() = 0 then break;  // the pack is dead
+    TapWas := PullTapActive();
     PkTapRestore();                    // the farm weapon back after the pull (until it is on)
+    if TapWas and (not PullTapActive()) then OID := 0;   // the weapon is back: our target selected again
 
     // the pack is down, a fat one is left -> dagger
     if (PkDaggerID > 0) and (not PkDaggerOn) and (not PullTapActive()) and PkOnlyFatLeft() then begin
@@ -4803,6 +4811,7 @@ begin
         if Engine.UseSkill(PkMassSpoil) then begin
           Inc(Casts);
           PkMarkSpoiled();
+          OID := 0;                    // after the cast our target is selected again
           SpoilCastAt := GetTickCount;
           Engine.Msg('[Pack]', 'Mass spoil #' + IntToStr(Casts) + ': ' + IntToStr(R) + ' of ' + IntToStr(SpoilN) +
             ' mobs near had fewer than ' + IntToStr(PkSpoilNeed()), 0);
