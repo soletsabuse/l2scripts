@@ -948,7 +948,7 @@ begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
-  Engine.SendToServer('0F' + ClickHex(X) + ClickHex(Y) + ClickHex(Z) +
+  NavSend('0F' + ClickHex(X) + ClickHex(Y) + ClickHex(Z) +
     ClickHex(UX) + ClickHex(UY) + ClickHex(UZ) + ClickHex(1));
 end;
 
@@ -1424,7 +1424,7 @@ begin
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
-  else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 400))
+  else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 0))
   else if K = 'nav_run' then NavSetRunSteps(UpperCase(V) = 'STEP')
   else if K = 'nav_step' then NavSetStepLen(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
@@ -1522,7 +1522,7 @@ end;
 // listId(4) entryId(4) amount(8) + 10 zero bytes + FEFF (no attribute) + 16 zero bytes.
 procedure MultisellBuy(EntryID, Amount: integer);
 begin
-  Engine.SendToServer('B0' + HexLE32(MULTISELL_ID) + HexLE32(EntryID) +
+  NavSend('B0' + HexLE32(MULTISELL_ID) + HexLE32(EntryID) +
     HexLE32(Amount) + '00000000' +
     '00000000000000000000' + 'FEFF' + '00000000000000000000000000000000');
 end;
@@ -1530,7 +1530,7 @@ end;
 // Asks the server for a fresh inventory list (RequestItemList 0x14), so the counts below are up to date.
 procedure RefreshInventory();
 begin
-  Engine.SendToServer(INVENTORY_PACKET);
+  NavSend(INVENTORY_PACKET);
   Delay(1500);
 end;
 
@@ -2357,7 +2357,7 @@ end;
 // RequestActionUse (56): action ID, ctrl, shift - how the client gives orders to the summon
 procedure PetAction(ActionID: integer);
 begin
-  Engine.SendToServer('56' + HexLE32(ActionID) + '00000000' + '00');
+  NavSend('56' + HexLE32(ActionID) + '00000000' + '00');
 end;
 
 function HaveSummon(): boolean;

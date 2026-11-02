@@ -556,7 +556,7 @@ begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
-  Engine.SendToServer('0F' + MpHex(X) + MpHex(Y) + MpHex(Z) + MpHex(UX) + MpHex(UY) + MpHex(UZ) + MpHex(1));
+  NavSend('0F' + MpHex(X) + MpHex(Y) + MpHex(Z) + MpHex(UX) + MpHex(UY) + MpHex(UZ) + MpHex(1));
   MpClickX := X;
   MpClickY := Y;
   MpClickAt := GetTickCount;
@@ -1000,7 +1000,7 @@ function MpCurrentWeapon(): integer;
 var i, Part: integer;
 begin
   result := 0;
-  Engine.SendToServer('14');
+  NavSend('14');
   Delay(1500);
   for i := 0 to Inventory.User.Count - 1 do begin
     if not Inventory.User.Items(i).Equipped then continue;
@@ -1024,7 +1024,7 @@ begin
     MpWearID := W;
     MpWearOK := false;
     MpWearUseAt := 0;
-    Engine.SendToServer('14');
+    NavSend('14');
     MpWearRefAt := T;
     exit;
   end;
@@ -1045,7 +1045,7 @@ begin
     exit;
   end;
   if T - MpWearUseAt < 1000 then exit;
-  Engine.SendToServer('14');
+  NavSend('14');
   MpWearRefAt := T;
 end;
 
