@@ -272,6 +272,8 @@ const
   PK_EXTRA_RANGE    = 300;      // pack farm: pack full -> still take free mobs this close (on the way)
   PK_BACK_PENALTY   = 400;      // pack farm: pull order - a mob behind us costs this much extra distance
   PK_HIT_RANGE      = 80;       // pack farm: auto attack only this close; farther -> run by the server path
+  PK_MELEE_REACH    = 200;      // pack farm: a mob hitting us this close is always a target (a big mob hits
+                                // from 100+), whatever the hit range / the corner zone
   PK_STUCK_MS       = 1500;     // pack farm: running to a mob without moving this long (wall) -> skip it
   PK_POINT_STUCK_MS = 3000;     // pack farm: running to a point without moving this long -> give up
   PK_PULL_MIN_HP    = 50;       // pack farm: HP % below this -> stop pulling, fight what we have
@@ -4406,6 +4408,7 @@ end;
 function PkBestTarget(CurOID, MaxReach: integer): integer;
 var i, j, UX, UY, NX, NY, MX, MY, Score, BestScore, CurScore: integer;
   AX, AY, BX, BY, LA, LB, Tie, BestTie, CosLim, QX, QY: double;
+  HitsUs: boolean;
 begin
   result := 0;
   UX := User.X;
@@ -4421,8 +4424,9 @@ begin
     AX := NX - UX;
     AY := NY - UY;
     LA := Sqrt(AX * AX + AY * AY);
-    if LA > MaxReach then continue;
-    if (PkCorner >= 0) and (PkCornerR > 0) and (LA > PK_HIT_RANGE) then begin
+    HitsUs := (NpcList(i).AtkOID = User.OID) and (LA <= PK_MELEE_REACH);
+    if (LA > MaxReach) and (not HitsUs) then continue;
+    if (PkCorner >= 0) and (PkCornerR > 0) and (LA > PK_HIT_RANGE) and (not HitsUs) then begin
       // SetCornerRadius: run only to mobs inside the corner zone, never to a wall-stuck one
       QX := NX - PkCX;
       QY := NY - PkCY;
@@ -4775,8 +4779,9 @@ begin
     TY := NpcList(Idx).Y;
 
     // no corner / inside the corner zone, target farther than the hit -> run to it by the server
-    // path (Attack runs straight)
-    if PkDist(TX, TY) > PK_HIT_RANGE then begin
+    // path (Attack runs straight); one that hits us right next to us: just the auto attack
+    if (PkDist(TX, TY) > PK_HIT_RANGE) and
+       not ((NpcList(Idx).AtkOID = User.OID) and (PkDist(TX, TY) <= PK_MELEE_REACH)) then begin
       if (not WasRunning) or (OID <> RunOID) then NavMoveReset();
       Running := true;
       if NavStillMs() > PK_STUCK_MS then begin

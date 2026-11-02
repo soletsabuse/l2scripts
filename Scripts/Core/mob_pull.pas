@@ -1465,6 +1465,7 @@ begin
         end else if GetTickCount - TapStart > MpTapMs + 6000 then begin
           Engine.Msg('[Pull]', 'Tap weapon did not go on for ' + PullNpcName(Idx) + ', skipping it', 0);
           PullIgnore(OID, MpIgnoreMs);
+          Engine.CancelTarget;         // the skipped mob does not stay in the target (the fight later)
           Tapping := false;
           OID := 0;
           continue;
@@ -1473,6 +1474,7 @@ begin
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
         Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land, skipping it', 0);
         PullIgnore(OID, MpIgnoreMs);
+        Engine.CancelTarget;           // the skipped mob does not stay in the target (the fight later)
         Tapping := false;
         OID := 0;
         continue;
