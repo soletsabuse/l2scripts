@@ -1476,7 +1476,6 @@ K room_avoid 2
 K champ_hp 50000
 K room_order SEQ
 K room_cycle_wait 30
-K nav_wp_cache_ms 103
 K debug 2
 K champion_alert 0
 K tap_always 1
