@@ -1379,22 +1379,9 @@ begin
       break;
     end;
   end;
-  // none, or only the node under our feet (a narrow place: nothing has the margin) -> the farthest in
-  // sight without the margin (the old rule); clicking the node we stand on never moves us
-  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then begin
-    Best := 0;
-    for k := n - 1 downto 1 do begin
-      i := NmRouteAt(R, k);
-      PX := NavX[i];
-      PY := NavY[i];
-      if NmLineFree(UX, UY, PX, PY, false) then begin
-        Best := k;
-        break;
-      end;
-    end;
-  end;
-  // still the node we stand on -> the next node of the route (a graph link from it: walkable)
-  if (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) and (Best + 1 < n) then Inc(Best);
+  // none, or only the node under our feet (a narrow place: nothing has the margin; clicking the node we
+  // stand on never moves us) -> false: the caller clicks the target itself, the server builds the way
+  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then exit;
   i := NmRouteAt(R, Best);
   NmWpX := NavX[i];
   NmWpY := NavY[i];
