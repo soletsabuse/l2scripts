@@ -1300,6 +1300,7 @@ var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Tapped, Tapping, TapOk: boolean;
   TapTries: integer;                   // tap again from right next to it (the whole room must aggro)
   TapHitSaid: boolean;                 // debug log: "hit, waiting for the aggro" said for this tap
+  TapHitAt: cardinal;                  // the tap hit landed then: no more hits, wait for its aggro
   DbgAt: cardinal;                     // debug log: the last state line
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
@@ -1515,6 +1516,7 @@ begin
         if MpDist(MX, MY) > MpTapRange then begin
           if LastSend = 0 then MpMoveReset();
           if MpStillMs() > MpStuckMs then begin
+            MpMsg('Cannot get to ' + PullNpcName(Idx) + ' (stuck on the way), skipping it');
             PullIgnore(OID, MpSkipMs);
             OID := 0;
             continue;
@@ -1532,6 +1534,7 @@ begin
         TapCloseUntil := 0;
         TapTries := 0;
         TapHitSaid := false;
+        TapHitAt := 0;
         TapHP0 := NpcList(Idx).CurHP;
         Engine.SetTarget(OID);
       end;
@@ -1540,9 +1543,23 @@ begin
       // stay where it is (a priest): we go on hitting it until it comes or the tap time is over
       LastGain := GetTickCount;        // a tap going on is not "no new aggro" (it has its own time limits)
       HP := NpcList(Idx).CurHP;
-      if (HP < TapHP0) and (not TapHitSaid) then begin
-        TapHitSaid := true;
-        Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ', hitting on until it aggroes');
+      // one hit is enough: as soon as it landed the target goes off (no 2nd swing) and we wait for its
+      // aggro up to 1.5 s; it does not come -> it is hit again
+      if (HP < TapHP0) and (TapHitAt = 0) then begin
+        TapHitAt := GetTickCount;
+        Engine.CancelTarget;
+        Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ', waiting for its aggro');
+      end;
+      if TapHitAt <> 0 then begin
+        if GetTickCount - TapHitAt < 1500 then begin
+          Delay(MpTickMs);
+          continue;
+        end;
+        Dbg('[Pull]', 'no aggro 1.5 s after the hit on ' + IntToStr(OID) + ' - hitting again');
+        TapHitAt := 0;
+        TapHP0 := HP;                  // the next hit is seen against the HP now
+        TapArmedAt := GetTickCount;    // its own tap time
+        Engine.SetTarget(OID);
       end;
       // tap_ms counts from the moment the tap weapon is really on (a short run to the mob: the swap was not
       // done yet and the time ran out before a single hit - it ran up to the mob and away); the swap

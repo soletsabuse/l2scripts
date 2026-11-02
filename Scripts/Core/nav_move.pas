@@ -1296,6 +1296,17 @@ begin
   if (NmFTX[f] <> X) or (NmFTY[f] <> Y) or (NmFVer[f] <> NmBadVer) then result := NmRouteFull(X, Y);
 end;
 
+// distance from X, Y to graph node i
+function NmDist2(X, Y, i: integer): double;
+var DX, DY: double;
+begin
+  result := 1E18;
+  if (i < 0) or (i >= NavN) then exit;
+  DX := NavX[i] - X;
+  DY := NavY[i] - Y;
+  result := Sqrt(DX * DX + DY * DY);
+end;
+
 // nodes in a route of NmRoute
 function NmRouteCount(R: string): integer;
 var p: integer;
@@ -1329,7 +1340,7 @@ end;
 // where to click now on the way to X, Y: the farthest node of the route that is in sight of us
 // (a short cut over the nodes before it); false = the target is in sight itself, or no way
 function NavWaypoint(X, Y: integer): boolean;
-var k, i, UX, UY, PX, PY: integer;
+var k, i, n, Best, UX, UY, PX, PY: integer;
   R: string;
 begin
   result := false;
@@ -1355,19 +1366,40 @@ begin
   NmWcRes := false;
   if NmRunFree(UX, UY, X, Y) then exit;   // straight to it
   R := NmRoute(X, Y);
-  for k := NmRouteCount(R) - 1 downto 0 do begin
+  n := NmRouteCount(R);
+  if n = 0 then exit;
+  // the farthest route node in sight with the run margin
+  Best := -1;
+  for k := n - 1 downto 0 do begin
     i := NmRouteAt(R, k);
-    if i < 0 then continue;
     PX := NavX[i];
     PY := NavY[i];
-    if (k = 0) or NmRunFree(UX, UY, PX, PY) then begin
-      NmWpX := PX;
-      NmWpY := PY;
-      result := true;
-      NmWcRes := true;
-      exit;
+    if NmRunFree(UX, UY, PX, PY) then begin
+      Best := k;
+      break;
     end;
   end;
+  // none, or only the node under our feet (a narrow place: nothing has the margin) -> the farthest in
+  // sight without the margin (the old rule); clicking the node we stand on never moves us
+  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then begin
+    Best := 0;
+    for k := n - 1 downto 1 do begin
+      i := NmRouteAt(R, k);
+      PX := NavX[i];
+      PY := NavY[i];
+      if NmLineFree(UX, UY, PX, PY, false) then begin
+        Best := k;
+        break;
+      end;
+    end;
+  end;
+  // still the node we stand on -> the next node of the route (a graph link from it: walkable)
+  if (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) and (Best + 1 < n) then Inc(Best);
+  i := NmRouteAt(R, Best);
+  NmWpX := NavX[i];
+  NmWpY := NavY[i];
+  result := true;
+  NmWcRes := true;
 end;
 
 function NavWpX(): integer;
