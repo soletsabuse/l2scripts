@@ -145,7 +145,6 @@ var
   // read of NavRoute go between NmLock / NmUnlock, a long run copies it out first
   NavRoute: array of integer;
   NavRouteN: integer;
-  NmLockFlag: boolean;
   // way tables (NmFieldOf), up to 12 targets: for every node the way along the graph to the target and
   // the next node toward it - counted once per target, a route from us is then a few line checks
   NmFD: array of double;                // slot * NavN + node: the way (>= 1E17 = none)
@@ -155,7 +154,6 @@ var
   NmFOn: array[0..11] of boolean;
   NmFSize: integer;                     // NavN the tables are made for
   NmBadVer: integer;                    // +1 on every node left out (the tables are counted again)
-  NmSendFlag: boolean;                  // NavSend: a packet is going out right now
   NavBuilt, NavOn, NavBusyFlag: boolean;
 
 procedure NavSetZone(ZoneFile: string);
@@ -229,10 +227,9 @@ end;
 // the server builds the way itself
 procedure NavSend(Hex: string);
 begin
-  while NmSendFlag do Delay(1);
-  NmSendFlag := true;
+  Script.Lock;
   Engine.SendToServer(Hex);
-  NmSendFlag := false;
+  Script.Unlock;
 end;
 
 procedure NavClick(X, Y, Z: integer);
@@ -943,16 +940,16 @@ begin
 end;
 
 // one thread at a time in the route planning (two threads re-allocating the same arrays broke the
-// script: "Invalid pointer operation" / access violation). Hold it short: no runs inside
+// script: "Invalid pointer operation" / access violation). The bot's own lock for globals shared by
+// threads (Script.Lock): no Delay / runs inside, it is held for a count only
 procedure NmLock();
 begin
-  while NmLockFlag do Delay(2);
-  NmLockFlag := true;
+  Script.Lock;
 end;
 
 procedure NmUnlock();
 begin
-  NmLockFlag := false;
+  Script.Unlock;
 end;
 
 // the way table of the target X, Y (a slot of NmFD / NmFN): kept while the target is within 64, no

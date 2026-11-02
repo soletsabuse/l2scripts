@@ -43,6 +43,10 @@ function PullMobTarget(i: integer): integer;     // OID of whom NpcList(i) targe
 function PullCountAggro(): integer;
 function PullIsShooter(OID: integer): boolean;    // the mob is on the ignore list (PullIgnoreID) / a skipped champion
 function PullIsShooterAt(i: integer): boolean;    // the same for NpcList(i) (no search by OID: cheap)
+// NpcList(i) has a name of the ignore list (PullIgnoreName). The name is read once per NPC kind (ID)
+// and remembered - no string read from the bot's objects every tick (they are freed under us)
+function PullNameIgnored(i: integer): boolean;
+function PullNpcName(i: integer): string;        // name of NpcList(i) for a log line; '' = gone
 procedure PullSkipChampions(MinMaxHP: integer);   // mobs with MaxHP above this: never pulled / fought (0 = off)
 function PullIsChampion(i: integer): boolean;     // NpcList(i) is a live champion skipped by PullSkipChampions
 procedure PullSetPackLive(Enable: boolean);       // true: pack = on us + every free mob of the area, every tick
@@ -97,6 +101,9 @@ var
   MpTapWeapon, MpTapRange, MpFarmWeapon: integer;
   MpTapAlways: boolean;
   MpNames: array of string;
+  MpNkID: array[0..511] of integer;      // PullNameIgnored: NPC kinds seen ...
+  MpNkIgn: array[0..511] of boolean;     // ... their name is on the ignore list
+  MpNkN: integer;
   MpIgnIDs: array of integer;   // PullIgnoreID
   MpChampHP: integer;           // PullSkipChampions: 0 = champions are mobs like any other
   MpPackLive: boolean;          // PullSetPackLive: the pack size follows the free mobs (a room: respawn joins)
@@ -300,6 +307,7 @@ begin
   MpInit();
   SetLength(MpNames, Length(MpNames) + 1);
   MpNames[Length(MpNames) - 1] := LowerCase(Name);
+  MpNkN := 0;
 end;
 
 procedure PullIgnore(OID, Ms: integer);
@@ -479,25 +487,63 @@ function MpIdx(OID: integer): integer;
 var i: integer;
 begin
   result := -1;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if NpcList(i).OID = OID then begin
       result := i;
       exit;
     end;
 end;
 
-function MpNameIgnored(i: integer): boolean;
-var k: integer;
-  N: string;
+function PullNpcName(i: integer): string;
+var Mob: TL2Npc;
+begin
+  result := '';
+  if (i < 0) or (i >= NpcList.Count) then exit;
+  Mob := NpcList(i);
+  if Mob <> nil then result := Mob.Name;
+end;
+
+function PullNameIgnored(i: integer): boolean;
+var k, ID, Cnt: integer;
+  Nm: string;
+  Mob: TL2Npc;
+  Found: boolean;
 begin
   result := false;
   if Length(MpNames) = 0 then exit;
-  N := LowerCase(NpcList(i).Name);
-  for k := 0 to Length(MpNames) - 1 do
-    if N = MpNames[k] then begin
-      result := true;
-      exit;
+  if (i < 0) or (i >= NpcList.Count) then exit;
+  Mob := NpcList(i);
+  if Mob = nil then exit;
+  ID := Mob.ID;
+  Found := false;
+  Script.Lock;                         // the table is shared by the threads (farm, events, watch)
+  for k := 0 to MpNkN - 1 do
+    if MpNkID[k] = ID then begin
+      result := MpNkIgn[k];
+      Found := true;
+      break;
     end;
+  Script.Unlock;
+  if Found then exit;
+  Nm := LowerCase(Mob.Name);            // a new kind: its name once
+  for k := 0 to Length(MpNames) - 1 do
+    if Nm = MpNames[k] then begin
+      result := true;
+      break;
+    end;
+  Script.Lock;
+  Cnt := MpNkN;
+  if Cnt <= 511 then begin
+    MpNkID[Cnt] := ID;
+    MpNkIgn[Cnt] := result;
+    MpNkN := Cnt + 1;
+  end;
+  Script.Unlock;
+end;
+
+function MpNameIgnored(i: integer): boolean;
+begin
+  result := PullNameIgnored(i);
 end;
 
 function MpWhitelisted(i: integer): boolean;
@@ -730,7 +776,7 @@ function PullCountAggro(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if PullIsAggro(i) then Inc(result);
 end;
 
@@ -789,7 +835,7 @@ begin
   MpCntSkip := 0;
   for Pass := 0 to 1 do begin
     BestD := 999999999;
-    for i := 0 to NpcList.Count - 1 do begin
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
       if NpcList(i).Dead or MpNameIgnored(i) then continue;
       if PullIsAggro(i) then continue;
       if not MpWhitelisted(i) then continue;
@@ -890,7 +936,7 @@ function MpCountFreeAll(): integer;
 var i: integer;
 begin
   result := 0;
-  for i := 0 to NpcList.Count - 1 do
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
     if MpFreeOK(i) then Inc(result);
 end;
 
@@ -900,7 +946,7 @@ var i, NX, NY: integer;
 begin
   MpInit();
   result := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not MpFreeOK(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -929,7 +975,7 @@ begin
   MpInit();
   result := 0;
   n := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not MpFreeOK(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -986,7 +1032,7 @@ function MpEquipped(ItemID: integer): boolean;
 var i, ID: integer;
 begin
   result := false;
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     ID := Inventory.User.Items(i).ID;
     if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
       result := true;
@@ -1002,7 +1048,7 @@ begin
   result := 0;
   NavSend('14');
   Delay(1500);
-  for i := 0 to Inventory.User.Count - 1 do begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     if not Inventory.User.Items(i).Equipped then continue;
     Part := Inventory.User.Items(i).BodyPart;
     if (Part = $0080) or (Part = $4000) then begin
@@ -1111,7 +1157,7 @@ var i, NX, NY: integer;
 begin
   MpHavePack := false;
   MpFarD := 0;
-  for i := 0 to NpcList.Count - 1 do begin
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PullIsAggro(i) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -1190,7 +1236,7 @@ begin
     if MpFarD > MpWaitD0 - 100 then begin   // it does not come (wall): not waiting for it
       Idx := MpIdx(MpWaitOID);
       if Idx >= 0 then
-        Engine.Msg('[Pull]', NpcList(Idx).Name + ' does not come (' + IntToStr(Round(MpFarD)) + '), not waiting for it', 0);
+        Engine.Msg('[Pull]', PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) + '), not waiting for it', 0);
       PullForget(MpWaitOID, MpIgnoreMs);
       MpWaiting := false;
       exit;
@@ -1290,7 +1336,7 @@ begin
           if MpFarD > MpWaitD0 - 100 then begin
             Idx := MpIdx(MpWaitOID);
             if Idx >= 0 then
-              Engine.Msg('[Pull]', NpcList(Idx).Name + ' does not come (' + IntToStr(Round(MpFarD)) +
+              Engine.Msg('[Pull]', PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) +
                 '), not waiting for it', 0);
             PullForget(MpWaitOID, MpIgnoreMs);
             MpWaiting := false;
@@ -1390,7 +1436,7 @@ begin
         continue;
       end;
       if GetTickCount - TapStart > MpTapMs then begin
-        Engine.Msg('[Pull]', 'Tap on ' + NpcList(Idx).Name + ' did not land, skipping it', 0);
+        Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land, skipping it', 0);
         PullIgnore(OID, MpIgnoreMs);
         Tapping := false;
         OID := 0;
@@ -1404,7 +1450,7 @@ begin
       NearSince := 0;
       if LastSend = 0 then MpMoveReset();
       if (GetTickCount - ApproachSince > MpApproachMs) or (MpStillMs() > MpStuckMs) then begin
-        Engine.Msg('[Pull]', 'Cannot get to ' + NpcList(Idx).Name + ' (wall?), skipping it', 0);
+        Engine.Msg('[Pull]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
         PullIgnore(OID, MpSkipMs);
         OID := 0;
         continue;
