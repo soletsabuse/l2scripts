@@ -865,6 +865,7 @@ var j, OID, PetOID: integer;
   N: string;
 begin
   result := true;
+  if (i < 0) or (i >= NpcList.Count) then exit;   // the list shrank meanwhile: skip it
   OID := NpcList(i).OID;
   for j := 0 to PetList.Count - 1 do begin
     PetOID := PetList(j).OID;
@@ -1424,6 +1425,8 @@ begin
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
   else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 400))
+  else if K = 'nav_run' then NavSetRunSteps(UpperCase(V) = 'STEP')
+  else if K = 'nav_step' then NavSetStepLen(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
   else if K = 'champ_hp' then SetChampionHP(StrToIntDef(V, 0))
   else if K = 'room_order' then PkRoomSeq := UpperCase(V) = 'SEQ'
@@ -5538,11 +5541,13 @@ end;
 
 // highest OID of private messages we already know (new ones have a bigger OID)
 function LastPrivateOID(): cardinal;
-var i: integer;
+var i, n: integer;
   M: TChatMessage;
 begin
   result := 0;
-  for i := 0 to History.Count(mtPrivate) - 1 do begin
+  n := History.Count(mtPrivate);       // the bot trims the history meanwhile: the count checked every line
+  for i := 0 to n - 1 do begin
+    if i >= History.Count(mtPrivate) then break;
     M := History.GetMessage(i, mtPrivate);
     if M.OID > result then result := M.OID;
   end;
@@ -5550,22 +5555,25 @@ end;
 
 // ---- champions (SetChampionAlert): a mob with a lot of HP appeared ----
 
-procedure OnChampionDetected(i: integer);
-var MaxHP: integer;
+procedure OnChampionDetected(Name: string; MaxHP: integer);
 begin
-  MaxHP := NpcList(i).MaxHP;
-  Alert('[Champion]', NpcList(i).Name + ' (' + IntToStr(MaxHP) + ' HP) spawned in the farm area', DEFAULT_CHAMPION_SOUND);
+  Alert('[Champion]', Name + ' (' + IntToStr(MaxHP) + ' HP) spawned in the farm area', DEFAULT_CHAMPION_SOUND);
 end;
 
+// the lists (players, mobs, history) change in the bot's thread while we go over them: the count is
+// checked before every item and each one is read once into locals (a stale index broke the script
+// with "Invalid pointer operation" when mobs died / a champion came)
 procedure Events_Thread();
 var
   Seen, Cur: array of integer;   // OIDs of players near us: last poll / this poll
   SeenChamp: array of integer;   // OIDs of champions we already reported
-  i, j, n, OID, X, Y, Z, MaxHP: integer;
+  i, j, n, Cnt, OID, X, Y, Z, MaxHP: integer;
   Known: boolean;
   MaxOID: cardinal;
   M: TChatMessage;
-  Me: string;
+  Me, Nm: string;
+  Ch: TL2Char;
+  Mob: TL2Npc;
 begin
   SetLength(Seen, 0);
   SetLength(SeenChamp, 0);
@@ -5580,14 +5588,18 @@ begin
     // --- players: alert once when a player comes into range, forget when he leaves ---
     if PlayerAlertRange > 0 then begin
       SetLength(Cur, 0);
-      for i := 0 to CharList.Count - 1 do begin
-        X := CharList(i).X;
-        Y := CharList(i).Y;
-        Z := CharList(i).Z;
+      Cnt := CharList.Count;
+      for i := 0 to Cnt - 1 do begin
+        if i >= CharList.Count then break;
+        Ch := CharList(i);
+        if Ch = nil then continue;
+        X := Ch.X;
+        Y := Ch.Y;
+        Z := Ch.Z;
         if User.DistTo(X, Y, Z) > PlayerAlertRange then continue;
-        if IsFriendly(CharList(i)) then continue;
+        if IsFriendly(Ch) then continue;
 
-        OID := CharList(i).OID;
+        OID := Ch.OID;
         n := Length(Cur);
         SetLength(Cur, n + 1);
         Cur[n] := OID;
@@ -5595,7 +5607,7 @@ begin
         Known := false;
         for j := 0 to Length(Seen) - 1 do
           if Seen[j] = OID then begin Known := true; break; end;
-        if not Known then OnPlayerDetected(CharList(i));
+        if not Known then OnPlayerDetected(Ch);
       end;
       SetLength(Seen, Length(Cur));
       for i := 0 to Length(Cur) - 1 do Seen[i] := Cur[i];
@@ -5604,7 +5616,9 @@ begin
     // --- private messages: everything with a new OID, except our own replies ---
     if PrivateAlert then begin
       Me := User.Name;
-      for i := 0 to History.Count(mtPrivate) - 1 do begin
+      Cnt := History.Count(mtPrivate);
+      for i := 0 to Cnt - 1 do begin
+        if i >= History.Count(mtPrivate) then break;
         M := History.GetMessage(i, mtPrivate);
         if M.OID <= MaxOID then continue;
         MaxOID := M.OID;
@@ -5615,18 +5629,23 @@ begin
     // --- champions: alive mob with MaxHP above ChampionMinHP, once per mob ---
     if ChampionMinHP > 0 then begin
       SetLength(Cur, 0);
-      for i := 0 to NpcList.Count - 1 do begin
-        if NpcList(i).Dead then continue;
-        MaxHP := NpcList(i).MaxHP;
+      Cnt := NpcList.Count;
+      for i := 0 to Cnt - 1 do begin
+        if i >= NpcList.Count then break;
+        Mob := NpcList(i);
+        if Mob = nil then continue;
+        if Mob.Dead then continue;
+        MaxHP := Mob.MaxHP;
         if MaxHP <= ChampionMinHP then continue;
         if IsIgnoredNpc(i) then continue;
         // only champions in our farm area: the zone, or (no zone) FREE_RADIUS around the start point
-        X := NpcList(i).X;
-        Y := NpcList(i).Y;
-        Z := NpcList(i).Z;
+        X := Mob.X;
+        Y := Mob.Y;
+        Z := Mob.Z;
         if not InFarmArea(X, Y, Z) then continue;
 
-        OID := NpcList(i).OID;
+        OID := Mob.OID;
+        Nm := Mob.Name;
         n := Length(Cur);
         SetLength(Cur, n + 1);
         Cur[n] := OID;
@@ -5634,7 +5653,7 @@ begin
         Known := false;
         for j := 0 to Length(SeenChamp) - 1 do
           if SeenChamp[j] = OID then begin Known := true; break; end;
-        if not Known then OnChampionDetected(i);
+        if not Known then OnChampionDetected(Nm, MaxHP);
       end;
       // remember only champions that are still around (dead / gone -> forgotten)
       SetLength(SeenChamp, Length(Cur));
