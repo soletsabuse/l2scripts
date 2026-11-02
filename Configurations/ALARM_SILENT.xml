@@ -22,7 +22,14 @@
   </Event>
   <Navi/>
   <NpcFilter/>
-  <ItemFilter/>
+  <ItemFilter>
+    <Item_0 ObjName="Elven Ring Piece" ObjType="0" ID="1903" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+    <Item_1 ObjName="Onyx Beast's Eye Earring Gemstone" ObjType="0" ID="1905" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+    <Item_2 ObjName="Scroll: Cancel Sleep" ObjType="0" ID="6037" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+    <Item_3 ObjName="STR Dye &lt;STR + 1 CON - 1&gt;" ObjType="0" ID="4469" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+    <Item_4 ObjName="Recipe: Earring of Seal" ObjType="0" ID="2166" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+    <Item_5 ObjName="Earring of Protection Gemstone" ObjType="0" ID="1911" FGrade="0" FPickup="false" FInFight="false" FFightR="150" FNpc="false" FNpcV="3" FNpcAgro="false" PCount="false" PCountV="1" PCond="0" PCondV="0" PLoad="false" PLoadV="55" FDel="true" FCry="0" FDelC="true" FDelCV="55" FDelL="false" FDelLV="54" FDelLVL="0" FPrior="0"/>
+  </ItemFilter>
   <NpcFilterDef>
     <Item_0 ObjName="All monsters" ObjType="0" ID="0" FAction="1" FPriority="1" FPriority2="1" FAtkAlone="false" FAtkAloneV1="400" FAtkAloneC="0" FAtkAloneV2="3" FDodge="false" FDodgeV="300" FCAtk="false" FPosition="false" FPosX="0" FPosY="0" FPosZ="0" FPosR="0" FC="0" FV="0" NPCFV2="" FNpcIncPrior="false" FNpcIncPriorV1="" FNpcIncPriorV2="0"/>
     <Item_1 ObjName="All NPC" ObjType="1" ID="0" FAction="0" FPriority="1" FPriority2="1" FAtkAlone="false" FAtkAloneV1="400" FAtkAloneC="0" FAtkAloneV2="3" FDodge="false" FDodgeV="300" FCAtk="false" FPosition="false" FPosX="0" FPosY="0" FPosZ="0" FPosR="0" FC="0" FV="0" NPCFV2="" FNpcIncPrior="false" FNpcIncPriorV1="" FNpcIncPriorV2="0"/>
