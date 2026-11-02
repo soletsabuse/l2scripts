@@ -862,7 +862,6 @@ end;
 // NPC i is on the ignore list, or it is one of OUR pets / summons
 function IsIgnoredNpc(i: integer): boolean;
 var j, OID, PetOID: integer;
-  N: string;
 begin
   result := true;
   if (i < 0) or (i >= NpcList.Count) then exit;   // the list shrank meanwhile: skip it
@@ -872,13 +871,9 @@ begin
     if OID = PetOID then exit;
   end;
 
-  result := false;
-  N := LowerCase(NpcList(i).Name);
-  for j := 0 to Length(IgnoreNames) - 1 do
-    if N = IgnoreNames[j] then begin
-      result := true;
-      exit;
-    end;
+  // the names (AddIgnoreName) are the pull module's list too: judged once per NPC kind there - no
+  // string read from the bot's objects every tick
+  result := PullNameIgnored(i);
 end;
 
 procedure AddSkill(Owner, ID, Kind, IntervalMs, Param: integer);
@@ -2042,28 +2037,13 @@ begin
   end;
 end;
 
-// "spoil activated" / "already spoiled" arrived since the last call: the event flag
-// (SpoilOnAction), or a new line in the system chat history
+// "spoil activated" / "already spoiled" arrived since the last call: the event flag (SpoilOnAction).
+// The system chat history is not read any more: the bot frees old lines while we read them, and a
+// line freed under us broke the script ("Invalid pointer operation") in the middle of a mass spoil
 function SpSpoilMsg(): boolean;
-var i, n: integer;
-  M: TChatMessage;
-  T: string;
 begin
   result := SpoilMsgFlag;
   SpoilMsgFlag := false;
-  // the history grows / is trimmed in the bot's thread while we read it: the count is checked before
-  // every line - no try (a try here broke the script with "Invalid
-  // pointer operation" when we died in a fight: new lines came in the middle of the loop)
-  n := History.Count(mtSystem);
-  for i := 0 to n - 1 do begin
-    if i >= History.Count(mtSystem) then break;
-    M := History.GetMessage(i, mtSystem);
-    if M.OID <= SpLastSysOID then continue;
-    SpLastSysOID := M.OID;
-    T := LowerCase(M.Text);
-    if (Pos('spoil condition has been activated', T) > 0) or
-       (Pos('already been spoiled', T) > 0) then result := true;
-  end;
 end;
 
 // one step on the mob: too far -> run to it (server path); right next to it (or Force) ->
@@ -2221,7 +2201,7 @@ begin
       HPSince := GetTickCount;
     end;
     if GetTickCount - HPSince >= SP_NODMG_MS then begin
-      Engine.Msg('[Spoil]', 'No damage on ' + NpcList(Idx).Name + ', skipping it for a while', 0);
+      Engine.Msg('[Spoil]', 'No damage on ' + PullNpcName(Idx) + ', skipping it for a while', 0);
       SpIgnore(OID);
       Engine.CancelTarget;
       SpTarget := 0;
@@ -2249,14 +2229,14 @@ begin
         // it hits us -> it is reachable: keep running to it, no skip for being stuck
         // (only a safety limit of 2 x SP_APPROACH_MS for a stale "attacks us" flag)
         if GetTickCount - FarSince >= 2 * SP_APPROACH_MS then begin
-          Engine.Msg('[Spoil]', 'Cannot get to ' + NpcList(Idx).Name + ' (aggro), skipping it for a while', 0);
+          Engine.Msg('[Spoil]', 'Cannot get to ' + PullNpcName(Idx) + ' (aggro), skipping it for a while', 0);
           SpIgnore(OID);
           SpTarget := 0;
           exit;
         end;
       end else if (GetTickCount - FarSince >= SP_APPROACH_MS) or
                   (GetTickCount - MovedSince >= SP_STUCK_MS) then begin
-        Engine.Msg('[Spoil]', 'Cannot get to ' + NpcList(Idx).Name + ', skipping it for a while', 0);
+        Engine.Msg('[Spoil]', 'Cannot get to ' + PullNpcName(Idx) + ', skipping it for a while', 0);
         SpIgnore(OID);
         SpTarget := 0;
         exit;
@@ -4285,26 +4265,10 @@ begin
 end;
 
 // spoil messages since PkSpoilCountReset: "spoil condition has been activated" (spoiled now) +
-// "already been spoiled" - one per mob hit by the mass spoil. The event and the chat history are
-// two sources of the same lines: the bigger count wins
+// "already been spoiled" - one per mob hit by the mass spoil, counted by the event (SpoilOnAction)
 function PkSpoilCount(): integer;
-var i, n: integer;
-  M: TChatMessage;
-  T: string;
 begin
-  n := History.Count(mtSystem);        // no try: see SpSpoilMsg
-  for i := 0 to n - 1 do begin
-    if i >= History.Count(mtSystem) then break;
-    M := History.GetMessage(i, mtSystem);
-    if M.OID <= SpLastSysOID then continue;
-    SpLastSysOID := M.OID;
-    T := LowerCase(M.Text);
-    if (Pos('spoil condition has been activated', T) > 0) or
-       (Pos('already been spoiled', T) > 0) then Inc(PkHistSpoil);
-  end;
-  result := PkEvSpoil;
-  if PkHistSpoil > result then result := PkHistSpoil;
-  if result > 0 then PkSeenSpoilMsg := true;
+  result := PkEvSpoil;                 // events only: see SpSpoilMsg
 end;
 
 // a mass spoil is cast now: remember every live mob close enough to be hit (aggro or not - each one
@@ -4654,7 +4618,7 @@ begin
           HuntOID := TX;
           Idx := SpMobIdx(TX);
           if Idx >= 0 then
-            Engine.Msg('[Pack]', NpcList(Idx).Name + ' stays ' + IntToStr(Round(PkNearD)) + ' away and does not come - running to kill it', 0);
+            Engine.Msg('[Pack]', PullNpcName(Idx) + ' stays ' + IntToStr(Round(PkNearD)) + ' away and does not come - running to kill it', 0);
           RangedSince := 0;
           IdleSince := 0;
           continue;
@@ -4693,7 +4657,7 @@ begin
       Running := true;
       if PkStillMs() > PK_STUCK_MS then begin
         // the server finds no way to it (behind a wall): skip it
-        Engine.Msg('[Pack]', 'Cannot get to ' + NpcList(Idx).Name + ' (wall?), skipping it', 0);
+        Engine.Msg('[Pack]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
         SpIgnore(OID);
         if OID = HuntOID then HuntOID := 0;
         BestAt := 0;                   // pick another one now
@@ -4855,7 +4819,7 @@ begin
   end;
   PkPatrolOn := false;
   Idx := SpMobIdx(OID);
-  if Idx >= 0 then PkState('one by one: running at ' + NpcList(Idx).Name);
+  if Idx >= 0 then PkState('one by one: running at ' + PullNpcName(Idx));
   Started := GetTickCount;
   First := true;
   while not AoeMustStop() do begin
@@ -4871,7 +4835,7 @@ begin
       PullChase(OID, First);           // by the nav map, through it, no stops
       First := false;
       if PkStillMs() > PK_POINT_STUCK_MS then begin
-        Engine.Msg('[Hunt]', 'Cannot get to ' + NpcList(Idx).Name + ', skipping it', 0);
+        Engine.Msg('[Hunt]', 'Cannot get to ' + PullNpcName(Idx) + ', skipping it', 0);
         PullForget(OID, SP_IGNORE_MS);
         exit;
       end;
@@ -5309,7 +5273,7 @@ begin
     if OID = 0 then continue;
     Idx := FindNpcIdxByOID(OID);
     if (Idx >= 0) and IsIgnoredNpc(Idx) then begin
-      Engine.Msg('[Target]', 'Ignored NPC ' + NpcList(Idx).Name + ', dropping target', 0);
+      Engine.Msg('[Target]', 'Ignored NPC ' + PullNpcName(Idx) + ', dropping target', 0);
       Engine.CancelTarget;
     end;
   end;
@@ -5572,12 +5536,14 @@ var
   MaxOID: cardinal;
   M: TChatMessage;
   Me, Nm: string;
+  PmCount: integer;              // private history lines at the last look
   Ch: TL2Char;
   Mob: TL2Npc;
 begin
   SetLength(Seen, 0);
   SetLength(SeenChamp, 0);
   MaxOID := LastPrivateOID();   // old messages are not events
+  PmCount := -1;
 
   while Delay(EVENTS_POLL_MS) do begin
     if not IsOnline() then begin
@@ -5614,9 +5580,11 @@ begin
     end;
 
     // --- private messages: everything with a new OID, except our own replies ---
-    if PrivateAlert then begin
+    Cnt := 0;
+    if PrivateAlert then Cnt := History.Count(mtPrivate);
+    if PrivateAlert and (Cnt <> PmCount) then begin   // the history is read only when it changed
+      PmCount := Cnt;
       Me := User.Name;
-      Cnt := History.Count(mtPrivate);
       for i := 0 to Cnt - 1 do begin
         if i >= History.Count(mtPrivate) then break;
         M := History.GetMessage(i, mtPrivate);
