@@ -89,6 +89,7 @@ unit SpotFarmPackNav;
 interface
 
 uses SysUtils, Classes, NavMove in 'Core\nav_move.pas', MobPull in 'Core\mob_pull.pas',
+  DbgLog in 'Core\dbg_log.pas',
   RoomFarm in 'Core\room_farm.pas';
 
 // ===================== Supplies for AddSupply (value = inventory item ID) =====================
@@ -272,8 +273,6 @@ const
   PK_EXTRA_RANGE    = 300;      // pack farm: pack full -> still take free mobs this close (on the way)
   PK_BACK_PENALTY   = 400;      // pack farm: pull order - a mob behind us costs this much extra distance
   PK_HIT_RANGE      = 80;       // pack farm: auto attack only this close; farther -> run by the server path
-  PK_MELEE_REACH    = 200;      // pack farm: a mob hitting us this close is always a target (a big mob hits
-                                // from 100+), whatever the hit range / the corner zone
   PK_STUCK_MS       = 1500;     // pack farm: running to a mob without moving this long (wall) -> skip it
   PK_POINT_STUCK_MS = 3000;     // pack farm: running to a point without moving this long -> give up
   PK_PULL_MIN_HP    = 50;       // pack farm: HP % below this -> stop pulling, fight what we have
@@ -352,9 +351,11 @@ var
   PkStopCodeSaid: integer;        // PackTick: the stop reason said last ...
   PkStopSaidAt: cardinal;         // ... and when
   PkEventsAt: cardinal;           // PkLightTick: the events were looked at then
+  PkDbgViewAt: cardinal;          // PkFight: the last "who is there" debug snapshot
   PkRunFailRoom, PkRunFails: integer;   // PkRunIntoRoom: stuck on the way to this room so many times in a row
   PkWeaponAt, PkSelfBuffAt: cardinal;   // PkFightTick: the weapon / own buffs were looked at then
   PkActed: boolean;               // SelfBuffTick cast / WeaponTick put the weapon on (the target changed)
+  PkDbgFile: string;              // debug_file: '0' = no debug log file (default: on)
 
 // ===================== Events (players around, private messages) =====================
 // Defaults (ON) are applied in RunFarm for everything the spot script did not set.
@@ -1367,6 +1368,7 @@ begin
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
+  else if K = 'debug_file' then PkDbgFile := V
   else if K = 'spoil_per_mob' then PkSpoilPerMob := StrToIntDef(V, PK_SPOIL_PER_MOB)
   else if K = 'nav_wp_cache_ms' then NavSetWpCache(StrToIntDef(V, 500))
   else if K = 'nav_clear' then NavSetRunClear(StrToIntDef(V, 40))
@@ -3963,6 +3965,7 @@ begin
     PkDebug := 1;
     PkDebugSet := true;
   end;
+  if (S <> PkLastState) and DbgOn() then Dbg('[State]', S);
   if PkDebug <= 0 then exit;
   if (S = PkLastState) and (GetTickCount - PkStateAt < 30000) then exit;
   PkLastState := S;
@@ -4393,6 +4396,30 @@ begin
   result := PkSnapN;
 end;
 
+// debug log: the fight's view of every mob near - distance to us / to the spot, attacks / targets us,
+// fight mob, ignored
+procedure PkDbgFight(Tag: string);
+var i, OID, NX, NY, Atk, Tgt: integer;
+begin
+  if not DbgOn() then exit;
+  Dbg(Tag, 'fight view: corner ' + IntToStr(PkCorner) + ' r ' + IntToStr(PkCornerR) + ' spot ' + IntToStr(PkCX) + ',' +
+    IntToStr(PkCY) + ' we d=' + IntToStr(Round(PkDist(PkCX, PkCY))) + ' hp ' + IntToStr(User.HP) + ' gameTarget ' +
+    IntToStr(TargetOID()));
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    if PkDist(NX, NY) > 1000 then continue;
+    OID := NpcList(i).OID;
+    Atk := NpcList(i).AtkOID;
+    Tgt := PullMobTarget(i);
+    Dbg(Tag, '  ' + IntToStr(OID) + ' ' + PullNpcName(i) + ' d=' + IntToStr(Round(PkDist(NX, NY))) + ' dSpot=' +
+      IntToStr(Round(Sqrt(Sqr(NX - PkCX) + Sqr(NY - PkCY)))) + ' atk=' + IntToStr(Ord(Atk = User.OID)) + ' tgt=' +
+      IntToStr(Ord(Tgt = User.OID)) + ' fight=' + IntToStr(Ord(PkFightMob(i))) + ' shooter/champ=' +
+      IntToStr(Ord(PullIsShooterAt(i))) + ' ign=' + IntToStr(Ord(SpIgnored(OID))) + ' hp%=' + IntToStr(NpcList(i).CurHP));
+  end;
+end;
+
 function PkCountFight(): integer;
 var i: integer;
 begin
@@ -4408,7 +4435,6 @@ end;
 function PkBestTarget(CurOID, MaxReach: integer): integer;
 var i, j, UX, UY, NX, NY, MX, MY, Score, BestScore, CurScore: integer;
   AX, AY, BX, BY, LA, LB, Tie, BestTie, CosLim, QX, QY: double;
-  HitsUs: boolean;
 begin
   result := 0;
   UX := User.X;
@@ -4424,9 +4450,8 @@ begin
     AX := NX - UX;
     AY := NY - UY;
     LA := Sqrt(AX * AX + AY * AY);
-    HitsUs := (NpcList(i).AtkOID = User.OID) and (LA <= PK_MELEE_REACH);
-    if (LA > MaxReach) and (not HitsUs) then continue;
-    if (PkCorner >= 0) and (PkCornerR > 0) and (LA > PK_HIT_RANGE) and (not HitsUs) then begin
+    if LA > MaxReach then continue;
+    if (PkCorner >= 0) and (PkCornerR > 0) and (LA > PK_HIT_RANGE) then begin
       // SetCornerRadius: run only to mobs inside the corner zone, never to a wall-stuck one
       QX := NX - PkCX;
       QY := NY - PkCY;
@@ -4663,7 +4688,11 @@ var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, 
   NearD0: double;
   Running, WasRunning, TapWas: boolean;
   R, SpoilN: integer;
+  DbgAt: cardinal;
 begin
+  Dbg('[Fight]', 'start');
+  PkDbgFight('[Fight]');
+  DbgAt := 0;
   OID := 0;
   Running := false;
   RunOID := 0;
@@ -4689,11 +4718,19 @@ begin
     PkRangedSet := true;
   end;
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
-    if PkFightTick() then OID := 0;    // a cast / the weapon: our target is selected again below
+    DbgTick();
+    if PkFightTick() then begin
+      Dbg('[Fight]', 'a cast / the weapon in the fight -> target again');
+      OID := 0;                        // a cast / the weapon: our target is selected again below
+    end;
     WasRunning := Running;             // the run to the target goes on only if the last tick ran too
     Running := false;
     PkCheckShooters();
-    if PkCountFight() = 0 then break;  // the pack is dead
+    if PkCountFight() = 0 then begin  // the pack is dead
+      Dbg('[Fight]', 'end: no fight mob left');
+      PkDbgFight('[Fight]');
+      break;
+    end;
     TapWas := PullTapActive();
     PkTapRestore();                    // the farm weapon back after the pull (until it is on)
     if TapWas and (not PullTapActive()) then OID := 0;   // the weapon is back: our target selected again
@@ -4732,6 +4769,17 @@ begin
       end;
       NewOID := BestOID;
     end;
+    if DbgOn() and (GetTickCount - DbgAt >= 250) then begin
+      DbgAt := GetTickCount;
+      Dbg('[Fight]', 'tick oid ' + IntToStr(OID) + ' new ' + IntToStr(NewOID) + ' hunt ' + IntToStr(HuntOID) + ' reach ' +
+        IntToStr(Reach) + ' fights ' + IntToStr(PkCountFight()) + ' aggro ' + IntToStr(PkCountAggro()) + ' gameTarget ' +
+        IntToStr(TargetOID()) + ' idle ' + IntToStr(Ord(IdleSince <> 0)) + ' hp ' + IntToStr(User.HP) + ' still ' +
+        IntToStr(NavStillMs()));
+      if (NewOID = 0) and (GetTickCount - PkDbgViewAt >= 2000) then begin
+        PkDbgViewAt := GetTickCount;
+        PkDbgFight('[Fight]');         // nobody to hit: who is there and why not
+      end;
+    end;
     if NewOID = 0 then begin
       // corner, nobody within the hit yet: stand in the corner, they come to us
       if IdleSince = 0 then IdleSince := GetTickCount;
@@ -4744,6 +4792,7 @@ begin
         TX := PkNearestFight();
         if (TX <> 0) and (TX = NearOID) and (PkNearD > NearD0 - 50) then begin
           HuntOID := TX;
+          Dbg('[Fight]', 'hunt ' + IntToStr(TX) + ' (stays ' + IntToStr(Round(PkNearD)) + ' away)');
           Idx := SpMobIdx(TX);
           if Idx >= 0 then
             Engine.Msg('[Pack]', PullNpcName(Idx) + ' stays ' + IntToStr(Round(PkNearD)) + ' away and does not come - running to kill it', 0);
@@ -4754,6 +4803,8 @@ begin
         RangedSince := 0;              // it comes (or another one is nearest): look again
       end;
       if GetTickCount - IdleSince > PK_FIGHT_IDLE_MS then begin
+        Dbg('[Fight]', 'end: nobody came to the corner');
+        PkDbgFight('[Fight]');
         Engine.Msg('[Pack]', 'Nobody comes to the corner, fight over', 0);
         break;
       end;
@@ -4767,6 +4818,7 @@ begin
     RangedSince := 0;
     if NewOID <> OID then begin
       OID := NewOID;
+      Dbg('[Fight]', 'SetTarget ' + IntToStr(OID));
       Engine.SetTarget(OID);
     end;
 
@@ -4779,14 +4831,14 @@ begin
     TY := NpcList(Idx).Y;
 
     // no corner / inside the corner zone, target farther than the hit -> run to it by the server
-    // path (Attack runs straight); one that hits us right next to us: just the auto attack
-    if (PkDist(TX, TY) > PK_HIT_RANGE) and
-       not ((NpcList(Idx).AtkOID = User.OID) and (PkDist(TX, TY) <= PK_MELEE_REACH)) then begin
+    // path (Attack runs straight)
+    if PkDist(TX, TY) > PK_HIT_RANGE then begin
       if (not WasRunning) or (OID <> RunOID) then NavMoveReset();
       Running := true;
       if NavStillMs() > PK_STUCK_MS then begin
         // the server finds no way to it (behind a wall): skip it
         Engine.Msg('[Pack]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
+        Dbg('[Fight]', 'skip ' + IntToStr(OID) + ': stuck running to it d=' + IntToStr(Round(PkDist(TX, TY))));
         SpIgnore(OID);
         if OID = HuntOID then HuntOID := 0;
         BestAt := 0;                   // pick another one now
@@ -5663,6 +5715,7 @@ begin
   NextWeapon := 0;
   if (PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0) then EventsInit();
   while Delay(PK_TICK_MS) do begin
+    DbgTick();
     if HasLogin and (GetTickCount >= NextLogin) then begin
       NextLogin := GetTickCount + 5000;
       LoginTick();
@@ -5737,6 +5790,7 @@ begin
     if AoeEnabled or SpoilEnabled or CasterEnabled then
       Engine.Msg('[Init]', 'SetPackFarm wins: SetAoeFarm / SetSpoilFarm / SetCasterFarm are not used with it', 128);
     Engine.Msg('[Init]', 'Pack farm: one thread', 0);
+    if PkDbgFile <> '0' then DbgStart(User.Name);
     PackMain();
     exit;
   end;

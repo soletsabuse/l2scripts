@@ -19,7 +19,7 @@ unit MobPull;
 
 interface
 
-uses SysUtils, Classes, NavMove in 'Core\nav_move.pas';
+uses SysUtils, Classes, NavMove in 'Core\nav_move.pas', DbgLog in 'Core\dbg_log.pas';
 
 procedure PullSetMobs(IDs: array of integer);    // mob IDs to pull; [] = any mob (from a script)
 procedure PullClearMobs();                       // no mob list = any mob
@@ -47,6 +47,7 @@ function PullIsShooterAt(i: integer): boolean;    // the same for NpcList(i) (no
 // and remembered - no string read from the bot's objects every tick (they are freed under us)
 function PullNameIgnored(i: integer): boolean;
 function PullNpcName(i: integer): string;        // name of NpcList(i) for a log line; '' = gone
+procedure PullDbgMobs(Tag: string);              // debug log: every mob near with all the pull's verdicts on it
 procedure PullSkipChampions(MinMaxHP: integer);   // mobs with MaxHP above this: never pulled / fought (0 = off)
 function PullIsChampion(i: integer): boolean;     // NpcList(i) is a live champion skipped by PullSkipChampions
 procedure PullSetPackLive(Enable: boolean);       // true: pack = on us + every free mob of the area, every tick
@@ -920,6 +921,38 @@ begin
 end;
 
 // every free mob we may take now (the area / the room polygon, our floor)
+procedure MpMsg(Text: string);
+begin
+  Engine.Msg('[Pull]', Text, 0);
+  Dbg('[Pull]', Text);
+end;
+
+// debug log: every live mob within 2500 - distance, on us / free / skipped / champion / area / floor
+procedure PullDbgMobs(Tag: string);
+var i, OID, NX, NY, NZ, Atk, Tgt: integer;
+  S: string;
+begin
+  if not DbgOn() then exit;
+  Dbg(Tag, 'mobs (OID name dist atk tgt | aggro free skip hard champ area z):');
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if MpDist(NX, NY) > 2500 then continue;
+    OID := NpcList(i).OID;
+    Atk := NpcList(i).AtkOID;
+    Tgt := PullMobTarget(i);
+    S := '  ' + IntToStr(OID) + ' ' + PullNpcName(i) + ' d=' + IntToStr(Round(MpDist(NX, NY))) +
+      ' atk=' + IntToStr(Ord(Atk = User.OID)) + ' tgt=' + IntToStr(Ord(Tgt = User.OID)) +
+      ' | ' + IntToStr(Ord(PullIsAggro(i))) + ' ' + IntToStr(Ord(MpFreeOK(i))) + ' ' +
+      IntToStr(Ord(MpSkipped(OID))) + ' ' + IntToStr(Ord(MpSkippedHard(OID))) + ' ' +
+      IntToStr(Ord(PullIsChampion(i))) + ' ' + IntToStr(Ord(PullInArea(NX, NY, NZ))) + ' ' +
+      IntToStr(Ord(MpZOk(NZ))) + ' z=' + IntToStr(NZ - User.Z);
+    Dbg(Tag, S);
+  end;
+end;
+
 function MpCountFreeAll(): integer;
 var i: integer;
 begin
@@ -1236,7 +1269,7 @@ begin
     MpWaitOID := MpFarOID;
     MpWaitD0 := MpFarD;
     MpWaitAt := GetTickCount;
-    Engine.Msg('[Pull]', 'Pack stretched (' + IntToStr(Round(MpFarD)) + ') on the way to the spot, zigzag', 0);
+    MpMsg('Pack stretched (' + IntToStr(Round(MpFarD)) + ') on the way to the spot, zigzag');
   end else if MpWaiting and (MpFarD < LimLo) then MpWaiting := false;
   if not MpWaiting then exit;
   if MpFarOID <> MpWaitOID then begin
@@ -1247,7 +1280,7 @@ begin
     if MpFarD > MpWaitD0 - 100 then begin   // it does not come (wall): not waiting for it
       Idx := MpIdx(MpWaitOID);
       if Idx >= 0 then
-        Engine.Msg('[Pull]', PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) + '), not waiting for it', 0);
+        MpMsg(PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) + '), not waiting for it');
       PullForget(MpWaitOID, MpIgnoreMs);
       MpWaiting := false;
       exit;
@@ -1266,6 +1299,7 @@ var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
   Tapped, Tapping, TapOk: boolean;
   TapTries: integer;                   // tap again from right next to it (the whole room must aggro)
+  DbgAt: cardinal;                     // debug log: the last state line
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
 begin
@@ -1289,7 +1323,12 @@ begin
   MpDirY := User.Y;
   MpWaiting := false;                  // a new pull: no waiting carried over
   PackMax := MpPack;
+  DbgAt := 0;
+  Dbg('[Pull]', 'start: pack ' + IntToStr(MpPack) + ' live ' + IntToStr(Ord(MpPackLive)) + ' leash ' + IntToStr(MpLeash) +
+    ' tap ' + IntToStr(MpTapWeapon) + ' always ' + IntToStr(Ord(MpTapAlways)) + ' room pts ' + IntToStr(PpN));
+  PullDbgMobs('[Pull]');
   while not MpMustStop() do begin
+    DbgTick();
     PullCheckShooters();
     Cnt := PullCountAggro();
     result := Cnt;
@@ -1300,33 +1339,41 @@ begin
       // moment, at the edge) made it say "2 -> 3" again and again
       if Limit > PackMax then begin
         if PackMax > 0 then
-          Engine.Msg('[Pull]', 'New mobs in the room: pack ' + IntToStr(PackMax) + ' -> ' + IntToStr(Limit), 0);
+          MpMsg('New mobs in the room: pack ' + IntToStr(PackMax) + ' -> ' + IntToStr(Limit));
         PackMax := Limit;
       end;
       MpPack := Limit;
     end;
     if Cnt <> Prev then begin
       if Cnt > Prev then LastGain := GetTickCount;
-      Engine.Msg('[Pull]', 'Aggro ' + IntToStr(Cnt) + '/' + IntToStr(MpPack), 0);
+      MpMsg('Aggro ' + IntToStr(Cnt) + '/' + IntToStr(MpPack));
       Prev := Cnt;
     end;
     if Cnt >= MpPackMult * MpPack then begin
-      Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ' (' + IntToStr(MpPackMult) + ' packs)', 0);
+      MpMsg('Pull end: ' + IntToStr(Cnt) + ' (' + IntToStr(MpPackMult) + ' packs)');
+
+      PullDbgMobs('[Pull] end');
       exit;
     end;
     Limit := 999999;
     if Cnt >= MpPack then Limit := MpExtraRange;   // pack full: only free mobs right on the way
     if Cnt > 0 then begin
       if User.HP < MpMinHP then begin
-        Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ', HP low', 0);
+        MpMsg('Pull end: ' + IntToStr(Cnt) + ', HP low');
+
+        PullDbgMobs('[Pull] end');
         exit;
       end;
       if GetTickCount - LastGain > MpNoGainMs then begin
-        Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ', no new aggro ' + IntToStr(MpNoGainMs div 1000) + ' sec', 0);
+        MpMsg('Pull end: ' + IntToStr(Cnt) + ', no new aggro ' + IntToStr(MpNoGainMs div 1000) + ' sec');
+
+        PullDbgMobs('[Pull] end');
         exit;
       end;
       if GetTickCount - Started > MpMaxMs then begin
-        Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ', pull time is over', 0);
+        MpMsg('Pull end: ' + IntToStr(Cnt) + ', pull time is over');
+
+        PullDbgMobs('[Pull] end');
         exit;
       end;
     end;
@@ -1342,7 +1389,7 @@ begin
         MpWaitOID := MpFarOID;
         MpWaitD0 := MpFarD;
         MpWaitAt := GetTickCount;
-        Engine.Msg('[Pull]', 'Pack stretched (' + IntToStr(Round(MpFarD)) + '), zigzag until it catches up', 0);
+        MpMsg('Pack stretched (' + IntToStr(Round(MpFarD)) + '), zigzag until it catches up');
       end else if MpWaiting and (MpFarD < LimLo) then begin
         MpWaiting := false;
         OID := 0;                      // pick the next mob from here
@@ -1358,8 +1405,8 @@ begin
           if MpFarD > MpWaitD0 - 100 then begin
             Idx := MpIdx(MpWaitOID);
             if Idx >= 0 then
-              Engine.Msg('[Pull]', PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) +
-                '), not waiting for it', 0);
+              MpMsg(PullNpcName(Idx) + ' does not come (' + IntToStr(Round(MpFarD)) +
+                '), not waiting for it');
             PullForget(MpWaitOID, MpIgnoreMs);
             MpWaiting := false;
             continue;
@@ -1372,7 +1419,9 @@ begin
         // nothing more to pull (or the pack is full): no use waiting here - to the fight, the
         // lagging ones come to the corner
         MpWaiting := false;
-        Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ', nothing more to pull, no zigzag', 0);
+        MpMsg('Pull end: ' + IntToStr(Cnt) + ', nothing more to pull, no zigzag');
+
+        PullDbgMobs('[Pull] end');
         exit;
       end;
       if MpWaiting then begin
@@ -1383,18 +1432,47 @@ begin
       end;
     end;                               // (an aggro flicker does not end the wait)
 
+    if DbgOn() and (GetTickCount - DbgAt >= 250) then begin
+      DbgAt := GetTickCount;
+      Idx := MpIdx(OID);
+      if Idx >= 0 then
+        Dbg('[Pull]', 'tick cnt ' + IntToStr(Cnt) + '/' + IntToStr(MpPack) + ' lim ' + IntToStr(Limit) + ' oid ' +
+          IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(NpcList(Idx).X, NpcList(Idx).Y))) +
+          ' aggro=' + IntToStr(Ord(PullIsAggro(Idx))) + ' free=' + IntToStr(Ord(MpFreeOK(Idx))) +
+          ' tapping=' + IntToStr(Ord(Tapping)) + ' armed=' + IntToStr(Ord(TapArmedAt <> 0)) + ' tries=' +
+          IntToStr(TapTries) + ' wait=' + IntToStr(Ord(MpWaiting)) + ' far=' + IntToStr(Round(MpFarD)) +
+          ' still=' + IntToStr(MpStillMs()) + ' gain=' + IntToStr(GetTickCount - LastGain) + ' t=' +
+          IntToStr(GetTickCount - Started) + ' gameTgt=' + IntToStr(Ord(User.Target <> nil)))
+      else
+        Dbg('[Pull]', 'tick cnt ' + IntToStr(Cnt) + '/' + IntToStr(MpPack) + ' lim ' + IntToStr(Limit) + ' oid ' +
+          IntToStr(OID) + ' wait=' + IntToStr(Ord(MpWaiting)) + ' far=' + IntToStr(Round(MpFarD)) + ' gain=' +
+          IntToStr(GetTickCount - LastGain) + ' t=' + IntToStr(GetTickCount - Started));
+    end;
+
     // the pull mob aggroed / died / vanished / too far for an extra -> the next one
     if OID <> 0 then begin
       Idx := MpIdx(OID);
-      if (Idx < 0) or NpcList(Idx).Dead or PullIsAggro(Idx) or PullIsShooter(OID) then OID := 0
-      else begin
+      if (Idx < 0) or NpcList(Idx).Dead or PullIsAggro(Idx) or PullIsShooter(OID) then begin
+        if Idx < 0 then Dbg('[Pull]', 'target ' + IntToStr(OID) + ' dropped: gone')
+        else Dbg('[Pull]', 'target ' + IntToStr(OID) + ' dropped: dead ' + IntToStr(Ord(NpcList(Idx).Dead)) +
+          ' aggro ' + IntToStr(Ord(PullIsAggro(Idx))) + ' shooter/champ ' + IntToStr(Ord(PullIsShooter(OID))));
+        OID := 0;
+      end else begin
         MX := NpcList(Idx).X;
         MY := NpcList(Idx).Y;
-        if MpDist(MX, MY) > Limit then OID := 0;
+        if MpDist(MX, MY) > Limit then begin
+          Dbg('[Pull]', 'target ' + IntToStr(OID) + ' dropped: d=' + IntToStr(Round(MpDist(MX, MY))) + ' > lim ' + IntToStr(Limit));
+          OID := 0;
+        end;
       end;
     end;
     if OID = 0 then begin
       OID := MpFindFree(Limit);
+      if OID <> 0 then begin
+        Idx := MpIdx(OID);
+        if Idx >= 0 then Dbg('[Pull]', 'new target ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' +
+          IntToStr(Round(MpDist(NpcList(Idx).X, NpcList(Idx).Y))) + ' (lim ' + IntToStr(Limit) + ')');
+      end;
       Tapped := false;
       Tapping := false;
       NearSince := 0;
@@ -1403,18 +1481,19 @@ begin
       if OID = 0 then begin
         if Cnt > 0 then begin
           if Cnt >= MpPack then
-            Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ' (pack full, nothing close)', 0)
+            MpMsg('Pull end: ' + IntToStr(Cnt) + ' (pack full, nothing close)')
           else
-            Engine.Msg('[Pull]', 'Pull end: ' + IntToStr(Cnt) + ', no free mobs: ' + IntToStr(MpCntAll) +
+            MpMsg('Pull end: ' + IntToStr(Cnt) + ', no free mobs: ' + IntToStr(MpCntAll) +
               ' of the list in sight, ' + IntToStr(MpCntArea) + ' out of the area, ' + IntToStr(MpCntRange) +
               ' farther than pull_range, ' + IntToStr(MpCntZ) + ' on another floor, ' + IntToStr(MpCntSkip) +
-              ' skipped / ignored', 0);
+              ' skipped / ignored');
+          PullDbgMobs('[Pull] end');
         end;
         if (Cnt = 0) and ((MpWhyAt = 0) or (GetTickCount - MpWhyAt > 10000)) then begin
           MpWhyAt := GetTickCount;
-          Engine.Msg('[Pull]', 'Nothing to pull: ' + IntToStr(MpCntAll) + ' mobs of the list in sight, ' +
+          MpMsg('Nothing to pull: ' + IntToStr(MpCntAll) + ' mobs of the list in sight, ' +
             IntToStr(MpCntArea) + ' out of the area' + ', ' + IntToStr(MpCntZ) + ' on another floor, ' +
-            IntToStr(MpCntSkip) + ' skipped for a while', 0);
+            IntToStr(MpCntSkip) + ' skipped for a while');
         end;
         exit;                          // nothing on us and nothing to pull: the caller idles
       end;
@@ -1446,6 +1525,7 @@ begin
           continue;
         end;
         Tapping := true;
+        Dbg('[Pull]', 'tap start on ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(MX, MY))));
         TapStart := GetTickCount;
         TapArmedAt := 0;
         TapCloseUntil := 0;
@@ -1456,6 +1536,8 @@ begin
       HP := NpcList(Idx).CurHP;
       // landed: its HP went down, or it is on us now (a fat mob: one tap may not move its HP %)
       if (HP < TapHP0) or PullIsAggro(Idx) then begin
+        Dbg('[Pull]', 'tap landed on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ' aggro ' +
+          IntToStr(Ord(PullIsAggro(Idx))));
         PullIgnore(OID, MpTapSkipMs);  // hit: it comes after us now
         Tapping := false;
         OID := 0;
@@ -1466,10 +1548,11 @@ begin
       // itself gets 6 s more at most
       if TapArmedAt = 0 then begin
         if MpTapReady() then begin
+          Dbg('[Pull]', 'tap weapon on after ' + IntToStr(GetTickCount - TapStart) + ' ms');
           TapArmedAt := GetTickCount;
           Engine.SetTarget(OID);       // the swap (UseItem) may have dropped the target
         end else if GetTickCount - TapStart > MpTapMs + 6000 then begin
-          Engine.Msg('[Pull]', 'Tap weapon did not go on for ' + PullNpcName(Idx) + ', skipping it', 0);
+          MpMsg('Tap weapon did not go on for ' + PullNpcName(Idx) + ', skipping it');
           PullIgnore(OID, MpIgnoreMs);
           Engine.CancelTarget;         // the skipped mob does not stay in the target (the fight later)
           Tapping := false;
@@ -1481,8 +1564,8 @@ begin
       // only then it is skipped - every mob of the room must come
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) and (TapTries < 2) then begin
         Inc(TapTries);
-        Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land - right up to it, again (' +
-          IntToStr(TapTries) + '/2)', 0);
+        MpMsg('Tap on ' + PullNpcName(Idx) + ' did not land - right up to it, again (' +
+          IntToStr(TapTries) + '/2)');
         TapCloseUntil := GetTickCount + 2000;
         TapArmedAt := GetTickCount;
         MpMoveReset();
@@ -1501,7 +1584,7 @@ begin
         Engine.SetTarget(OID);
       end;
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > MpTapMs) then begin
-        Engine.Msg('[Pull]', 'Tap on ' + PullNpcName(Idx) + ' did not land, skipping it', 0);
+        MpMsg('Tap on ' + PullNpcName(Idx) + ' did not land, skipping it');
         PullIgnore(OID, MpIgnoreMs);
         Engine.CancelTarget;           // the skipped mob does not stay in the target (the fight later)
         Tapping := false;
@@ -1516,7 +1599,7 @@ begin
       NearSince := 0;
       if LastSend = 0 then MpMoveReset();
       if (GetTickCount - ApproachSince > MpApproachMs) or (MpStillMs() > MpStuckMs) then begin
-        Engine.Msg('[Pull]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
+        MpMsg('Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it');
         PullIgnore(OID, MpSkipMs);
         OID := 0;
         continue;
