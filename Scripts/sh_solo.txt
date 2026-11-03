@@ -55,6 +55,15 @@ begin
   // extra names to never target (other players' summons, chests... are skipped by default)
   // AddIgnoreName('Some Mob');
 
+  // champions (MaxHP above SetChampionHP): true = never taken as a new target, not run to, not hit by
+  // our AoE - fought only when the champion is on us / the summon itself
+  SetSkipChampions(true);
+  // SetChampionHP(100000);   // a mob with MaxHP above this is a champion (the champion alert too)
+
+  // ===== "player close" alert: these nicks never trigger it (own chars, friends) =====
+  // AddNoAlertPlayer('MyOtherChar');
+  // AddNoAlertPlayer('Friend');
+
   // ===== rebuff: watched buff ID + buff bypasses =====
   // buff running out -> fight off until OUT of combat -> safe point (if set) -> summon ->
   // buff (only out of combat) -> supplies
