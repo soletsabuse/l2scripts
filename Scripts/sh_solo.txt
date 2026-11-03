@@ -25,7 +25,7 @@ begin
   AddMySkill(1343, KIND_DRAIN,  60);       // Vortex Dark
   AddMySkill(1341, KIND_NUKE,  6500);       // Wind Vortex
   AddMySkill(1239, KIND_NUKE,   0);       // Death Spike
-  AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
+  //AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
 
   AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
@@ -61,7 +61,12 @@ begin
   // SetChampionHP(100000);   // a mob with MaxHP above this is a champion (the champion alert too)
 
   // ===== "player close" alert: these nicks never trigger it (own chars, friends) =====
-  // AddNoAlertPlayer('MyOtherChar');
+   AddNoAlertPlayer('kkk');
+   AddNoAlertPlayer('eee');
+   AddNoAlertPlayer('elephantKING');
+   AddNoAlertPlayer('antKING');
+   AddNoAlertPlayer('horseKING');
+   //AddNoAlertPlayer();
   // AddNoAlertPlayer('Friend');
 
   // ===== rebuff: watched buff ID + buff bypasses =====
