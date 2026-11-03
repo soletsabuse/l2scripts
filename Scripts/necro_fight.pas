@@ -83,6 +83,11 @@ procedure SetFreeRadius(Range: integer);
 procedure SetHeightRange(Z: integer);
 procedure SetCastRange(Range: integer);
 procedure AddIgnoreName(Name: string);
+// true: a champion (MaxHP above SetChampionHP) is never taken as a new target, run to or hit by our AoE -
+// it is fought only when it is on us / the summon itself
+procedure SetSkipChampions(Skip: boolean);
+procedure SetChampionHP(HP: integer);          // a mob with MaxHP above this is a champion (default 100000; the alert too)
+procedure AddNoAlertPlayer(Name: string);      // no "player close" alert for this nick (own chars, friends)
 procedure RunNecro();
 procedure NecroOnAction(Action: TL2Action; P1, P2: cardinal);
 
@@ -157,6 +162,9 @@ var
   HeightRange: integer;                    // SetHeightRange: mobs higher / lower than this are not taken (0 = any)
   HeightSet: boolean;                   // SetCastRange: farther than this -> walk closer first (DUseSkill does not walk)
   IgnoreNames: array of string;   // lower case
+  SkipChamps: boolean;                     // SetSkipChampions: a champion only when it is on us / the summon
+  ChampHP: integer;                        // SetChampionHP (0 = CHAMPION_HP)
+  NoAlertNames: array of string;           // AddNoAlertPlayer, lower case
   BuffID: integer;                         // SetBuff: watched buff (0 = no rebuff)
   BuffBypasses, SummonBuffBypasses: array of string;
   SummonBuffID: integer;                   // SetSummonBuff: buff watched on the summon (0 = same as ours)
@@ -384,6 +392,31 @@ begin
   IgnoreNames[n] := LowerCase(Name);
 end;
 
+procedure SetSkipChampions(Skip: boolean);
+begin
+  SkipChamps := Skip;
+end;
+
+procedure SetChampionHP(HP: integer);
+begin
+  ChampHP := HP;
+end;
+
+procedure AddNoAlertPlayer(Name: string);
+var n: integer;
+begin
+  n := Length(NoAlertNames);
+  SetLength(NoAlertNames, n + 1);
+  NoAlertNames[n] := LowerCase(Trim(Name));
+end;
+
+// a mob with MaxHP above this is a champion
+function ChampLimit(): integer;
+begin
+  result := ChampHP;
+  if result <= 0 then result := CHAMPION_HP;
+end;
+
 // never targeted by default (other players' summons, chests...); our own summon is skipped anyway
 procedure AddDefaultIgnoreNames();
 begin
@@ -586,6 +619,45 @@ begin
   if i >= 0 then result := NpcList(i).CurHP;
 end;
 
+// SetSkipChampions: a champion NOT busy with us / the summon within Radius of X, Y (our AoE there would pull it)
+function FreeChampNear(X, Y, Radius: integer): boolean;
+var i, Atk, Tgt, PetOID: integer;
+  DX, DY: double;
+  T: TL2Live;
+begin
+  result := false;
+  if not SkipChamps then exit;
+  PetOID := 0;
+  if PetList.Count > 0 then PetOID := PetList(0).OID;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead or IsIgnored(i) then continue;
+    if NpcList(i).MaxHP <= ChampLimit() then continue;
+    DX := NpcList(i).X - X;
+    DY := NpcList(i).Y - Y;
+    if Sqrt(DX * DX + DY * DY) > Radius then continue;
+    Atk := NpcList(i).AtkOID;
+    Tgt := 0;
+    T := NpcList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    if (Atk = User.OID) or (Tgt = User.OID) then continue;          // on us: may be hit
+    if (PetOID <> 0) and ((Atk = PetOID) or (Tgt = PetOID)) then continue;
+    result := true;
+    exit;
+  end;
+end;
+
+// our AoE around the target would catch a champion not on us
+function AoeHitsFreeChamp(OID, Radius: integer): boolean;
+var t: integer;
+begin
+  result := false;
+  if not SkipChamps then exit;
+  t := NpcIdx(OID);
+  if t < 0 then exit;
+  if Radius <= 0 then Radius := AOE_RADIUS;
+  result := FreeChampNear(NpcList(t).X, NpcList(t).Y, Radius);
+end;
+
 // alive mobs (target included) within Radius of the target; Radius 0 = AOE_RADIUS
 function MobsAround(OID, Radius: integer): integer;
 var i, t, TX, TY, NX, NY: integer;
@@ -641,9 +713,11 @@ begin
             (not MobHasBuff(OID, MySkillID[k])) and (DebuffAge(k, OID) >= cardinal(MySkillParam[k]))
     else if Kind = KIND_AOE then
       Ok := ((MySkillCastRange[k] <= 0) or (MobDist(OID) <= MySkillCastRange[k])) and   // target in cast range
-            (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS)
+            (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS) and
+            (not AoeHitsFreeChamp(OID, MySkillParam[k]))          // SetSkipChampions: no champion pulled by it
     else if Kind = KIND_PBAOE then
-      Ok := MobsAroundMe(MySkillParam[k]) >= MySkillMinMobs[k]
+      Ok := (MobsAroundMe(MySkillParam[k]) >= MySkillMinMobs[k]) and
+            (not FreeChampNear(User.X, User.Y, MySkillParam[k]))
     else
       Ok := true;
     if not Ok then continue;
@@ -848,6 +922,7 @@ begin
       if not IsOnUs(i) then continue;
     end else begin
       if NpcList(i).Dead or IsIgnored(i) then continue;
+      if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) then continue;   // a champion: only when it is on us
     end;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -884,6 +959,7 @@ begin
     result := true;
     exit;
   end;
+  if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) then exit;   // a champion not on us: dropped
   if not (InFarmArea(NX, NY, NZ) and (User.DistTo(NX, NY, NZ) <= TargetRange)) then exit;
   result := LineClear(NX, NY, NZ);
 end;
@@ -923,7 +999,7 @@ begin
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead or IsIgnored(i) then continue;
     MaxHP := NpcList(i).MaxHP;
-    if MaxHP <= CHAMPION_HP then continue;
+    if MaxHP <= ChampLimit() then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
@@ -948,7 +1024,8 @@ end;
 // close (forgotten when he leaves the range, so coming back alerts again)
 procedure PlayerTick();
 var i, j, n, OID, PX, PY, PZ, Dist: integer;
-  Known: boolean;
+  Known, Skip: boolean;
+  Nm: string;
   Cur: array of integer;
 begin
   if GetTickCount - LastPlayerCheck < 500 then exit;
@@ -962,6 +1039,13 @@ begin
     PZ := CharList(i).Z;
     Dist := User.DistTo(PX, PY, PZ);
     if Dist > PLAYER_ALERT_RANGE then continue;
+    if Length(NoAlertNames) > 0 then begin   // AddNoAlertPlayer: own chars / friends - no alert
+      Nm := LowerCase(CharList(i).Name);
+      Skip := false;
+      for j := 0 to Length(NoAlertNames) - 1 do
+        if Nm = NoAlertNames[j] then Skip := true;
+      if Skip then continue;
+    end;
     n := Length(Cur);
     SetLength(Cur, n + 1);
     Cur[n] := OID;
@@ -1420,6 +1504,7 @@ begin
   BestD := 999999;
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead or IsIgnored(i) then continue;
+    if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) and (not MobOnUs(i)) then continue;   // not run to it
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
