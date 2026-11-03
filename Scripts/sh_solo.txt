@@ -69,6 +69,11 @@ begin
    //AddNoAlertPlayer();
   // AddNoAlertPlayer('Friend');
 
+  // ===== bot interface: a profile .xml from Library\Configurations =====
+  // a profile -> it is loaded at start and the interface is switched ON (its alarms, pickup, potions... work);
+  // no line -> the interface stays OFF. Fighting in the profile must be OFF - the script fights itself
+  SetConfig('alarm.xml');
+
   // ===== rebuff: watched buff ID + buff bypasses =====
   // buff running out -> fight off until OUT of combat -> safe point (if set) -> summon ->
   // buff (only out of combat) -> supplies
