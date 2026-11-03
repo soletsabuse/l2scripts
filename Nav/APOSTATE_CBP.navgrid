@@ -744,6 +744,7 @@ K room_players 0
 K champ_hp 50000
 K room_order SEQ
 K debug 2
+K champion_alert 0
 K debug_file 1
 K tap_always 1
 K exp_off 1
