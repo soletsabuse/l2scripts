@@ -30,7 +30,7 @@ begin
   AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
   SetSpamMs(100);
-
+  SetPvpAnswer(700, 1500);
   // ===== summon =====
   //SetSummon(1154);   // summon skill (summoned when missing)
 
@@ -70,11 +70,6 @@ begin
    AddNoAlertPlayer('horseKING');
    //AddNoAlertPlayer();
   // AddNoAlertPlayer('Friend');
-
-  // ===== a player hits us: after a random 1-2 s (1000..2000 ms) answer him with the same drain / nukes
-  // (AddMySkill above) until he stops / dies / leaves; party, clan and the AddNoAlertPlayer nicks never.
-  // No Ctrl: only a flagged player (who hit us) is hit, no PK by mistake. No line = off =====
-  SetPvpAnswer(1000, 2000);
 
   // ===== bot interface: a profile .xml from Library\Configurations =====
   // a profile -> it is loaded at start and the interface is switched ON (its alarms, pickup, potions... work);
