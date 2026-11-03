@@ -1390,7 +1390,8 @@ begin
   LY := User.Y;
   if NmDbg then NmLog('to node ' + NmXY(PX, PY) + ' d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
   NavClick(PX, PY, PZ);
-  while User.DistTo(PX, PY, PZ) > Reach do begin
+  // on the plane: a node has no height of its own (PZ is the run target's), another floor never got "near"
+  while Sqrt(NmSq(User.X - PX) + NmSq(User.Y - PY)) > Reach do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     if User.Dead then exit;
     if GetTickCount - Started > NAV_POINT_MS then begin
