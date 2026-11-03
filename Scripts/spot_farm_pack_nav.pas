@@ -72,8 +72,10 @@ unit SpotFarmPackNav;
 //     -- alerts: defaults below, these lines only change them --
 //     SetPlayerAlert(2000);                // player (not party/clan) closer than N; default 0 = off
 //     SetPrivateAlert(true);               // private messages; default ON, false = off
+//     SetChatAlert(1000);                  // general chat: a player (not party/clan) closer than N wrote; default 1000, 0 = off
 //     SetPlayerSound('alarm (fem).wav');   // file in Library\Sounds; '' = no sound
 //     SetPrivateSound('incoming private msg (fem).wav');
+//     SetChatSound('someone chat with us (fem).wav');
 //     SetDeathSound('caracter died.wav');  // our character died; '' = no sound
 //     SetAlertBlink(true);                 // blink the game window in the taskbar; false = off
 //     SetTelegram('api key');              // optional: send alerts to Telegram (key from the Adrenaline cabinet)
@@ -174,6 +176,8 @@ procedure SetPlayerAlert(Range: integer);
 procedure SetPrivateAlert(Enabled: boolean);
 procedure SetPlayerSound(FileName: string);
 procedure SetPrivateSound(FileName: string);
+procedure SetChatAlert(Range: integer);
+procedure SetChatSound(FileName: string);
 procedure SetDeathSound(FileName: string);
 procedure SetAlertBlink(Enabled: boolean);
 procedure SetTelegram(ApiKey: string);
@@ -236,6 +240,8 @@ const
   DEFAULT_PLAYER_ALERT_RANGE = 0;     // players around: OFF by default (SetPlayerAlert(2000) turns it on)
   DEFAULT_PLAYER_SOUND  = 'alarm (fem).wav';
   DEFAULT_PRIVATE_SOUND = 'incoming private msg (fem).wav';
+  DEFAULT_CHAT_ALERT_RANGE = 1000;   // general chat: a player this close wrote -> alert (SetChatAlert(0) = off)
+  DEFAULT_CHAT_SOUND    = 'someone chat with us (fem).wav';
   DEFAULT_DEATH_SOUND   = 'caracter died.wav';
   DEFAULT_BUFF_ID       = 1204;    // no SetBuff / buff setting: this buff via the buffer (same on all our chars)
   DEFAULT_BUFF_BYPASS1  = '_bbs_buffer_show';
@@ -247,6 +253,8 @@ const
   WEAPON_SLOT_RHAND     = $0080;   // L2 body part: right hand (one-hand weapon)
   WEAPON_SLOT_LRHAND    = $4000;   // L2 body part: two-hand weapon ($8000 = full armor, NOT a weapon)
   EVENTS_POLL_MS    = 1000;   // how often players around / private messages are checked
+  PROFILE_TICK_MS   = 100;    // profile mode: the one loop (ProfileMain) ticks every N ms
+  IGNORE_POLL_MS    = 300;    // profile mode: the target is checked for an ignored NPC every N ms
   LOGIN_KEY_WAIT    = 4;       // seconds before each Enter (proxy, character) - same as login_test.txt
   LOGIN_RETRY_WAIT  = 30000;    // ms between failed login attempts
   MOVE_WAIT_MS      = 15000;    // a tick run (into a room, the lead) gives up after this
@@ -347,6 +355,8 @@ var
   EvSeen, EvSeenChamp: array of integer;   // EventsTick: players / champions already reported
   EvMaxOID: cardinal;             // ... the newest private message known
   EvPmCount: integer;             // ... private history lines at the last look (-1 = not yet)
+  EvChatOID: cardinal;            // ... the newest general chat message known
+  EvChatCount: integer;           // ... general chat history lines at the last look (-1 = not yet)
   EvReady: boolean;               // ... EventsInit done
   PkStopCodeSaid: integer;        // PackTick: the stop reason said last ...
   PkStopSaidAt: cardinal;         // ... and when
@@ -365,6 +375,9 @@ var
   PrivateAlert: boolean;          // SetPrivateAlert
   PlayerSound: string;            // SetPlayerSound: file in Library\Sounds, '' = no sound
   PrivateSound: string;           // SetPrivateSound: file in Library\Sounds, '' = no sound
+  ChatAlertRange: integer;        // SetChatAlert: general chat from a player this close, 0 = off
+  ChatSound: string;              // SetChatSound: file in Library\Sounds, '' = no sound
+  ChatAlertSet, ChatSoundSet: boolean;
   TelegramKey: string;            // SetTelegram: '' = no telegram
   DeathSound: string;             // SetDeathSound: file in Library\Sounds, '' = no sound
   AlertBlink: boolean;            // SetAlertBlink: blink the game window in the taskbar
@@ -1171,6 +1184,18 @@ begin
   PrivateSoundSet := true;
 end;
 
+procedure SetChatAlert(Range: integer);
+begin
+  ChatAlertRange := Range;
+  ChatAlertSet := true;
+end;
+
+procedure SetChatSound(FileName: string);
+begin
+  ChatSound := FileName;
+  ChatSoundSet := true;
+end;
+
 procedure SetDeathSound(FileName: string);
 begin
   DeathSound := FileName;
@@ -1355,7 +1380,7 @@ begin
     if M = 'SINGLE' then SetFarmMode(FARM_SINGLE)
     else if M = 'AUTO' then SetFarmMode(FARM_AUTO)
     else if M = 'ROOMS' then SetFarmMode(FARM_ROOMS)
-    else SetFarmMode(FARM_PACK);
+    else if M <> 'PROFILE' then SetFarmMode(FARM_PACK);   // PROFILE: the interface farms (no K pack line)
   end
   else if K = 'ignore' then begin      // id,id,...
     n := PkPieceCount(V, ',');
@@ -1399,6 +1424,7 @@ begin
   else if K = 'exp_off' then SetExpOff(V = '1')
   else if K = 'player_alert' then SetPlayerAlert(StrToIntDef(V, 0))
   else if K = 'private_alert' then SetPrivateAlert(V = '1')
+  else if K = 'chat_alert' then SetChatAlert(StrToIntDef(V, 0))
   else if K = 'champion_alert' then SetChampionAlert(StrToIntDef(V, 0))
   else if K = 'telegram' then SetTelegram(V)
   else Engine.Msg('[Init]', 'Unknown setting "' + K + '" in the nav map', 255);
@@ -2970,6 +2996,36 @@ begin
   result := true;
 end;
 
+// Rebuff of the profile mode without a safe point: interface OFF (the profile would pull new mobs) ->
+// the script kills everybody who hits us right here and waits until we are out of combat -> true.
+// false: died / return / offline / still in combat after 2 min
+function ProfileClearCombat(): boolean;
+var OID: integer;
+  Started: cardinal;
+begin
+  result := false;
+  Started := GetTickCount;
+  FarmOff();
+  Engine.Msg('[Rebuff]', 'Interface OFF, fighting off the mobs on me', 0);
+  while true do begin
+    if User.Dead or NeedReturn or (not IsOnline()) then exit;
+    if GetTickCount - Started > 120000 then begin
+      Engine.Msg('[Rebuff]', 'Still in combat after 2 min - giving up this time', 128);
+      exit;
+    end;
+    OID := NearAggroOID();
+    if OID <> 0 then begin
+      SafeKillMob(OID);
+      continue;
+    end;
+    if not User.InCombat then break;
+    Delay(300);
+  end;
+  Engine.CancelTarget;
+  Engine.Msg('[Rebuff]', 'Out of combat', 0);
+  result := true;
+end;
+
 // SetExpOff(true): tell the server to stop giving XP. Sent at start and on every
 // return via Aden, so it stays off even if the server reset it.
 procedure ApplyExpOff();
@@ -3226,7 +3282,7 @@ begin
   if TelegramKey <> '' then SendToTelegram(TelegramKey, User.Name + ': ' + Title + ' ' + Text);
 end;
 
-// ===================== Events: players around, private messages =====================
+// ===================== Events: players around, private messages, general chat =====================
 // Everything is polled from one thread, so spot scripts need no OnAction.
 // Every event goes through Alert (see above the death thread).
 
@@ -3273,6 +3329,68 @@ begin
   end;
 end;
 
+// ---- general chat (SetChatAlert): a player near us wrote in the white chat ----
+
+// Dist -1: the sender is not in sight (an invisible GM...)
+procedure OnChatMessage(Sender, Text: string; Dist: integer);
+begin
+  if Dist < 0 then Alert('[Chat]', Sender + ' (not in sight): ' + Text, ChatSound)
+  else Alert('[Chat]', Sender + ' (' + IntToStr(Dist) + '): ' + Text, ChatSound);
+end;
+
+// highest OID of general chat messages we already know (new ones have a bigger OID)
+function LastChatOID(): cardinal;
+var i, n: integer;
+  M: TChatMessage;
+begin
+  result := 0;
+  n := History.Count(mtAll);
+  for i := 0 to n - 1 do begin
+    if i >= History.Count(mtAll) then break;
+    M := History.GetMessage(i, mtAll);
+    if M.OID > result then result := M.OID;
+  end;
+end;
+
+// the message has only the sender's name: him among the players -> distance to him; -1 = not in sight
+// (an invisible GM...), -2 = no alert (a party / clan member, a line of an NPC)
+function ChatSenderDist(Sender: string): integer;
+var i, Cnt, X, Y, Z: integer;
+  Ch: TL2Char;
+  Mob: TL2Npc;
+  Nm: string;
+begin
+  result := -1;
+  Cnt := CharList.Count;
+  for i := 0 to Cnt - 1 do begin
+    if i >= CharList.Count then break;
+    Ch := CharList(i);
+    if Ch = nil then continue;
+    Nm := Ch.Name;
+    if Nm <> Sender then continue;
+    if IsFriendly(Ch) then begin
+      result := -2;
+      exit;
+    end;
+    X := Ch.X;
+    Y := Ch.Y;
+    Z := Ch.Z;
+    result := User.DistTo(X, Y, Z);
+    exit;
+  end;
+  Cnt := NpcList.Count;
+  for i := 0 to Cnt - 1 do begin
+    if i >= NpcList.Count then break;
+    Mob := NpcList(i);
+    if Mob = nil then continue;
+    Nm := Mob.Name;
+    if Nm = Sender then begin
+      result := -2;
+      exit;
+    end;
+  end;
+end;
+
 // ---- champions (SetChampionAlert): a mob with a lot of HP appeared ----
 
 procedure OnChampionDetected(Name: string; MaxHP: integer);
@@ -3290,17 +3408,20 @@ begin
   SetLength(EvSeenChamp, 0);
   EvMaxOID := LastPrivateOID();
   EvPmCount := -1;
+  EvChatOID := 0;
+  if ChatAlertRange > 0 then EvChatOID := LastChatOID();
+  EvChatCount := -1;
   EvReady := true;
 end;
 
-// one look (every EVENTS_POLL_MS): a player near, a private message, a champion -> Alert
+// one look (every EVENTS_POLL_MS): a player near, a private message, general chat, a champion -> Alert
 procedure EventsTick();
 var
   Cur: array of integer;         // OIDs of players / champions near this look
-  i, j, n, Cnt, OID, X, Y, Z, MaxHP: integer;
+  i, j, n, Cnt, OID, X, Y, Z, MaxHP, Dist: integer;
   Known: boolean;
   M: TChatMessage;
-  Me, Nm: string;
+  Me, Nm, Snd, Txt: string;
   Ch: TL2Char;
   Mob: TL2Npc;
 begin
@@ -3353,6 +3474,26 @@ begin
     end;
   end;
 
+  // --- general chat: a new line from a player within ChatAlertRange (not us, not party / clan, not an NPC) ---
+  Cnt := 0;
+  if ChatAlertRange > 0 then Cnt := History.Count(mtAll);
+  if (ChatAlertRange > 0) and (Cnt <> EvChatCount) then begin   // the history is read only when it changed
+    EvChatCount := Cnt;
+    Me := User.Name;
+    for i := 0 to Cnt - 1 do begin
+      if i >= History.Count(mtAll) then break;
+      M := History.GetMessage(i, mtAll);
+      if M.OID <= EvChatOID then continue;
+      EvChatOID := M.OID;
+      Snd := M.Sender;
+      if (Snd = '') or (Snd = Me) then continue;
+      Txt := M.Text;
+      Dist := ChatSenderDist(Snd);
+      if (Dist = -2) or (Dist > ChatAlertRange) then continue;
+      OnChatMessage(Snd, Txt, Dist);
+    end;
+  end;
+
   // --- champions: alive mob with MaxHP above ChampionMinHP, once per mob ---
   if ChampionMinHP > 0 then begin
     SetLength(Cur, 0);
@@ -3394,11 +3535,11 @@ begin
   while Delay(EVENTS_POLL_MS) do EventsTick();
 end;
 
-// during a long wait / fight: the alerts (player near, private message, champion) every second -
+// during a long wait / fight: the alerts (player near, private message, general chat, champion) every second -
 // nothing that moves the character or casts here
 procedure PkLightTick();
 begin
-  if not ((PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0)) then exit;
+  if not ((PlayerAlertRange > 0) or PrivateAlert or (ChatAlertRange > 0) or (ChampionMinHP > 0)) then exit;
   if GetTickCount - PkEventsAt < EVENTS_POLL_MS then exit;
   PkEventsAt := GetTickCount;
   EventsTick();
@@ -3443,7 +3584,7 @@ begin
     if StayMode() then begin
       Engine.Msg('[Death]', 'Stay mode: waiting for a resurrection (no "To Village")', 128);
       while User.Dead and IsOnline() do begin   // offline: out, LoginTick logs in again
-        if PackEnabled then PkLightTick();   // the alerts go on (one thread; other modes: their own thread)
+        if PackEnabled or (not ScriptMode()) then PkLightTick();   // the alerts go on (one thread; AoE / spoil / caster: their own thread)
         Delay(1000);
       end;
       if not IsOnline() then exit;
@@ -3499,6 +3640,7 @@ end;
 // one look (every second): the buff is low -> rebuff on the spot (pack farm: once the farm says the
 // safe point is clear), buy supplies once per cycle; failing again and again -> back via Aden
 procedure RebuffTick();
+var Cleared: boolean;
 begin
   if TreeBusy or SummonBusy or PatrolBusy then exit;   // tree handler / summon renew / patrol run are busy, rebuff after them
   if (not IsOnline()) or IsRecovering or NeedReturn then begin
@@ -3565,9 +3707,11 @@ begin
       end;
       Delay(500);
     end else
-    // --- no safe point: fight off mobs and leave combat right here (only on the spot) ---
+    // --- no safe point: fight off mobs and leave combat right here (only on the spot); the profile
+    // mode with the interface OFF, by the script (the profile would keep pulling new mobs) ---
     if OnSpot then begin
-      if not ClearCombat() then begin
+      if ScriptMode() then Cleared := ClearCombat() else Cleared := ProfileClearCombat();
+      if not Cleared then begin
         if User.Dead or NeedReturn then exit;
         Inc(RbFails);
         if (RbFails >= SPOT_REBUFF_FAILS) then begin
@@ -5458,18 +5602,17 @@ end;
 // Script modes skip them when picking targets; the profile picks its own targets,
 // so here we just drop the target if the profile took an ignored NPC.
 
-procedure IgnoreWatch_Thread();
+// one look (every IGNORE_POLL_MS, ProfileMain)
+procedure IgnoreTick();
 var OID, Idx: integer;
 begin
-  while Delay(300) do begin
-    if (not IsOnline()) or (not OnSpot) or User.Dead then continue;
-    OID := TargetOID();
-    if OID = 0 then continue;
-    Idx := FindNpcIdxByOID(OID);
-    if (Idx >= 0) and IsIgnoredNpc(Idx) then begin
-      Engine.Msg('[Target]', 'Ignored NPC ' + PullNpcName(Idx) + ', dropping target', 0);
-      Engine.CancelTarget;
-    end;
+  if (not IsOnline()) or (not OnSpot) or User.Dead then exit;
+  OID := TargetOID();
+  if OID = 0 then exit;
+  Idx := FindNpcIdxByOID(OID);
+  if (Idx >= 0) and IsIgnoredNpc(Idx) then begin
+    Engine.Msg('[Target]', 'Ignored NPC ' + PullNpcName(Idx) + ', dropping target', 0);
+    Engine.CancelTarget;
   end;
 end;
 
@@ -5727,7 +5870,7 @@ begin
   NextSec := 0;
   NextLogin := 0;
   NextWeapon := 0;
-  if (PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0) then EventsInit();
+  if (PlayerAlertRange > 0) or PrivateAlert or (ChatAlertRange > 0) or (ChampionMinHP > 0) then EventsInit();
   while Delay(PK_TICK_MS) do begin
     DbgTick();
     if HasLogin and (GetTickCount >= NextLogin) then begin
@@ -5749,6 +5892,47 @@ begin
   end;
 end;
 
+// ===================== The profile mode: ONE thread too =====================
+// The bot interface farms (the SetConfig profile), the script only watches: the login, death / return,
+// rebuff, own buffs, the weapon, ignored targets, the alerts - one after another here, as the pack farm
+// (5 threads at once read the bot lists together and broke with "Access violation" on a death).
+// A long action (the return via Aden, the rebuff) runs to its end, the rest waits for it
+
+procedure ProfileMain();
+var NextSec, NextLogin, NextWeapon, NextIgnore: cardinal;
+begin
+  DhOutSince := 0;
+  RbFails := 0;
+  RbSuppliesDone := false;
+  RbWaitAt := 0;
+  NextSec := 0;
+  NextLogin := 0;
+  NextWeapon := 0;
+  NextIgnore := 0;
+  if (PlayerAlertRange > 0) or PrivateAlert or (ChatAlertRange > 0) or (ChampionMinHP > 0) then EventsInit();
+  while Delay(PROFILE_TICK_MS) do begin
+    if HasLogin and (GetTickCount >= NextLogin) then begin
+      NextLogin := GetTickCount + 5000;
+      LoginTick();
+    end;
+    if GetTickCount >= NextSec then begin
+      NextSec := GetTickCount + 1000;
+      DeathTick();
+      RebuffTick();
+      if Length(SelfBuffSkill) > 0 then SelfBuffTick();
+      PkLightTick();
+    end;
+    if (WeaponID > 0) and (GetTickCount >= NextWeapon) then begin
+      NextWeapon := GetTickCount + WEAPON_POLL_MS;
+      WeaponTick();
+    end;
+    if GetTickCount >= NextIgnore then begin
+      NextIgnore := GetTickCount + IGNORE_POLL_MS;
+      IgnoreTick();
+    end;
+  end;
+end;
+
 // alerts are ON by default: anything the spot script did not set gets the default
 procedure ApplyAlertDefaults();
 begin
@@ -5756,6 +5940,8 @@ begin
   if not PrivateAlertSet then PrivateAlert := true;
   if not PlayerSoundSet then PlayerSound := DEFAULT_PLAYER_SOUND;
   if not PrivateSoundSet then PrivateSound := DEFAULT_PRIVATE_SOUND;
+  if not ChatAlertSet then ChatAlertRange := DEFAULT_CHAT_ALERT_RANGE;
+  if not ChatSoundSet then ChatSound := DEFAULT_CHAT_SOUND;
   if not DeathSoundSet then DeathSound := DEFAULT_DEATH_SOUND;
   if not AlertBlinkSet then AlertBlink := true;
   if not ChampionAlertSet then ChampionMinHP := DEFAULT_CHAMPION_HP;
@@ -5809,6 +5995,18 @@ begin
     exit;
   end;
 
+  if not ScriptMode() then begin
+    // the profile mode: the interface farms, the script watches in this one thread (ProfileMain)
+    RememberWeapon();                  // no SetWeapon -> the weapon in hands right now
+    PullSetFarmWeapon(WeaponID);
+    if TreeEnabled then Script.NewThread(@TreeWatch_Thread);   // tree mobs / patrol (unused in the configs): own threads
+    if HasPatrol() then Script.NewThread(@Patrol_Thread);
+    Engine.Msg('[Init]', 'Profile mode: one thread', 0);
+    ProfileMain();
+    exit;
+  end;
+
+  // AoE / spoil / caster farm: threads
   Script.NewThread(@AltB_Rebuff_Thread);
   Script.NewThread(@DeathHandler_Thread);
   if HasLogin then Script.NewThread(@Login_Thread);
@@ -5822,12 +6020,10 @@ begin
     Script.NewThread(@CasterFarm_Thread);
     if SummonSkill > 0 then Script.NewThread(@SummonWatch_Thread);
   end;
-  if HasPatrol() and (not AoeEnabled) and (not CasterEnabled) and (not SpoilEnabled) and (not PackEnabled) then Script.NewThread(@Patrol_Thread);
-  if (not AoeEnabled) and (not CasterEnabled) and (not SpoilEnabled) and (not PackEnabled) then Script.NewThread(@IgnoreWatch_Thread);
   RememberWeapon();   // no SetWeapon -> the weapon in hands right now
   PullSetFarmWeapon(WeaponID);         // the pull puts it back after the tap weapon
   if WeaponID > 0 then Script.NewThread(@WeaponWatch_Thread);
-  if (PlayerAlertRange > 0) or PrivateAlert or (ChampionMinHP > 0) then Script.NewThread(@Events_Thread);
+  if (PlayerAlertRange > 0) or PrivateAlert or (ChatAlertRange > 0) or (ChampionMinHP > 0) then Script.NewThread(@Events_Thread);
   Delay(-1);
 end;
 

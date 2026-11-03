@@ -60,7 +60,9 @@ begin
   SetSkipChampions(true);
   // SetChampionHP(100000);   // a mob with MaxHP above this is a champion (the champion alert too)
 
-  // ===== "player close" alert: these nicks never trigger it (own chars, friends) =====
+  // ===== "player close" alert of the script: 0 = off (the profile alarm.xml watches players);
+  // the champion alert stays on. SetPlayerAlert(700) - back on; the nicks below never trigger it =====
+  SetPlayerAlert(0);
    AddNoAlertPlayer('kkk');
    AddNoAlertPlayer('eee');
    AddNoAlertPlayer('elephantKING');
@@ -68,6 +70,11 @@ begin
    AddNoAlertPlayer('horseKING');
    //AddNoAlertPlayer();
   // AddNoAlertPlayer('Friend');
+
+  // ===== a player hits us: after a random 1-2 s (1000..2000 ms) answer him with the same drain / nukes
+  // (AddMySkill above) until he stops / dies / leaves; party, clan and the AddNoAlertPlayer nicks never.
+  // No Ctrl: only a flagged player (who hit us) is hit, no PK by mistake. No line = off =====
+  SetPvpAnswer(1000, 2000);
 
   // ===== bot interface: a profile .xml from Library\Configurations =====
   // a profile -> it is loaded at start and the interface is switched ON (its alarms, pickup, potions... work);

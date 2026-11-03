@@ -878,6 +878,8 @@ K room_avoid 30
 K champ_hp 100000
 K room_order SEQ
 K debug 2
+K player_alert 0
+K chat_alert 1000
 K champion_alert 0
 K debug_file 1
 K debug_run 1

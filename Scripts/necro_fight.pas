@@ -88,6 +88,10 @@ procedure AddIgnoreName(Name: string);
 procedure SetSkipChampions(Skip: boolean);
 procedure SetChampionHP(HP: integer);          // a mob with MaxHP above this is a champion (default 100000; the alert too)
 procedure AddNoAlertPlayer(Name: string);      // no "player close" alert for this nick (own chars, friends)
+procedure SetPlayerAlert(Range: integer);      // "player close" alert: a player this close -> blink (default 700, 0 = off)
+// a player (not party / clan / AddNoAlertPlayer) hits us -> after a random MinMs..MaxMs answer him with our
+// drain / nukes until he stops (PVP_FORGET_MS), dies or leaves; no line = off
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
 procedure RunNecro();
 procedure NecroOnAction(Action: TL2Action; P1, P2: cardinal);
 
@@ -135,6 +139,8 @@ const
   CHAMPION_SOUND    = 'champion.wav';
   CHAMPION_HP       = 100000;  // champion alert: a mob in the zone with MaxHP above this
   PLAYER_ALERT_RANGE = 700;    // a player this close -> blinking window
+  PVP_FORGET_MS     = 8000;    // SetPvpAnswer: no attack from the player this long -> back to the mobs
+  PVP_SCAN_MS       = 200;     // SetPvpAnswer: players looked at every N ms
 
   RETARGET_MS       = 1000;    // SetTarget the same mob again every N ms (a mob can knock the target off)
   LOS_STEP          = 100;     // "clear line" check: a point of the line to the mob every N units must be in the zone
@@ -165,6 +171,16 @@ var
   SkipChamps: boolean;                     // SetSkipChampions: a champion only when it is on us / the summon
   ChampHP: integer;                        // SetChampionHP (0 = CHAMPION_HP)
   NoAlertNames: array of string;           // AddNoAlertPlayer, lower case
+  PlayerRange: integer;                    // SetPlayerAlert: 0 = off
+  PlayerRangeSet: boolean;
+  PvpOn: boolean;                          // SetPvpAnswer
+  PvpDelayMin, PvpDelayMax: integer;
+  PvpOID: integer;                         // the player we answer (0 = none)
+  PvpAt: cardinal;                         // ... answering from this tick (the random delay)
+  PvpLast: cardinal;                       // ... his last attack seen
+  PvpScanAt: cardinal;
+  PvpSeenOID, PvpSeenAtk: array of integer;     // players at the last look: OID, AtkOID ...
+  PvpSeenTime: array of cardinal;               // ... and AtkTime (a new hit = it changed)
   BuffID: integer;                         // SetBuff: watched buff (0 = no rebuff)
   BuffBypasses, SummonBuffBypasses: array of string;
   SummonBuffID: integer;                   // SetSummonBuff: buff watched on the summon (0 = same as ours)
@@ -408,6 +424,20 @@ begin
   n := Length(NoAlertNames);
   SetLength(NoAlertNames, n + 1);
   NoAlertNames[n] := LowerCase(Trim(Name));
+end;
+
+procedure SetPlayerAlert(Range: integer);
+begin
+  PlayerRange := Range;
+  PlayerRangeSet := true;
+end;
+
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
+begin
+  PvpOn := true;
+  PvpDelayMin := MinMs;
+  PvpDelayMax := MaxMs;
+  if PvpDelayMax < PvpDelayMin then PvpDelayMax := PvpDelayMin;
 end;
 
 // a mob with MaxHP above this is a champion
@@ -1020,7 +1050,7 @@ begin
   for i := 0 to Length(Cur) - 1 do SeenChamps[i] := Cur[i];
 end;
 
-// a player came within PLAYER_ALERT_RANGE: blink the window, once per player while he stays
+// a player came within PlayerRange (SetPlayerAlert, 0 = off): blink the window, once per player while he stays
 // close (forgotten when he leaves the range, so coming back alerts again)
 procedure PlayerTick();
 var i, j, n, OID, PX, PY, PZ, Dist: integer;
@@ -1028,6 +1058,7 @@ var i, j, n, OID, PX, PY, PZ, Dist: integer;
   Nm: string;
   Cur: array of integer;
 begin
+  if PlayerRange <= 0 then exit;
   if GetTickCount - LastPlayerCheck < 500 then exit;
   LastPlayerCheck := GetTickCount;
   SetLength(Cur, 0);
@@ -1038,7 +1069,7 @@ begin
     PY := CharList(i).Y;
     PZ := CharList(i).Z;
     Dist := User.DistTo(PX, PY, PZ);
-    if Dist > PLAYER_ALERT_RANGE then continue;
+    if Dist > PlayerRange then continue;
     if Length(NoAlertNames) > 0 then begin   // AddNoAlertPlayer: own chars / friends - no alert
       Nm := LowerCase(CharList(i).Name);
       Skip := false;
@@ -1078,6 +1109,125 @@ begin
   end;
   PetStep(OID);
   SpamSkill(OID);
+end;
+
+// ===================== PvP answer (SetPvpAnswer) =====================
+// A player hits us: a new auto attack on us (his AtkOID is us and his AtkTime changed) or a cast at us.
+// After a random PvpDelayMin..PvpDelayMax we answer him with our drain / nukes (the mobs wait). Sent
+// without Ctrl: a player who hit us is flagged and is hit; a not flagged one (a stranger buffing us)
+// cannot be - no PK by mistake
+
+function PvpIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// one look at the players: a stranger hitting us -> PvpOID (the first one) / his PvpLast
+procedure PvpScan();
+var i, j, k, n, OID, Atk, Tgt, MyClan, ChClan: integer;
+  AT: cardinal;
+  T: TL2Live;
+  Hit, Skip: boolean;
+  Nm: string;
+  NewOID, NewAtk: array of integer;
+  NewTime: array of cardinal;
+begin
+  MyClan := User.ClanID;
+  SetLength(NewOID, 0);
+  SetLength(NewAtk, 0);
+  SetLength(NewTime, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    OID := CharList(i).OID;
+    if OID = User.OID then continue;
+    if CharList(i).Dead or CharList(i).IsMember then continue;      // dead / our party
+    ChClan := CharList(i).ClanID;
+    if (MyClan <> 0) and (ChClan = MyClan) then continue;           // our clan
+    Atk := CharList(i).AtkOID;
+    AT := CharList(i).AtkTime;
+    Tgt := 0;
+    T := CharList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    n := Length(NewOID);
+    SetLength(NewOID, n + 1);
+    SetLength(NewAtk, n + 1);
+    SetLength(NewTime, n + 1);
+    NewOID[n] := OID;
+    NewAtk[n] := Atk;
+    NewTime[n] := AT;
+    if (Atk <> User.OID) and (Tgt <> User.OID) then continue;
+    // a new auto attack on us: he was not on us at the last look, or he swung again
+    Hit := false;
+    if Atk = User.OID then begin
+      k := -1;
+      for j := 0 to Length(PvpSeenOID) - 1 do
+        if PvpSeenOID[j] = OID then begin k := j; break; end;
+      Hit := (k >= 0) and ((PvpSeenAtk[k] <> User.OID) or (PvpSeenTime[k] <> AT));
+    end;
+    if (not Hit) and (Tgt = User.OID) and (CharList(i).Cast.EndTime > 0) then Hit := true;   // casting at us
+    if not Hit then continue;
+    if Length(NoAlertNames) > 0 then begin   // AddNoAlertPlayer: own chars / friends
+      Nm := LowerCase(CharList(i).Name);
+      Skip := false;
+      for j := 0 to Length(NoAlertNames) - 1 do
+        if Nm = NoAlertNames[j] then Skip := true;
+      if Skip then continue;
+    end;
+    if PvpOID = 0 then begin
+      PvpOID := OID;
+      PvpAt := GetTickCount + cardinal(PvpDelayMin + Random(PvpDelayMax - PvpDelayMin + 1));
+      Alert('[PvP]', CharList(i).Name + ' attacks me, answering in ' + IntToStr(PvpAt - GetTickCount) + ' ms', '');
+    end;
+    if OID = PvpOID then PvpLast := GetTickCount;
+  end;
+  SetLength(PvpSeenOID, Length(NewOID));
+  SetLength(PvpSeenAtk, Length(NewOID));
+  SetLength(PvpSeenTime, Length(NewOID));
+  for i := 0 to Length(NewOID) - 1 do begin
+    PvpSeenOID[i] := NewOID[i];
+    PvpSeenAtk[i] := NewAtk[i];
+    PvpSeenTime[i] := NewTime[i];
+  end;
+end;
+
+// the PvP answer: true = we hit the player this tick (no mob fight now)
+function PvpStep(): boolean;
+var i, k, PX, PY, PZ: integer;
+begin
+  result := false;
+  if not PvpOn then exit;
+  if GetTickCount - PvpScanAt >= PVP_SCAN_MS then begin
+    PvpScanAt := GetTickCount;
+    PvpScan();
+  end;
+  if PvpOID = 0 then exit;
+  i := PvpIdx(PvpOID);
+  if (i < 0) or CharList(i).Dead or (GetTickCount - PvpLast > PVP_FORGET_MS) then begin
+    Engine.Msg('[PvP]', 'The player is gone / dead / stopped, back to the mobs', 0);
+    if CurTarget = PvpOID then CurTarget := 0;
+    PvpOID := 0;
+    exit;
+  end;
+  if GetTickCount < PvpAt then exit;   // the random delay first, the mobs meanwhile
+  PX := CharList(i).X;
+  PY := CharList(i).Y;
+  PZ := CharList(i).Z;
+  if User.DistTo(PX, PY, PZ) > MaxCastRange then exit;   // out of our reach: no chasing
+  if (CurTarget <> PvpOID) or (GetTickCount - LastSetTarget >= RETARGET_MS) then begin
+    Engine.SetTarget(PvpOID);
+    CurTarget := PvpOID;
+    LastSetTarget := GetTickCount;
+  end;
+  k := BestOfKind(KIND_DRAIN, PvpOID);
+  if k < 0 then k := BestOfKind(KIND_NUKE, PvpOID);
+  if k >= 0 then Engine.DUseSkill(MySkillID[k], false, false);   // no Ctrl: only a flagged player is hit
+  result := true;
 end;
 
 // ===================== Supplies =====================
@@ -1854,6 +2004,7 @@ begin
   if FreeRadius <= 0 then FreeRadius := 900;
   if MaxCastRange <= 0 then MaxCastRange := 600;
   if not HeightSet then HeightRange := 400;
+  if not PlayerRangeSet then PlayerRange := PLAYER_ALERT_RANGE;
   if PatrolRange <= 0 then PatrolRange := 200;
   if not PetAttackSet then PetAttackMinMaxHP := -1;   // summon melee off unless SetPetAttack
   AddDefaultIgnoreNames();
@@ -1914,6 +2065,7 @@ begin
     CheckWeapon();     // anti-disarm
     ChampionTick();    // champion respawned in the zone -> alert
     PlayerTick();      // a player close by -> blink
+    if PvpStep() then continue;   // SetPvpAnswer: a player hits us -> our nukes at him
 
     // "Can't see target." -> walk to that mob (FindPath), fighting whoever hits us on the way
     if CantSeeTarget() and (CurTarget <> 0) then begin
