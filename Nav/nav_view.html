@@ -102,6 +102,7 @@
   <button data-tool="spot"><span class="sw" style="background:#c792ea"></span>Точка фарма</button>
   <button data-tool="safe"><span class="sw" style="background:#4fb3ff"></span>Сейф</button>
   <button data-tool="node" title="своя точка графа: бот бегает и через неё"><span class="sw" style="background:#ffffff"></span>Нода</button>
+  <button data-tool="rail" title="рельса: клики по точкам по порядку; Enter или клик в последнюю точку — готово, Esc — отмена, Backspace — убрать последнюю; тянуть точку — двигать. Бот бежит по ней точка за точкой, ничего не срезая; маршрут сам выбирает рельсу (по ней дешевле). Длинные отрезки делятся на шаги до 500"><span class="sw" style="background:#00e5ff"></span>Рельса</button>
   <button data-tool="erase" title="клик по ноде (своей или жёлтой), точке фарма, сейфу, углу комнаты — убрать">✕ Удалить</button>
   <span class="muted">кисть</span><input id="brush" type="range" min="1" max="100" value="1"><span id="brushV" class="muted">1</span>
   <label class="muted"><input id="byTrace" type="checkbox" checked> заливка до линий пробега</label>
@@ -117,7 +118,7 @@
   скрипт .txt — его углы и сейф-поинт. Выбери цвет «Проход» / «Стена» и крась «Кистью» или «Заливкой» (клик внутри фигуры,
   как в пейнте; линии пробега — стенки-помощники), потом «Перегенерить навмеш» и проверь «Путь A→B».
   «Комната» — клики по углам, Enter / клик в первый угол — закрыть, тянуть угол — двигать; настройки комнат — панель справа.
-  «Точка фарма» — клик ставит, тянуть звёздочку — двигать (координаты — в панели справа). «Сейф» — клик, тянуть — двигать. «Нода» — своя точка графа (клик ставит, тянуть — двигать). «✕ Удалить» — клик по ноде, точке, сейфу, углу комнаты. «⚙ Настройки» — настройки скрипта фарма.
+  «Точка фарма» — клик ставит, тянуть звёздочку — двигать (координаты — в панели справа). «Сейф» — клик, тянуть — двигать. «Нода» — своя точка графа (клик ставит, тянуть — двигать). «Рельса» — клики по точкам по порядку, Enter — готово: бот бежит по ней точка за точкой, не срезая (для мест, где он цепляет колонны / углы). «✕ Удалить» — клик по ноде, точке, сейфу, углу комнаты. «⚙ Настройки» — настройки скрипта фарма.
   Всё сохраняется в .navgrid.
   Колесо — масштаб, правая кнопка или Пробел — двигать, Ctrl+Z — отмена.</div>
 <div id="rooms"></div>
@@ -137,6 +138,8 @@ let fname = 'map';
 let scale = 0.004, ox = 0, oy = 0, dpr = 1, level = '', tool = 'brush', color = 'good', route = { a: null, b: null, path: null };
 let history = [], mouse = null, leak = null;
 let unodes = [];                                   // own graph nodes ("N x y")
+let rails = [];                                    // rails ("W x1 y1 x2 y2 ..."): the bot runs them point by point
+let railDraw = null;                               // a rail being drawn
 let ptDrag = null;                                 // a farm spot / the safe point / an own node being dragged
 let bans = [];                                     // graph nodes removed ("X x y"): none is built there
 let rooms = [], spots = [], safe = null, roomDraw = null, roomDrag = null, selRoom = -1;   // map extras
@@ -252,7 +255,10 @@ function regen() {
   const g = grid, safe = g.f.map(v => v === 1 ? 1 : 0);
   const R = Math.max(1, Math.floor((40 + Math.floor(g.cell / 2)) / g.cell));
   const sc = (cx, cy) => cx >= 0 && cy >= 0 && cx < g.w && cy < g.h && safe[cy * g.w + cx];
-  const nodes = unodes.map(p => [p[0], p[1]]), own = nodes.length;
+  // own nodes, then the rail points in order (as the bot); railOf[i] = [rail, point] of a rail node
+  const nodes = unodes.map(p => [p[0], p[1]]), railOf = nodes.map(() => null);
+  rails.forEach((r, ri) => r.forEach((p, pi) => { if (nodes.length < 600) { nodes.push([p[0], p[1]]); railOf.push([ri, pi]); } }));
+  const own = nodes.length;
   for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) { if (!safe[cy * g.w + cx]) continue;
     for (let k = 0; k < 4; k++) { const dx = k % 2 === 0 ? 1 : -1, dy = k < 2 ? 1 : -1;
       if (sc(cx + dx, cy + dy) || !sc(cx + dx, cy) || !sc(cx, cy + dy)) continue;
@@ -261,11 +267,14 @@ function regen() {
         if (sc(cx - dx * j, cy - dy * j) && sc(cx - dx * j + dx, cy - dy * j) && sc(cx - dx * j, cy - dy * j + dy)) { px = cx - dx * j; py = cy - dy * j; }
         else break; }
       const X = g.x0 + px * g.cell + Math.floor(g.cell / 2), Y = g.y0 + py * g.cell + Math.floor(g.cell / 2);
-      if (!nodes.some(p => Math.abs(p[0] - X) <= 64 && Math.abs(p[1] - Y) <= 64) && !bans.some(p => Math.abs(p[0] - X) <= 40 && Math.abs(p[1] - Y) <= 40) && nodes.length < 600) nodes.push([X, Y]);
+      if (!nodes.some(p => Math.abs(p[0] - X) <= 64 && Math.abs(p[1] - Y) <= 64) && !bans.some(p => Math.abs(p[0] - X) <= 40 && Math.abs(p[1] - Y) <= 40) && nodes.length < 600) { nodes.push([X, Y]); railOf.push(null); }
       break; } }
-  graph = { safe, nodes, edges: [], own };
+  graph = { safe, nodes, edges: [], own, railOf };
   for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++)
     if (dist(nodes[i], nodes[j]) <= 2500 && lineFree(nodes[i], nodes[j], true)) graph.edges.push([i, j]);
+  // a rail: its points one after another are always linked (drawn by hand: the map may not see it)
+  { const have = new Set(graph.edges.map(([a, b]) => a + ',' + b));
+    for (let i = 0; i + 1 < nodes.length; i++) if (railCons(i, i + 1) && !have.has(i + ',' + (i + 1))) graph.edges.push([i, i + 1]); }
   // only to look at: a link that is almost the same as going through a third node is dropped (the
   // bot keeps them all - its routes are the same)
   const adj = nodes.map(() => new Map()), key = (a, b) => a < b ? a + ',' + b : b + ',' + a;
@@ -324,20 +333,37 @@ function runFree(a, b) {
   return true; }
 function components() { const p = graph.nodes.map((_, i) => i), f = x => p[x] === x ? x : (p[x] = f(p[x]));
   for (const [a, b] of graph.edges) p[f(a)] = f(b); return new Set(graph.nodes.map((_, i) => f(i))).size; }
+// rails: a stretch longer than 500 gets points in between (the server path is found only up to ~600)
+function railSplit(pts) {
+  const out = [[Math.round(pts[0][0]), Math.round(pts[0][1])]];
+  for (let i = 1; i < pts.length; i++) { const a = pts[i - 1], b = pts[i], m = Math.trunc((dist(a, b) - 1) / 500);
+    for (let j = 1; j <= m; j++) out.push([Math.round(a[0] + (b[0] - a[0]) * j / (m + 1)), Math.round(a[1] + (b[1] - a[1]) * j / (m + 1))]);
+    out.push([Math.round(b[0]), Math.round(b[1])]); }
+  return out;
+}
+// two graph nodes are points of one rail one after another (that link costs half in routes)
+function railCons(a, b) { const ra = graph.railOf[a], rb = graph.railOf[b]; return !!(ra && rb && ra[0] === rb[0] && Math.abs(ra[1] - rb[1]) === 1); }
 function findRoute(A, B) {
-  const P = graph.nodes, n = P.length;
-  if (runFree(A, B)) return [A, B];
+  const P = graph.nodes, n = P.length, isRail = i => !!graph.railOf[i], anyRail = graph.railOf.some(x => x);
+  if (!anyRail && runFree(A, B)) return [A, B];
   const D = new Array(n).fill(Infinity), prev = new Array(n).fill(-1), done = new Array(n).fill(false);
   for (let i = 0; i < n; i++) { const d = dist(A, P[i]); if (d <= 3000 && lineFree(A, P[i], false)) D[i] = d; }
   const adj = P.map(() => []); for (const [a, b] of graph.edges) { adj[a].push(b); adj[b].push(a); }
   for (;;) { let u = -1, bd = Infinity; for (let i = 0; i < n; i++) if (!done[i] && D[i] < bd) { bd = D[i]; u = i; }
-    if (u < 0) break; done[u] = true; for (const v of adj[u]) { const al = D[u] + dist(P[u], P[v]); if (al < D[v]) { D[v] = al; prev[v] = u; } } }
+    if (u < 0) break; done[u] = true;
+    for (const v of adj[u]) { const al = D[u] + dist(P[u], P[v]) * (railCons(u, v) ? 0.5 : 1); if (al < D[v]) { D[v] = al; prev[v] = u; } } }
   let e = -1, be = Infinity;
   for (let i = 0; i < n; i++) if (D[i] < Infinity) { const d = dist(P[i], B); if (d <= 3000 && D[i] + d < be && lineFree(P[i], B, false)) { be = D[i] + d; e = i; } }
-  if (e < 0) return null;
-  const r = []; for (let v = e; v >= 0; v = prev[v]) r.unshift(P[v]);
+  if (e < 0) return runFree(A, B) ? [A, B] : null;
+  const r = []; for (let v = e; v >= 0; v = prev[v]) r.unshift(v);
+  // as the bot: straight only with no rail point ahead; a rail point is never skipped
+  const railAhead = k => r.slice(k).some(isRail);
+  if (!railAhead(0) && runFree(A, B)) return [A, B];
   const out = [A]; let cur = A;
-  for (let k = 0; k < r.length; k++) { if (runFree(cur, B)) break; if (k + 1 < r.length && runFree(cur, r[k + 1])) continue; out.push(r[k]); cur = r[k]; }
+  for (let k = 0; k < r.length; k++) {
+    if (!railAhead(k) && runFree(cur, B)) break;
+    if (!isRail(r[k]) && k + 1 < r.length && runFree(cur, P[r[k + 1]])) continue;
+    out.push(P[r[k]]); cur = P[r[k]]; }
   out.push(B); return out;
 }
 function infoLine() {
@@ -377,7 +403,7 @@ function parseFile(text, name) {
       else if (line.startsWith('R ') && g && row < g.h) { const s = line.slice(2); for (let cx = 0; cx < g.w; cx++) g.f[row * g.w + cx] = s[cx] === '.' ? 1 : s[cx] === '#' ? 2 : 0; row++; }
     }
     if (g) { snapshot(); grid = g; gridImg = null; graph = null; $('cell').value = g.cell; fname = name.replace(/\.\w+$/, '');
-      rooms = []; spots = []; safe = null; unodes = []; bans = []; cfg = {}; cfgExtra = []; cfgDirty = false; $('save').textContent = 'Сохранить .navgrid';
+      rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = []; railDraw = null; cfg = {}; cfgExtra = []; cfgDirty = false; $('save').textContent = 'Сохранить .navgrid';
       for (const line of text.split(/\r?\n/)) {
         if (line.startsWith('K ')) cfgParse(line);
         else if (line.startsWith('Q ')) { const f = line.trim().split(/\s+/), pts = [];
@@ -387,6 +413,8 @@ function parseFile(text, name) {
         else if (line.startsWith('S ')) { const f = line.trim().split(/\s+/); safe = { x: +f[1], y: +f[2], z: +f[3] || 0 }; }
         else if (line.startsWith('N ')) { const f = line.trim().split(/\s+/); unodes.push([+f[1], +f[2]]); }
         else if (line.startsWith('X ')) { const f = line.trim().split(/\s+/); bans.push([+f[1], +f[2]]); }
+        else if (line.startsWith('W ')) { const f = line.trim().split(/\s+/).slice(1).map(Number), pts = [];
+          for (let i = 0; i + 1 < f.length; i += 2) pts.push([f[i], f[i + 1]]); if (pts.length >= 2) rails.push(railSplit(pts)); }
       }
       roomsUi(); }
   } else if (/AddCorner|SetSafePoint|SetPackFarm|RunFarm/.test(text)) {
@@ -413,7 +441,8 @@ function gridText() {
   for (let cy = 0; cy < g.h; cy++) { let r = 'R '; for (let cx = 0; cx < g.w; cx++) r += ch[g.f[cy * g.w + cx]]; rows.push(r); }
   const nl = unodes.map(p => 'N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
   const xl = bans.map(p => 'X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
-  const L = ['# navgrid: . walkable, # not', G, 'V ' + gridVer([G, ...rows, ...nl, ...xl])];
+  const wl = rails.filter(r => r.length >= 2).map(r => 'W ' + r.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
+  const L = ['# navgrid: . walkable, # not', G, 'V ' + gridVer([G, ...rows, ...nl, ...xl, ...wl])];
   for (const r of rows) L.push(r);
   // the farm script settings (tab Settings), then the map extras: rooms (name min mode prio polygon), farm spots, safe point
   L.push(...cfgLines());
@@ -423,6 +452,7 @@ function gridText() {
   if (safe) L.push('S ' + Math.round(safe.x) + ' ' + Math.round(safe.y) + ' ' + (safe.z || 0));
   for (const l of nl) L.push(l);
   for (const l of xl) L.push(l);
+  for (const l of wl) L.push(l);
   return L.join('\r\n') + '\r\n';
 }
 // the folder of the maps (Library\Nav): the handle of the last opened / saved file, kept in IndexedDB -
@@ -541,6 +571,8 @@ function eraseAt(px, py) {
   const near = (x, y) => Math.hypot(sx(x) - px, sy(y) - py) < 10;
   let k = unodes.findIndex(q => near(q[0], q[1]));
   if (k >= 0) { unodes.splice(k, 1); toast('Своя нода убрана'); regen(); return; }
+  k = rails.findIndex(r => r.some(q => near(q[0], q[1])));
+  if (k >= 0) { rails.splice(k, 1); toast('Рельса убрана'); regen(); return; }
   k = spots.findIndex(q => near(q.x, q.y));
   if (k >= 0) { spots.splice(k, 1); toast('Точка фарма убрана'); roomsUi(); draw(); return; }
   if (safe && near(safe.x, safe.y)) { safe = null; toast('Сейф убран'); draw(); return; }
@@ -880,6 +912,12 @@ function draw() {
     ctx.fillStyle = '#ffd166'; for (const p of graph.nodes) { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3, 0, 7); ctx.fill(); } }
   if (tool === 'erase') { ctx.strokeStyle = '#ff5d6c'; ctx.lineWidth = 2; for (const p of bans) { const X = sx(p[0]), Y = sy(p[1]);
     ctx.beginPath(); ctx.moveTo(X - 5, Y - 5); ctx.lineTo(X + 5, Y + 5); ctx.moveTo(X + 5, Y - 5); ctx.lineTo(X - 5, Y + 5); ctx.stroke(); } }
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 4; for (const r of rails) { path(r); ctx.stroke(); }
+  for (const r of rails) for (const p of r) { ctx.fillStyle = '#00e5ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+    ctx.fillRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); ctx.strokeRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); }
+  if (railDraw) { ctx.setLineDash([6, 4]); ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 3;
+    path(railDraw.cursor ? [...railDraw.pts, railDraw.cursor] : railDraw.pts); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#00e5ff'; for (const p of railDraw.pts) ctx.fillRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); }
   for (const p of unodes) { const X = sx(p[0]), Y = sy(p[1]); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.moveTo(X, Y - 7); ctx.lineTo(X + 7, Y); ctx.lineTo(X, Y + 7); ctx.lineTo(X - 7, Y); ctx.closePath(); ctx.fill(); ctx.stroke(); }
   rooms.forEach((r, i) => { const col = ROOM_COL[i % ROOM_COL.length];
@@ -918,7 +956,18 @@ function fit() {
 
 // ===== input =====
 let pan = null, painting = false, space = false;
-function setTool(t) { if (t !== 'room') roomDraw = null;
+// a rail being drawn is done: 2+ points -> a rail (long stretches split to 500)
+function finishRail() {
+  const d = railDraw; railDraw = null;
+  if (d && d.pts.length >= 2) {
+    const r = railSplit(d.pts); rails.push(r);
+    const g = grid, off = r.filter(p => { if (!g) return false; const cx = Math.floor((p[0] - g.x0) / g.cell), cy = Math.floor((p[1] - g.y0) / g.cell);
+      return cx < 0 || cy < 0 || cx >= g.w || cy >= g.h || g.f[cy * g.w + cx] !== 1; }).length;
+    toast('Рельса: ' + r.length + ' точек' + (off ? ' — ' + off + ' не на зелёном (бот их всё равно кликнет)' : ''));
+  } else if (d) toast('Рельса — минимум 2 точки');
+  regen();
+}
+function setTool(t) { if (t !== 'room') roomDraw = null; if (t !== 'rail' && railDraw) finishRail();
   tool = t; document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
   cv.style.cursor = t === 'brush' ? 'none' : t === 'fill' ? 'cell' : 'crosshair'; draw(); }
 function setColor(c) { color = c; document.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('on', b.dataset.color === c));
@@ -944,6 +993,14 @@ cv.addEventListener('mousedown', e => {
     if (k >= 0) { ptDrag = { kind: 'spot', k }; return; }
     addSpot(p[0], p[1], 0, false); roomsUi(); draw(); return; }
   if (tool === 'erase') { eraseAt(e.offsetX, e.offsetY); return; }
+  if (tool === 'rail') {
+    if (railDraw) { const last = railDraw.pts[railDraw.pts.length - 1];
+      if (Math.hypot(sx(last[0]) - e.offsetX, sy(last[1]) - e.offsetY) < 10) { finishRail(); return; }
+      railDraw.pts.push([Math.round(p[0]), Math.round(p[1])]); draw(); return; }
+    for (let i = 0; i < rails.length; i++) { const j = rails[i].findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
+      if (j >= 0) { ptDrag = { kind: 'rail', i, j }; return; } }
+    railDraw = { pts: [[Math.round(p[0]), Math.round(p[1])]], cursor: null }; draw(); return;
+  }
   if (tool === 'node') { const k = unodes.findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
     if (k >= 0) { ptDrag = { kind: 'node', k }; return; }
     {
@@ -963,12 +1020,16 @@ window.addEventListener('mousemove', e => {
   if (ptDrag) { const X = Math.round(wx(mouse[0])), Y = Math.round(wy(mouse[1]));
     if (ptDrag.kind === 'spot') { spots[ptDrag.k].x = X; spots[ptDrag.k].y = Y; }
     else if (ptDrag.kind === 'safe') { safe.x = X; safe.y = Y; }
+    else if (ptDrag.kind === 'rail') rails[ptDrag.i][ptDrag.j] = [X, Y];
     else unodes[ptDrag.k] = [X, Y]; }
   if (roomDraw) roomDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
+  if (railDraw) railDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
   draw();
 });
 window.addEventListener('mouseup', () => { if (painting) infoLine(); pan = null; painting = false; roomDrag = null;
-  if (ptDrag) { const k = ptDrag.kind; ptDrag = null; if (k === 'node') regen(); else { roomsUi(); draw(); } } });
+  if (ptDrag) { const d = ptDrag, k = d.kind; ptDrag = null;
+    if (k === 'rail') { rails[d.i] = railSplit(rails[d.i]); regen(); }
+    else if (k === 'node') regen(); else { roomsUi(); draw(); } } });
 cv.addEventListener('mouseleave', () => { mouse = null; draw(); });
 cv.addEventListener('wheel', e => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
   ox = e.offsetX - (e.offsetX - ox) * k; oy = e.offsetY - (e.offsetY - oy) * k; scale *= k; draw(); levelsSoon(); }, { passive: false });
@@ -982,6 +1043,9 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Enter' && roomDraw) closeRoom();
   if (e.key === 'Escape' && roomDraw) { roomDraw = null; draw(); }
   if (e.key === 'Backspace' && roomDraw && roomDraw.pts.length > 1) { roomDraw.pts.pop(); draw(); e.preventDefault(); }
+  if (e.key === 'Enter' && railDraw) finishRail();
+  if (e.key === 'Escape' && railDraw) { railDraw = null; draw(); }
+  if (e.key === 'Backspace' && railDraw && railDraw.pts.length > 1) { railDraw.pts.pop(); draw(); e.preventDefault(); }
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
 async function load(files) { for (const f of files) parseFile(await f.text(), f.name); fit(); if (grid) regen(); else draw();

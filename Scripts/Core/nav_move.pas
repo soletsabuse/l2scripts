@@ -120,7 +120,11 @@ const
   NAV_BAD_MS        = 60000;    // a node we could not get to is left out of routes this long
   NAV_SPOT_R        = 110;      // corner spot: this far from the corner node, round the corner
   NAV_STITCH        = 64;       // trace: a stroke end this close to another trace point is joined to it
-  NAV_CACHE_FMT     = 1;        // the graph cache (Library\Nav\cache): +1 when the build changes (old ones are not taken)
+  NAV_CACHE_FMT     = 2;        // the graph cache (Library\Nav\cache): +1 when the build changes (old ones are not taken)
+  NAV_RAIL_STEP     = 500;      // rail: its points at most this far apart (the server path is found only up to ~600)
+  NAV_RAIL_COST     = 0.5;      // ... a step along it costs this part of its length in routes (routes take the rail)
+  NAV_RAIL_REACH    = 80;       // ... at a rail point this close -> the next one
+  NAV_RAIL_PASS_MS  = 8000;     // ... a rail point reached is not gone back to for this long
 
 var
   NmUserX, NmUserY: array of integer;   // "N x y" lines of the grid file: own graph nodes
@@ -168,6 +172,12 @@ var
   // nodes) and size; the graph built from it is kept in Library\Nav\cache and taken from there next time
   NmGridVer, NmGridSig: string;
   NmGridOn: boolean;                    // the map is this .navgrid
+  // rails ("W x1 y1 x2 y2 ..." of the grid file): all their points in a row (split to NAV_RAIL_STEP) and
+  // the rail of each; as graph nodes: the rail / the point of every node (-1 = not a rail point)
+  NmRailX, NmRailY, NmRailOf: array of integer;
+  NmRailPN, NmRailN: integer;
+  NmNodeRail, NmNodePt: array of integer;
+  NmRailPassAt: array of cardinal;      // a rail node reached then (not gone back to for NAV_RAIL_PASS_MS)
   NmDbg: boolean;                       // NavSetDebug: the run moments into the debug log
   NmCached: boolean;                    // NavBuild took the graph from the cache
   // runs: the click we sent and when we really moved last (the thread that drives now owns them)
@@ -498,6 +508,49 @@ begin
   result := true;
 end;
 
+procedure NmRailPt(X, Y, Rail: integer);
+begin
+  if NmRailPN >= Length(NmRailX) then begin
+    SetLength(NmRailX, NmRailPN + 64);
+    SetLength(NmRailY, NmRailPN + 64);
+    SetLength(NmRailOf, NmRailPN + 64);
+  end;
+  NmRailX[NmRailPN] := X;
+  NmRailY[NmRailPN] := Y;
+  NmRailOf[NmRailPN] := Rail;
+  Inc(NmRailPN);
+end;
+
+// "W x1 y1 x2 y2 ..." of the grid file: a rail, its points in order; a stretch longer than NAV_RAIL_STEP
+// gets points in between (the server path is found only up to ~600)
+procedure NmAddRail(S: string);
+var k, n, j, m, X, Y, PX, PY, First: integer;
+  D: double;
+begin
+  First := NmRailPN;
+  n := 0;
+  PX := 0;
+  PY := 0;
+  k := 1;
+  while true do begin
+    X := StrToIntDef(NmField(S, k), NAV_NONE);
+    Y := StrToIntDef(NmField(S, k + 1), NAV_NONE);
+    if (X = NAV_NONE) or (Y = NAV_NONE) then break;
+    if n > 0 then begin
+      D := Sqrt(NmSq(X - PX) + NmSq(Y - PY));
+      m := Trunc((D - 1) / NAV_RAIL_STEP);
+      for j := 1 to m do
+        NmRailPt(PX + Round((X - PX) * j / (m + 1)), PY + Round((Y - PY) * j / (m + 1)), NmRailN);
+    end;
+    NmRailPt(X, Y, NmRailN);
+    PX := X;
+    PY := Y;
+    Inc(n);
+    k := k + 2;
+  end;
+  if n >= 2 then Inc(NmRailN) else NmRailPN := First;
+end;
+
 // lidar grid: "G x0 y0 cell cols rows z", then one "R ...." line per row ('.' = free). Here everything
 // but the rows: the size, the version (V), own nodes (N), removed nodes (X); the rows only when the graph
 // is not in the cache (NmGridRows) - the rows are the slow part of reading the file
@@ -509,6 +562,8 @@ begin
   result := false;
   NmUserN := 0;
   NmBanN := 0;
+  NmRailPN := 0;
+  NmRailN := 0;
   NmGridVer := '';
   NmGridSig := '';
   NmGridOn := false;
@@ -523,7 +578,7 @@ begin
   for i := 0 to L.Count - 1 do begin
     S := L[i];
     K := Copy(S, 1, 2);
-    if (K = 'R ') or (K = 'G ') or (K = 'N ') or (K = 'X ') then begin
+    if (K = 'R ') or (K = 'G ') or (K = 'N ') or (K = 'X ') or (K = 'W ') then begin
       Total := Total + Length(S);
       Inc(Cnt);
     end;
@@ -539,6 +594,7 @@ begin
       SetLength(NgFree, NgW * NgH);
       SetLength(NgSafe, NgW * NgH);
     end else if K = 'V' then NmGridVer := NmField(S, 1)
+    else if K = 'W' then NmAddRail(S)  // a rail drawn in the viewer
     else if (K = 'N') and (NmUserN < NAV_MAX_NODES) then begin   // a node drawn in the viewer
       SetLength(NmUserX, NmUserN + 1);
       SetLength(NmUserY, NmUserN + 1);
@@ -725,6 +781,29 @@ begin
   DX := NavX[i] - NavX[j];
   DY := NavY[i] - NavY[j];
   result := Sqrt(DX * DX + DY * DY);
+end;
+
+function NmLinked(A, B: integer): boolean;
+var e: integer;
+begin
+  result := false;
+  e := NavHead[A];
+  while e >= 0 do begin
+    if NavTo[e] = B then begin
+      result := true;
+      exit;
+    end;
+    e := NavNext[e];
+  end;
+end;
+
+// the link u-v in routes: a step along a rail (its points one after another) costs NAV_RAIL_COST of its
+// length - a route through that place takes the rail
+function NmCost(u, v: integer): double;
+begin
+  result := NmDist(u, v);
+  if (NmNodeRail[u] >= 0) and (NmNodeRail[u] = NmNodeRail[v]) and (Abs(NmNodePt[u] - NmNodePt[v]) = 1) then
+    result := result * NAV_RAIL_COST;
 end;
 
 procedure NmLink(A, B: integer);
@@ -1029,19 +1108,25 @@ begin
   NavN := 0;
   SetLength(NavX, NAV_MAX_NODES);
   SetLength(NavY, NAV_MAX_NODES);
+  SetLength(NmNodeRail, NAV_MAX_NODES);
+  SetLength(NmNodePt, NAV_MAX_NODES);
   for i := 1 to C.Count - 2 do begin   // the nodes first (the links need them)
     S := C[i];
     if (Copy(S, 1, 2) = 'N ') and (NavN < NAV_MAX_NODES) then begin
       NavX[NavN] := StrToIntDef(NmField(S, 1), 0);
       NavY[NavN] := StrToIntDef(NmField(S, 2), 0);
+      NmNodeRail[NavN] := StrToIntDef(NmField(S, 3), -1);
+      NmNodePt[NavN] := StrToIntDef(NmField(S, 4), 0);
       Inc(NavN);
     end;
   end;
   SetLength(NavHead, NavN);
   SetLength(NmBadUntil, NavN);
+  SetLength(NmRailPassAt, NavN);
   for i := 0 to NavN - 1 do begin
     NavHead[i] := -1;
     NmBadUntil[i] := 0;
+    NmRailPassAt[i] := 0;
   end;
   NavLinkN := 0;
   for i := 1 to C.Count - 2 do begin
@@ -1113,7 +1198,8 @@ begin
   if NmGridVer = '' then exit;
   C := TStringList.Create;
   C.Add(NmCacheKey());
-  for i := 0 to NavN - 1 do C.Add('N ' + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]));
+  for i := 0 to NavN - 1 do
+    C.Add('N ' + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]) + ' ' + IntToStr(NmNodeRail[i]) + ' ' + IntToStr(NmNodePt[i]));
   for i := 0 to NavN - 1 do begin
     S := '';
     e := NavHead[i];
@@ -1202,11 +1288,26 @@ begin
   NavN := 0;
   SetLength(NavX, NAV_MAX_NODES);
   SetLength(NavY, NAV_MAX_NODES);
+  SetLength(NmNodeRail, NAV_MAX_NODES);
+  SetLength(NmNodePt, NAV_MAX_NODES);
+  for i := 0 to NAV_MAX_NODES - 1 do begin
+    NmNodeRail[i] := -1;
+    NmNodePt[i] := 0;
+  end;
   // own nodes drawn in the viewer first: always kept, the corner nodes next to them are not added
   for i := 0 to NmUserN - 1 do
     if NavN < NAV_MAX_NODES then begin
       NavX[NavN] := NmUserX[i];
       NavY[NavN] := NmUserY[i];
+      Inc(NavN);
+    end;
+  // then the rail points, in order (the corner nodes next to them are not added either)
+  for i := 0 to NmRailPN - 1 do
+    if NavN < NAV_MAX_NODES then begin
+      NavX[NavN] := NmRailX[i];
+      NavY[NavN] := NmRailY[i];
+      NmNodeRail[NavN] := NmRailOf[i];
+      NmNodePt[NavN] := i;
       Inc(NavN);
     end;
   for cy := 0 to NgH - 1 do
@@ -1248,9 +1349,11 @@ begin
     end;
   SetLength(NavHead, NavN);
   SetLength(NmBadUntil, NavN);
+  SetLength(NmRailPassAt, NavN);
   for i := 0 to NavN - 1 do begin
     NavHead[i] := -1;
     NmBadUntil[i] := 0;
+    NmRailPassAt[i] := 0;
   end;
   NavLinkN := 0;
   for i := 0 to NavN - 1 do
@@ -1262,6 +1365,10 @@ begin
       Y2 := NavY[j];
       if NmLineFree(X, Y, X2, Y2, true) then NmLink(i, j);
     end;
+  // a rail: its points one after another are always linked (drawn by hand: the map may not see it)
+  for i := 0 to NavN - 2 do
+    if (NmNodeRail[i] >= 0) and (NmNodeRail[i + 1] = NmNodeRail[i]) and (NmNodePt[i + 1] = NmNodePt[i] + 1) and
+       (not NmLinked(i, i + 1)) then NmLink(i, i + 1);
   NmBuildRun();
   NmReady := true;                     // the other threads may use the graph from now on
   Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) +
@@ -1270,8 +1377,8 @@ begin
   if NmGridOn then NmSaveCache();      // the next start with this very grid takes it from the cache
 end;
 
-// server path to one node without stopping at it: true as soon as we are near it
-function NmGo(PX, PY, PZ: integer): boolean;
+// server path to one node without stopping at it: true as soon as we are within Reach of it
+function NmGoR(PX, PY, PZ, Reach: integer): boolean;
 var UX, UY, LX, LY, Stuck: integer;
   Started, StillSince: cardinal;
 begin
@@ -1283,7 +1390,7 @@ begin
   LY := User.Y;
   if NmDbg then NmLog('to node ' + NmXY(PX, PY) + ' d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
   NavClick(PX, PY, PZ);
-  while User.DistTo(PX, PY, PZ) > NAV_POINT_REACH do begin
+  while User.DistTo(PX, PY, PZ) > Reach do begin
     if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
     if User.Dead then exit;
     if GetTickCount - Started > NAV_POINT_MS then begin
@@ -1312,6 +1419,11 @@ begin
   end;
   if NmDbg then NmLog('node ' + NmXY(PX, PY) + ' reached in ' + IntToStr(GetTickCount - Started) + ' ms');
   result := true;
+end;
+
+function NmGo(PX, PY, PZ: integer): boolean;
+begin
+  result := NmGoR(PX, PY, PZ, NAV_POINT_REACH);
 end;
 
 // THE route count: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way); first node = in sight
@@ -1358,7 +1470,7 @@ begin
     while e >= 0 do begin
       v := NavTo[e];
       if (not NavDone[v]) and (GetTickCount >= NmBadUntil[v]) then begin
-        Alt := NavD[u] + NmDist(u, v);
+        Alt := NavD[u] + NmCost(u, v);
         if Alt < NavD[v] then begin
           NavD[v] := Alt;
           NavPrev[v] := u;
@@ -1455,7 +1567,7 @@ begin
     while e >= 0 do begin
       v := NavTo[e];
       if (not Done[v]) and (T >= NmBadUntil[v]) then begin
-        Alt := BestD + NmDist(u, v);
+        Alt := BestD + NmCost(u, v);
         if Alt < NmFD[Base + v] then begin
           NmFD[Base + v] := Alt;
           NmFN[Base + v] := u;
@@ -1616,10 +1728,67 @@ begin
   if n = k then result := StrToIntDef(Copy(R, St, Length(R) - St + 1), -1);
 end;
 
+// a rail point still to go to: a rail node not reached lately; at it now (within NAV_RAIL_REACH) = reached
+function NmRailTodo(i: integer): boolean;
+begin
+  result := false;
+  if (i < 0) or (i >= NavN) or (NmNodeRail[i] < 0) then exit;
+  if (NmRailPassAt[i] <> 0) and (GetTickCount - NmRailPassAt[i] < NAV_RAIL_PASS_MS) then exit;
+  if NmDist2(User.X, User.Y, i) <= NAV_RAIL_REACH then begin
+    NmRailPassAt[i] := GetTickCount;
+    exit;
+  end;
+  result := true;
+end;
+
+// a rail point to go to among the route nodes k.. (a route of NmRoute)
+function NmRailAhead(R: string; k: integer): boolean;
+var j, n: integer;
+begin
+  result := false;
+  n := NmRouteCount(R);
+  for j := k to n - 1 do
+    if NmRailTodo(NmRouteAt(R, j)) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// a rail point within 300 of the straight line X1, Y1 - X2, Y2
+function NmRailNear(X1, Y1, X2, Y2: integer): boolean;
+var p: integer;
+  DX, DY, L2, T, QX, QY: double;
+begin
+  result := false;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L2 := DX * DX + DY * DY;
+  for p := 0 to NmRailPN - 1 do begin
+    T := 0;
+    if L2 > 0 then T := ((NmRailX[p] - X1) * DX + (NmRailY[p] - Y1) * DY) / L2;
+    if T < 0 then T := 0;
+    if T > 1 then T := 1;
+    QX := X1 + DX * T - NmRailX[p];
+    QY := Y1 + DY * T - NmRailY[p];
+    if QX * QX + QY * QY <= 90000 then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// the way to X, Y goes along a rail (it is run point by point, even when X, Y is in sight)
+function NmRouteHasRail(X, Y: integer): boolean;
+begin
+  result := false;
+  if (NmRailPN = 0) or (not NmReady) then exit;
+  result := NmRailAhead(NmRoute(X, Y), 0);
+end;
+
 // where to click now on the way to X, Y: the farthest node of the route that is in sight of us
 // (a short cut over the nodes before it); false = the target is in sight itself, or no way
 function NavWaypoint(X, Y: integer): boolean;
-var k, i, n, Best, UX, UY, PX, PY: integer;
+var k, i, n, Best, Lim, UX, UY, PX, PY: integer;
   R: string;
 begin
   result := false;
@@ -1633,7 +1802,8 @@ begin
     NmWcMsSet := true;
   end;
   if (NmWcMs > 0) and (NmWcAt <> 0) and (GetTickCount - NmWcAt < NmWcMs) and (Abs(X - NmWcTX) < 64) and
-     (Abs(Y - NmWcTY) < 64) and (Abs(UX - NmWcUX) < 64) and (Abs(UY - NmWcUY) < 64) then begin
+     (Abs(Y - NmWcTY) < 64) and (Abs(UX - NmWcUX) < 64) and (Abs(UY - NmWcUY) < 64) and
+     ((not NmWcRes) or (NmSq(UX - NmWpX) + NmSq(UY - NmWpY) > NAV_RAIL_REACH * NAV_RAIL_REACH)) then begin
     result := NmWcRes;
     exit;
   end;
@@ -1643,6 +1813,53 @@ begin
   NmWcUX := UX;
   NmWcUY := UY;
   NmWcRes := false;
+  // a rail on the way: its next point not reached is the limit - nothing past it is clicked. Near it
+  // (a rail step): that point itself, the server path finds it; still far: the farthest route node
+  // before it in sight (with the margin, else at all, else the first)
+  // (a target in sight within 600 with no rail point near the straight line: no route needed - the pull)
+  if (NmRailPN > 0) and (not ((NmSq(X - UX) + NmSq(Y - UY) <= 360000) and NmRunFree(UX, UY, X, Y) and
+     (not NmRailNear(UX, UY, X, Y)))) then begin
+    R := NmRoute(X, Y);
+    n := NmRouteCount(R);
+    Lim := -1;
+    for k := 0 to n - 1 do
+      if NmRailTodo(NmRouteAt(R, k)) then begin
+        Lim := k;
+        break;
+      end;
+    if Lim >= 0 then begin
+      i := NmRouteAt(R, Lim);
+      if NmDist2(UX, UY, i) > NAV_RAIL_STEP + 100 then begin
+        Best := -1;
+        for k := Lim downto 0 do begin
+          PX := NavX[NmRouteAt(R, k)];
+          PY := NavY[NmRouteAt(R, k)];
+          if NmRunFree(UX, UY, PX, PY) then begin
+            Best := k;
+            break;
+          end;
+        end;
+        if Best < 0 then
+          for k := Lim downto 0 do begin
+            PX := NavX[NmRouteAt(R, k)];
+            PY := NavY[NmRouteAt(R, k)];
+            if NmLineFree(UX, UY, PX, PY, false) then begin
+              Best := k;
+              break;
+            end;
+          end;
+        if Best < 0 then Best := 0;
+        i := NmRouteAt(R, Best);
+      end;
+      NmWpX := NavX[i];
+      NmWpY := NavY[i];
+      result := true;
+      NmWcRes := true;
+      if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': rail on the way - ' + NmXY(NmWpX, NmWpY) + ' (rail point at route ' +
+        IntToStr(Lim + 1) + '/' + IntToStr(n) + ')');
+      exit;
+    end;
+  end;
   if NmRunFree(UX, UY, X, Y) then begin   // straight to it
     if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': in sight with the margin - straight');
     exit;
@@ -1697,7 +1914,7 @@ end;
 // true = the target is in sight now (the caller runs the rest)
 function NavGraphTo(X, Y, Z: integer): boolean;
 var i, k, PX, PY, NX2, NY2, RN: integer;
-  Ok: boolean;
+  Ok, Got, Rail: boolean;
   S: string;
   R: string;                             // the route (own: other threads count theirs meanwhile)
 begin
@@ -1723,11 +1940,13 @@ begin
   Ok := true;
   k := 0;
   while k < RN do begin
-    if NavSeeFromUs(X, Y) then begin   // the target is in sight: the rest goes straight
+    // the target is in sight: the rest goes straight - but a rail point ahead is gone to first
+    if NavSeeFromUs(X, Y) and (not NmRailAhead(R, k)) then begin
       if NmDbg then NmLog('graph: the target is in sight - the rest straight');
       break;
     end;
-    if k + 1 < RN then begin
+    Rail := NmRailTodo(NmRouteAt(R, k));
+    if (k + 1 < RN) and (not Rail) then begin
       i := NmRouteAt(R, k + 1);
       NX2 := NavX[i];
       NY2 := NavY[i];
@@ -1739,7 +1958,12 @@ begin
     i := NmRouteAt(R, k);
     PX := NavX[i];
     PY := NavY[i];
-    if not NmGo(PX, PY, Z) then begin
+    if Rail then begin                 // a rail point: right to it (a rail step: the server path finds it)
+      if NmDbg then NmLog('graph: rail point ' + NmXY(PX, PY));
+      Got := NmGoR(PX, PY, Z, NAV_RAIL_REACH);
+      if Got then NmRailPassAt[i] := GetTickCount;
+    end else Got := NmGo(PX, PY, Z);
+    if not Got then begin
       if not User.Dead then begin
         // the map is wrong there (painted walkable, but it is not): routes go round it for a while
         NmBadUntil[i] := GetTickCount + NAV_BAD_MS;   // first the ban, then the version (keep this order)
@@ -2284,7 +2508,7 @@ begin
   Started := GetTickCount;
   if NmDbg then NmLog('RUN to ' + NmXY(X, Y) + ' reach ' + IntToStr(Reach) + ' d=' + IntToStr(Round(NmDistTo(X, Y))) +
     ' in sight with the margin ' + IntToStr(Ord(NavSeeFromUs(X, Y))));
-  if NmReady and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
+  if NmReady and (not NavBusyFlag) and ((not NavSeeFromUs(X, Y)) or NmRouteHasRail(X, Y)) then NavGraphTo(X, Y, Z);
   result := NmRunPlain(X, Y, Z, Reach);
   if (not result) and (not User.Dead) and (not NavBusyFlag) and NmReady then begin
     if NmDbg then NmLog('RUN: the plain run failed - along the map again');
