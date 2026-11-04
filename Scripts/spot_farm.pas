@@ -30,6 +30,10 @@ unit SpotFarm;
 //   No SetPath and no SetTeleport = stay mode: farm where started, never travel, wait for a res on death.
 //     SetAoeFarm(5, 302, 444, [36], [20941, 20944]);  // optional: farm WITHOUT the interface (pull pack of 5,
 //                                          //   mass spoil 302, mass sweep 444, AoE skills, mob IDs; [0] = none/any)
+//     SetRoam(true);                       // optional, AoE mode: no mobs in sight -> run round the zone (the parts
+//                                          //   not seen longest first) until a mob shows up; no line = back to the spot start
+//     SetInterface(true);                  // optional, AoE / caster mode: the bot interface (SetConfig profile) is ON
+//                                          //   while farming - junk delete, potions...; fighting in the profile must be OFF
 //     -- alerts: defaults below, these lines only change them --
 //     SetPlayerAlert(2000);                // player (not party/clan) closer than N; default 0 = off
 //     SetPrivateAlert(true);               // private messages; default ON, false = off
@@ -49,7 +53,7 @@ unit SpotFarm;
 
 interface
 
-uses SysUtils, Classes;
+uses SysUtils, Classes, ZoneRoam in 'Core\zone_roam.pas';
 
 // ===================== Supplies for AddSupply (value = inventory item ID) =====================
 const
@@ -86,6 +90,8 @@ procedure SetExpOff(Enabled: boolean);
 procedure SetTreeMobs(BowID, MeleeID, BowRange: integer);
 procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, MobIDs: array of integer);
 procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
+procedure SetRoam(Enabled: boolean);
+procedure SetInterface(Enabled: boolean);
 procedure SetCasterFarm(MobIDs: array of integer);
 procedure SetSummon(SummonSkillID, RenewPercent: integer);
 procedure SetTargetRange(Range: integer);
@@ -157,6 +163,10 @@ const
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
   PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
   PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
+  ROAM_RUN_MS       = 30000;   // SetRoam: one run to a roam point at most this long
+  ROAM_STUCK_MS     = 2500;    // SetRoam: not moved this long on the way = cannot get there
+  ROAM_REACHED      = 300;     // SetRoam: "I am at the roam point"
+  ROAM_PACK_MS      = 20000;   // SetRoam: mobs on us but nothing more in sight -> run round with them this long, then fight
   PATH_REACHED      = 150;     // "I am at the point"
   SOUND_DIR         = '..\Sounds\';   // relative to Library\Scripts (Script.Path)
   DEFAULT_PLAYER_ALERT_RANGE = 0;     // players around: OFF by default (SetPlayerAlert(2000) turns it on)
@@ -211,6 +221,7 @@ var
 // ===================== AoE farm (SetAoeFarm) =====================
   AoeEnabled: boolean;            // SetAoeFarm called: the script farms, the interface stays OFF
   FarmPaused: boolean;            // AoE mode: FarmOff() pauses AoeFarm_Thread
+  ScriptInterface: boolean;       // SetInterface: AoE / caster mode, the bot interface is ON while farming
   AoePackSize, AoeSpoilSkill, AoeSweepSkill: integer;
   AoeSkills: array of integer;    // AoE damage skills; empty = plain attack
   AoeMobIDs: array of integer;    // mobs to pull; empty = any mob in the zone
@@ -254,6 +265,7 @@ var
   PatrolPoints: array of integer; // x, y, z triples; empty = no patrol
   PatrolIdle: integer;            // seconds without a target before patrolling (profile mode)
   PatrolIdx: integer;             // next patrol point
+  RoamOn: boolean;                // SetRoam: AoE mode, no mobs in sight -> run round the zone
 
 // ===================== Tree mobs (SetTreeMobs) =====================
   TreeEnabled: boolean;
@@ -487,6 +499,16 @@ end;
 function HasPatrol(): boolean;
 begin
   result := Length(PatrolPoints) >= 3;
+end;
+
+procedure SetRoam(Enabled: boolean);
+begin
+  RoamOn := Enabled;
+end;
+
+procedure SetInterface(Enabled: boolean);
+begin
+  ScriptInterface := Enabled;
 end;
 
 // walks to the next patrol point (round robin)
@@ -797,11 +819,12 @@ end;
 // ===================== Farm ON / OFF =====================
 // Profile mode: the bot interface (FaceControl) farms.
 // AoE mode (SetAoeFarm): the interface stays OFF, AoeFarm_Thread farms; ON/OFF = unpause/pause it.
+// SetInterface(true): the interface is ON too (junk delete, potions... of the profile, no fighting in it).
 
 procedure FarmOn();
 begin
   if AoeEnabled or CasterEnabled then begin
-    Engine.FaceControl(0, false);
+    Engine.FaceControl(0, ScriptInterface);
     FarmPaused := false;
   end else
     Engine.FaceControl(0, true);
@@ -938,17 +961,70 @@ begin
   end;
 end;
 
+// SetRoam: nothing to pull in sight -> run to the nearest part of the zone not seen for a while
+// (Core\zone_roam.pas) in short steps; stop as soon as a mob to pull shows up, a new mob is on us
+// or something else needs the character. Not standing in a bot zone -> back to the spot start
+procedure AoeRoamStep();
+var TX, TY, TZ, UX, UY, LastX, LastY, AggroStart, MX, MY, MZ, MOID: integer;
+  Started, MovedAt: cardinal;
+  DX, DY: double;
+begin
+  if not RoamNext() then begin
+    AoeRunToSpot();
+    exit;
+  end;
+  TX := RoamX();
+  TY := RoamY();
+  TZ := User.Z;
+  Engine.Msg('[Roam]', 'No mobs in sight, running round the zone to ' + IntToStr(TX) + ', ' + IntToStr(TY), 0);
+  AggroStart := AoeCountAggro();
+  Started := GetTickCount;
+  MovedAt := Started;
+  LastX := User.X;
+  LastY := User.Y;
+  while not AoeMustStop() do begin
+    UX := User.X;
+    UY := User.Y;
+    DX := TX - UX;
+    DY := TY - UY;
+    if Sqrt(DX * DX + DY * DY) < ROAM_REACHED then exit;
+    if TreeBusy then exit;
+    if (BuffID <> 0) and (BuffTime(BuffID) < REBUFF_TIME) then exit;   // rebuff first
+    if AoeFindPullMob(MX, MY, MZ, MOID) then exit;                     // a mob to pull in sight
+    if AoeCountAggro() > AggroStart then exit;                          // a new mob is on us
+    if GetTickCount - Started > ROAM_RUN_MS then exit;
+    // not moving: a wall / no way there -> that place is skipped for a while
+    DX := UX - LastX;
+    DY := UY - LastY;
+    if Sqrt(DX * DX + DY * DY) >= 50 then begin
+      MovedAt := GetTickCount;
+      LastX := UX;
+      LastY := UY;
+    end else if GetTickCount - MovedAt > ROAM_STUCK_MS then begin
+      Engine.Msg('[Roam]', 'Cannot get there, another place', 0);
+      RoamFailed();
+      exit;
+    end;
+    Engine.MoveTo(TX, TY, TZ, PATROL_STEP_MS);
+    RoamSeen();
+    Delay(50);
+  end;
+end;
+
 procedure AoePullPack();
 var
   PrevCount, NoProgress, AggroBefore, MX, MY, MZ, MOID: integer;
+  RoamPackAt: cardinal;
 begin
   PrevCount := -1;
   NoProgress := 0;
+  RoamPackAt := 0;
   while (AoeCountAggro() < AoePackSize) and (not AoeMustStop()) do begin
     if AoeCountAggro() <> PrevCount then begin
       Engine.Msg('[AoE]', 'Aggro ' + IntToStr(AoeCountAggro()) + '/' + IntToStr(AoePackSize), 0);
       PrevCount := AoeCountAggro();
       NoProgress := 0;
+      RoamPackAt := 0;
     end else
       Inc(NoProgress);
     if NoProgress > 25 then begin
@@ -957,7 +1033,19 @@ begin
     end;
 
     if not AoeFindPullMob(MX, MY, MZ, MOID) then begin
-      if HasPatrol() then PatrolStep() else AoeRunToSpot();   // no mobs: patrol (SetPatrol) or back to the spot start
+      // no mobs: patrol (SetPatrol), run round the zone (SetRoam) or back to the spot start
+      if HasPatrol() then PatrolStep()
+      else if RoamOn then begin
+        if AoeCountAggro() > 0 then begin
+          // mobs on us, nothing more in sight: we run round with them only for a while
+          if RoamPackAt = 0 then RoamPackAt := GetTickCount
+          else if GetTickCount - RoamPackAt > ROAM_PACK_MS then begin
+            Engine.Msg('[AoE]', 'Nothing more in sight, fighting what we have', 0);
+            exit;
+          end;
+        end;
+        AoeRoamStep();
+      end else AoeRunToSpot();
       Delay(300);
       continue;
     end;

@@ -10,7 +10,10 @@ begin
    SetLogin('JUQqwer', 'ASD123qwe');
 
   SetZone('abg_io.zmap');                                    // Library\Zones
-  //SetConfig('tanor_dmp.xml');                                      // Library\Configurations
+  // bot interface ON while farming (the script fights, the interface deletes junk / drinks potions):
+  // the profile from Library\Configurations, fighting in it must be OFF (AutoAtk), pickup better OFF
+  SetConfig('alarm.xml');
+  SetInterface(true);
   SetTeleport('_bbs_teleport?id=93&fromtown=6');  // Aden gatekeeper -> spot
 
   // watched buff ID + buff bypasses (sent in this order)
@@ -33,6 +36,10 @@ begin
 
   // no mobs in sight while pulling -> walk these points (inside the zone)
   // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);
+
+  // no mobs in sight -> run round the whole zone (the parts not seen longest first) until a mob shows up;
+  // with SetPatrol its points are walked instead
+  SetRoam(true);
 
   // where to stand while rebuffing on the spot (no line = buff where you stand after the mobs are dead)
   // SetSafePoint(x, y, z);
