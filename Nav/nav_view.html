@@ -858,7 +858,7 @@ const CARDS = [
     { k: 'auto_corner', l: 'Look for a corner within', type: 'num', ph: '0', h: 'no fitting farm spot — a wall corner within this radius (0 — off)' },
     { k: 'ranged_ms', l: 'Ranged attacker, ms', type: 'num', ph: '3000', h: 'a mob on us stands and does not come this long — run to kill it, then back (0 — wait)' },
     { k: 'room_order', l: 'Room order', type: 'sel', opts: [['', 'Smart: where most mobs are (by room "min")'], ['SEQ', 'In turn: A, B, C… without counting mobs']],
-      h: 'in turn — in the order of the room list on the map, each to the last mob, then the next one' },
+      h: 'in turn — in the order of the room list on the map from the room nearest to the start (started in B — B, C, …, A); its pack is dead — on to the next one at once, mobs on us come along' },
     { k: 'room_cycle_wait', l: 'Pause after a round, s', type: 'num', ph: '0', h: 'in turn: all rooms done — wait this long, then a new round (0 — at once)' },
     { k: 'room_recount', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
     { k: 'room_ignore_way', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight)' },

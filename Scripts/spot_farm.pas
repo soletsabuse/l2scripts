@@ -34,6 +34,8 @@ unit SpotFarm;
 //                                          //   not seen longest first) until a mob shows up; no line = back to the spot start
 //     SetInterface(true);                  // optional, AoE / caster mode: the bot interface (SetConfig profile) is ON
 //                                          //   while farming - junk delete, potions...; fighting in the profile must be OFF
+//     SetSpoilPerMob(1);                   // optional, AoE mode: mass spoil counted like the pack scripts - cast only while
+//                                          //   a mob next to us was under fewer than N of our mass spoils; no line = old way
 //     -- alerts: defaults below, these lines only change them --
 //     SetPlayerAlert(2000);                // player (not party/clan) closer than N; default 0 = off
 //     SetPrivateAlert(true);               // private messages; default ON, false = off
@@ -92,6 +94,7 @@ procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, Mob
 procedure SetPatrol(IdleSeconds: integer; Points: array of integer);
 procedure SetRoam(Enabled: boolean);
 procedure SetInterface(Enabled: boolean);
+procedure SetSpoilPerMob(Count: integer);
 procedure SetCasterFarm(MobIDs: array of integer);
 procedure SetSummon(SummonSkillID, RenewPercent: integer);
 procedure SetTargetRange(Range: integer);
@@ -158,6 +161,9 @@ const
   AOE_AGGRO_DIST    = 1500;    // AoE mode: "aggro" mobs farther than this are ignored (stuck / teleported)
   AOE_SWEEP_RANGE   = 150;      // AoE mode: sweep only corpses this close
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
+  AOE_SPOIL_AREA    = 200;      // SetSpoilPerMob: mobs this close to us are taken as hit by a mass spoil
+  AOE_SPOIL_GAP_MS  = 1500;     // SetSpoilPerMob: at least this long between mass spoils
+  AOE_SPOIL_MAX     = 12;       // SetSpoilPerMob: max mass spoil casts per pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
@@ -225,6 +231,13 @@ var
   AoePackSize, AoeSpoilSkill, AoeSweepSkill: integer;
   AoeSkills: array of integer;    // AoE damage skills; empty = plain attack
   AoeMobIDs: array of integer;    // mobs to pull; empty = any mob in the zone
+  AoeSpoilPerMob: integer;        // SetSpoilPerMob: that many mass spoils per mob are enough (0 = old way)
+  AoeSpoiledOID: array[0..63] of integer;   // mobs of the pack under our mass spoil ...
+  AoeSpoiledCnt: array[0..63] of integer;   // ... how many times
+  AoeSpoiledHead, AoeSpoilCasts: integer;
+  AoeNextSpoil: cardinal;
+  AoeSnapOID: array[0..31] of integer;      // mobs under the last mass spoil (taken at the cast)
+  AoeSnapN: integer;
 
 // ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
   CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
@@ -509,6 +522,11 @@ end;
 procedure SetInterface(Enabled: boolean);
 begin
   ScriptInterface := Enabled;
+end;
+
+procedure SetSpoilPerMob(Count: integer);
+begin
+  AoeSpoilPerMob := Count;
 end;
 
 // walks to the next patrol point (round robin)
@@ -904,12 +922,123 @@ begin
   end;
 end;
 
-procedure AoeTrySpoil();
+// ---- mass spoil counted (SetSpoilPerMob), like the pack scripts: no spoil messages are read, a mob
+// counts as spoiled once it was under AoeSpoilPerMob of our mass spoils ----
+
+function AoeSkillLeft(ID: integer): cardinal;
+var Sk: TL2Skill;
 begin
-  if (AoeSpoilSkill > 0) and AoeHasUnspoiledMob() then begin
-    Engine.UseSkill(AoeSpoilSkill);
-    Delay(150);
+  result := 0;
+  if SkillList.ByID(ID, Sk) then result := Sk.EndTime;
+end;
+
+// a new pack: nobody spoiled yet
+procedure AoeSpoilReset();
+var k: integer;
+begin
+  for k := 0 to 63 do begin
+    AoeSpoiledOID[k] := 0;
+    AoeSpoiledCnt[k] := 0;
   end;
+  AoeSpoiledHead := 0;
+  AoeSpoilCasts := 0;
+  AoeNextSpoil := 0;
+end;
+
+// how many of our mass spoils this mob was under
+function AoeSpoilHits(OID: integer): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to 63 do
+    if AoeSpoiledOID[k] = OID then begin
+      result := AoeSpoiledCnt[k];
+      exit;
+    end;
+end;
+
+// mobs on us within the mass spoil reach that were under fewer than AoeSpoilPerMob of our mass spoils
+// (all at the start; later the ones that came late)
+function AoeCountUnspoiled(): integer;
+var i, NX, NY, NZ: integer;
+begin
+  result := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if not AoeMobIsAggroed(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if User.DistTo(NX, NY, NZ) > AOE_SPOIL_AREA then continue;
+    if AoeSpoilHits(NpcList(i).OID) < AoeSpoilPerMob then Inc(result);
+  end;
+end;
+
+// a mass spoil is cast now: remember every live mob close enough to be hit; result = how many
+function AoeSnapSpoilArea(): integer;
+var i, NX, NY, NZ: integer;
+begin
+  AoeSnapN := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead or IsIgnoredNpc(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if User.DistTo(NX, NY, NZ) > AOE_SPOIL_AREA then continue;
+    if AoeSnapN > 31 then break;
+    AoeSnapOID[AoeSnapN] := NpcList(i).OID;
+    Inc(AoeSnapN);
+  end;
+  result := AoeSnapN;
+end;
+
+// the mass spoil went out: every mob taken at the cast was under it once more
+procedure AoeMarkSpoiled();
+var j, k, OID: integer;
+  Found: boolean;
+begin
+  for j := 0 to AoeSnapN - 1 do begin
+    OID := AoeSnapOID[j];
+    Found := false;
+    for k := 0 to 63 do
+      if AoeSpoiledOID[k] = OID then begin
+        Inc(AoeSpoiledCnt[k]);
+        Found := true;
+        break;
+      end;
+    if Found then continue;
+    AoeSpoiledOID[AoeSpoiledHead] := OID;
+    AoeSpoiledCnt[AoeSpoiledHead] := 1;
+    AoeSpoiledHead := (AoeSpoiledHead + 1) mod 64;
+  end;
+end;
+
+// SetSpoilPerMob: a mass spoil only while a mob on us next to us has fewer than AoeSpoilPerMob of
+// them, the skill is ready, AOE_SPOIL_GAP_MS after the last one, at most AOE_SPOIL_MAX per pack.
+// No SetSpoilPerMob: the old way - while any mob on us is not seen spoiled
+procedure AoeTrySpoil();
+var R, N: integer;
+begin
+  if AoeSpoilSkill <= 0 then exit;
+  if AoeSpoilPerMob <= 0 then begin
+    if AoeHasUnspoiledMob() then begin
+      Engine.UseSkill(AoeSpoilSkill);
+      Delay(150);
+    end;
+    exit;
+  end;
+  if (AoeSpoilCasts >= AOE_SPOIL_MAX) or (GetTickCount < AoeNextSpoil) then exit;
+  if AoeSkillLeft(AoeSpoilSkill) > 0 then exit;
+  R := AoeCountUnspoiled();
+  if R = 0 then exit;
+  N := AoeSnapSpoilArea();
+  if Engine.UseSkill(AoeSpoilSkill) then begin
+    Inc(AoeSpoilCasts);
+    AoeMarkSpoiled();
+    Engine.Msg('[AoE]', 'Mass spoil #' + IntToStr(AoeSpoilCasts) + ': ' + IntToStr(R) + ' of ' + IntToStr(N) +
+      ' mobs near had fewer than ' + IntToStr(AoeSpoilPerMob), 0);
+  end;
+  AoeNextSpoil := GetTickCount + AOE_SPOIL_GAP_MS;
+  Delay(150);
 end;
 
 procedure AoeTrySweep();
@@ -1070,6 +1199,7 @@ end;
 procedure AoeFightPack();
 var i, ai, OID: integer;
 begin
+  AoeSpoilReset();   // SetSpoilPerMob: a new pack, nobody spoiled yet
   while (AoeCountAggro() > 0) and (not User.Dead) and (not NeedReturn) do begin
     OID := 0;
     for i := 0 to NpcList.Count - 1 do

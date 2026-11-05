@@ -545,7 +545,7 @@ K corner_radius 80
 K room_players -1
 K room_order SEQ
 K room_cycle_wait 18
-K player_alert 2000
+K player_alert 500
 K chat_alert 1000
 K champion_alert 0
 K tap_always 1

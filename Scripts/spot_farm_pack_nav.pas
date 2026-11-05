@@ -426,8 +426,10 @@ var
   PkSpotsOnly: boolean;           // SetSpotsOnly: the pack goes only to the farm spots of the map
   NoPickup: boolean;              // SetPickup(false) / pickup 0: the drop is not picked up
   PkSkipChamps: boolean;          // SetSkipChampions: champions are not pulled / fought
-  PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another A, B, C..., no counting
+  PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another from the nearest (B, C, ..., A), no counting
   PkSeqNext, PkSeqGoal: integer;  // SEQ: the room to go to next / the one we went for
+  PkSeqStarted: boolean;          // SEQ: the first room was picked (the nearest one, then on in order)
+  PkRoomLeft: integer;            // the room done last + 1 (0 = none): aggro there is not "this room is ours"
   PkCycleWait: integer;           // room_cycle_wait: SEQ, after the last room wait this many seconds
   PkSeqWaitUntil: cardinal;       // ... until then
   PkRoomRecount: boolean;         // room_recount: the pull takes the mobs that came up meanwhile too
@@ -5277,11 +5279,58 @@ begin
   if PkAtRoom(n) and (PkRunFailRoom = n) then PkRunFails := 0;   // got there
 end;
 
-// the room is done (empty / its pack killed): stats, in order -> the next one (the round pause after
-// the last), no room selected - the next tick picks the next room
+// the room nearest to us: we are in it / at its farm spot -> that one, else the nearest polygon edge
+function PkNearestRoom(): integer;
+var k, UX, UY: integer;
+  D, BestD: double;
+begin
+  result := 0;
+  BestD := 1E18;
+  UX := User.X;
+  UY := User.Y;
+  for k := 0 to RoomCount() - 1 do begin
+    if RoomPointCount(k) < 3 then continue;
+    if PkAtRoom(k) then D := 0 else D := RoomDist(k, UX, UY);
+    if D < BestD then begin
+      BestD := D;
+      result := k;
+    end;
+  end;
+end;
+
+// rooms in order: the next room of the list (the order of the viewer) from PkSeqNext, whatever its mobs;
+// a room with another player in it now / avoided -> the one after it. The first pick after the start
+// begins with the room nearest to us (started in B -> B, C, ..., A). -1 = every room busy
+function PkSeqSelect(): integer;
+var k, n: integer;
+begin
+  result := -1;
+  if not PkSeqStarted then begin
+    PkSeqStarted := true;
+    PkSeqNext := PkNearestRoom();
+  end;
+  for k := 0 to RoomCount() - 1 do begin
+    n := (PkSeqNext + k) mod RoomCount();
+    if (not RoomBusy(n)) and (not RoomTaken(n)) and (RoomPointCount(n) >= 3) then begin
+      result := n;
+      break;
+    end;
+  end;
+  if result < 0 then exit;
+  PkSeqNext := result;
+  PkSeqGoal := result;
+  PkRoomWaiting := false;
+  Engine.Msg('[Room]', 'In order: to room ' + RoomName(result), 0);
+  PkRoomSet(result);
+end;
+
+// the room is done (empty / its pack killed): stats, in order -> the next one is taken right now (the
+// round pause after the last: none taken, the next tick waits); by the count -> no room selected, the
+// next tick picks one
 procedure PkRoomDone(n: integer; Why: string);
 begin
   Engine.Msg('[Room]', 'Room ' + RoomName(n) + ' ' + Why, 0);
+  PkRoomLeft := n + 1;
   if PkRoomSeq and (n = PkSeqGoal) then begin
     PkSeqNext := n + 1;
     if (PkSeqNext >= RoomCount()) and (PkCycleWait > 0) then begin
@@ -5292,6 +5341,7 @@ begin
   end;
   RoomMarkCleared(n);
   PkRoomSel := 0;
+  if PkRoomSeq and (GetTickCount >= PkSeqWaitUntil) then PkSeqSelect();
 end;
 
 // FARM_ROOMS: the room with the most mobs expected (with its minimum), farmed empty by its own mode,
@@ -5329,11 +5379,13 @@ begin
   end;
   if PkCountAggro() > 0 then begin
     cur := PkRoomSel - 1;
-    // a fight began in a room we only ran through (another room was the goal): this room is ours now
+    // a fight began in a room we only ran through (another room was the goal): this room is ours now -
+    // not the room we have just done (a mob that came up there after its pack comes along to the next)
     UX := User.X;
     UY := User.Y;
     for k := 0 to RoomCount() - 1 do
-      if (not PkIgnoreWay) and (k <> cur) and RoomInside(k, UX, UY) and (RoomMode(k) <> FARM_SINGLE) then begin
+      if (not PkIgnoreWay) and (k <> cur) and (k <> PkRoomLeft - 1) and RoomInside(k, UX, UY) and
+         (RoomMode(k) <> FARM_SINGLE) then begin
         Engine.Msg('[Room]', 'Aggro in room ' + RoomName(k) + ' on the way - farming it now', 0);
         PkRoomSet(k);
         PkRoomWaiting := false;
@@ -5374,7 +5426,7 @@ begin
     if RoomBusy(cur) then cur := -1
     else if (not PkRoomWaiting) and PkAtRoom(cur) and (RoomFree(cur) = 0) then begin
       PkRoomDone(cur, 'cleared');
-      cur := -1;
+      cur := PkRoomSel - 1;            // in order: the next room is taken already (-1 = none / round pause)
     end;
   end;
   if (cur < 0) and PkRoomSeq and (GetTickCount < PkSeqWaitUntil) then begin
@@ -5384,29 +5436,14 @@ begin
     exit;
   end;
   if (cur < 0) and PkRoomSeq then begin
-    // in order: the next room of the list (the order of the viewer), whatever its mobs; a room with
-    // another player in it now / avoided -> the one after it
-    n := -1;
-    for k := 0 to RoomCount() - 1 do begin
-      cur := (PkSeqNext + k) mod RoomCount();
-      if (not RoomBusy(cur)) and (not RoomTaken(cur)) and (RoomPointCount(cur) >= 3) then begin
-        n := cur;
-        break;
-      end;
-    end;
-    cur := -1;
-    if n < 0 then begin
+    // in order: the next room of the list (the first one after the start: the nearest)
+    cur := PkSeqSelect();
+    if cur < 0 then begin
       PkState('rooms in order: every room busy (players) - idle');
       PkIdle();
       Delay(500);
       exit;
     end;
-    PkSeqNext := n;
-    PkSeqGoal := n;
-    PkRoomWaiting := false;
-    Engine.Msg('[Room]', 'In order: to room ' + RoomName(n), 0);
-    PkRoomSet(n);
-    cur := n;
   end;
   if cur < 0 then begin
     n := RoomPick();
@@ -5495,10 +5532,12 @@ begin
     PkGather();
     PkFight();
     PkPickup();
-    // the pack of the room is dead: on to the next room - a mob that came up meanwhile is not pulled
-    // alone (it waits for the next visit)
-    if (not User.Dead) and (not NeedReturn) and (PkCountAggro() = 0) then
-      PkRoomDone(cur, 'done: its pack is dead (' + IntToStr(RoomFree(cur)) + ' came up meanwhile, left for later)');
+    // the pack of the room is dead: on to the next room at once - a mob that came up meanwhile is not
+    // pulled alone (it waits for the next visit), one that attacks us now comes along to the next room
+    // (room_ignore_way) or is killed on the way there - never a new pull of this room for it
+    if (not User.Dead) and (not NeedReturn) then
+      PkRoomDone(cur, 'done: its pack is dead (' + IntToStr(RoomFree(cur)) + ' came up meanwhile, left for later; ' +
+        IntToStr(PkCountAggro()) + ' on us come along)');
   end;
 end;
 

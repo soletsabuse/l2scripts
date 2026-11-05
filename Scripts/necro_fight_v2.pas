@@ -84,6 +84,23 @@ procedure SetFreeRadius(Range: integer);
 procedure SetHeightRange(Z: integer);
 procedure SetCastRange(Range: integer);
 procedure AddIgnoreName(Name: string);
+procedure AddIgnoreID(ID: integer);              // NPCs with this ID are never targeted (like AddIgnoreName)
+// a mob that just appeared (respawn) is taken as a new target / pulled / walked to only after a random
+// MinMs..MaxMs; mobs busy with us are fought at once; no line = at once
+procedure SetNewMobDelay(MinMs, MaxMs: integer);
+// SetPull: tap free mobs from this far (the real range of the tap skill, may be more than SetCastRange);
+// a tapped mob that did not aggro is tapped again from PULL_TAP_STEP closer each time (wall, the skill
+// reaches less) down to SetCastRange; no line = SetCastRange
+procedure SetPullTapRange(Range: integer);
+// true: a champion (MaxHP above SetChampionHP) is never taken as a new target, run to, pulled or hit by
+// our AoE - it is fought only when it is on us / the summon itself
+procedure SetSkipChampions(Skip: boolean);
+procedure SetChampionHP(HP: integer);          // a mob with MaxHP above this is a champion (default 100000; the alert too)
+procedure AddNoAlertPlayer(Name: string);      // no "player close" alert / PvP answer for this nick (own chars, friends)
+procedure SetPlayerAlert(Range: integer);      // "player close" alert: a player this close -> blink (default 700, 0 = off)
+// a player (not party / clan / AddNoAlertPlayer) hits us -> after a random MinMs..MaxMs answer him with our
+// drain / nukes until he stops (PVP_FORGET_MS), dies or leaves; no line = off
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
 procedure RunNecro();
 procedure NecroOnAction(Action: TL2Action; P1, P2: cardinal);
 
@@ -118,6 +135,8 @@ const
   PULL_TAP_MS    = 1500;       // SetPull: a tapped mob that did not aggro gets the nuke again after this
   PULL_MAX_MS    = 20000;      // SetPull: gathering longer than this -> fight what is on us
   PULL_MOVE_MS   = 500;        // SetPull: repeat DMoveTo to the next mob every N ms
+  PULL_TAP_STEP  = 150;        // SetPullTapRange: a tap that did not aggro the mob -> the next one this much closer
+  PULL_TAP_KEEP_MS = 20000;    // SetPullTapRange: taps on a mob are counted this long
   BLESS_RETRY_MS = 2000;       // SetBlessing: one cast try per this many ms
   SUMMON_BUFF_TRIES = 5;       // rebuff: the summon still without its buff after this many tries -> give up on it
   MOVE_BY_CLICK = true;        // moves as a mouse-click packet (server path); false = the bot's DMoveTo
@@ -135,6 +154,8 @@ const
   CHAMPION_SOUND    = 'champion.wav';
   CHAMPION_HP       = 100000;  // champion alert: a mob in the zone with MaxHP above this
   PLAYER_ALERT_RANGE = 700;    // a player this close -> blinking window
+  PVP_FORGET_MS     = 8000;    // SetPvpAnswer: no attack from the player this long -> back to the mobs
+  PVP_SCAN_MS       = 200;     // SetPvpAnswer: players looked at every N ms
 
   RETARGET_MS       = 1000;    // SetTarget the same mob again every N ms (a mob can knock the target off)
   LOS_STEP          = 100;     // "clear line" check: a point of the line to the mob every N units must be in the zone
@@ -162,6 +183,24 @@ var
   HeightRange: integer;                    // SetHeightRange: mobs higher / lower than this are not taken (0 = any)
   HeightSet: boolean;                   // SetCastRange: farther than this -> walk closer first (DUseSkill does not walk)
   IgnoreNames: array of string;   // lower case
+  IgnoreIDs: array of integer;    // AddIgnoreID
+  FreshOn: boolean;               // SetNewMobDelay
+  FreshMin, FreshMax: integer;
+  FreshOID: array of integer;     // live NPCs at the last look ...
+  FreshReady: array of cardinal;  // ... and from when each may be taken as a new target
+  SkipChamps: boolean;                     // SetSkipChampions: a champion only when it is on us / the summon
+  ChampHP: integer;                        // SetChampionHP (0 = CHAMPION_HP)
+  NoAlertNames: array of string;           // AddNoAlertPlayer, lower case
+  PlayerRange: integer;                    // SetPlayerAlert: 0 = off
+  PlayerRangeSet: boolean;
+  PvpOn: boolean;                          // SetPvpAnswer
+  PvpDelayMin, PvpDelayMax: integer;
+  PvpOID: integer;                         // the player we answer (0 = none)
+  PvpAt: cardinal;                         // ... answering from this tick (the random delay)
+  PvpLast: cardinal;                       // ... his last attack seen
+  PvpScanAt: cardinal;
+  PvpSeenOID, PvpSeenAtk: array of integer;     // players at the last look: OID, AtkOID ...
+  PvpSeenTime: array of cardinal;               // ... and AtkTime (a new hit = it changed)
   BuffID: integer;                         // SetBuff: watched buff (0 = no rebuff)
   BuffBypasses, SummonBuffBypasses: array of string;
   SummonBuffID: integer;                   // SetSummonBuff: buff watched on the summon (0 = same as ours)
@@ -173,9 +212,10 @@ var
   PullStarted: cardinal;
   LastPullMove: cardinal;
   PullMoveOID: integer;
-  TapOID: array[0..15] of integer;         // mobs we tapped lately (not "free" for PULL_TAP_MS)
-  TapTime: array[0..15] of cardinal;
+  TapOID: array[0..31] of integer;         // our taps lately, one entry per tap (not "free" for PULL_TAP_MS;
+  TapTime: array[0..31] of cardinal;       //   SetPullTapRange: how many taps a mob got = how much closer)
   TapHead: integer;
+  PullTapRange: integer;                   // SetPullTapRange (0 = MaxCastRange)
   BlessSkill: integer;                     // SetBlessing: a buff that survives the summon's death (Noblesse 1323)
   LastBlessTry: cardinal;           // gave up buffing the summon: its buff is not checked until then
   HasSafePoint: boolean;
@@ -344,7 +384,7 @@ end;
 // pack gathering (pull): Range = gather mobs within this distance of the start point;
 // MinMobs = start only if at least this many free mobs are within Range of us (also: after a pack
 // we do not chase fewer than this, we go to another group); MaxMobs = stop gathering when this many
-// are on us (0 = no limit); TapSkillID = nuke cast once into a mob from cast range to aggro it and
+// are on us (0 = no limit); TapSkillID = nuke cast once into a mob from SetPullTapRange to aggro it and
 // its social group (0 = our first KIND_NUKE skill)
 procedure SetPull(Range, MinMobs, MaxMobs, TapSkillID: integer);
 begin
@@ -409,6 +449,66 @@ begin
   n := Length(IgnoreNames);
   SetLength(IgnoreNames, n + 1);
   IgnoreNames[n] := LowerCase(Name);
+end;
+
+procedure AddIgnoreID(ID: integer);
+var n: integer;
+begin
+  n := Length(IgnoreIDs);
+  SetLength(IgnoreIDs, n + 1);
+  IgnoreIDs[n] := ID;
+end;
+
+procedure SetNewMobDelay(MinMs, MaxMs: integer);
+begin
+  FreshOn := true;
+  FreshMin := MinMs;
+  FreshMax := MaxMs;
+  if FreshMax < FreshMin then FreshMax := FreshMin;
+end;
+
+procedure SetPullTapRange(Range: integer);
+begin
+  PullTapRange := Range;
+end;
+
+procedure SetSkipChampions(Skip: boolean);
+begin
+  SkipChamps := Skip;
+end;
+
+procedure SetChampionHP(HP: integer);
+begin
+  ChampHP := HP;
+end;
+
+procedure AddNoAlertPlayer(Name: string);
+var n: integer;
+begin
+  n := Length(NoAlertNames);
+  SetLength(NoAlertNames, n + 1);
+  NoAlertNames[n] := LowerCase(Trim(Name));
+end;
+
+procedure SetPlayerAlert(Range: integer);
+begin
+  PlayerRange := Range;
+  PlayerRangeSet := true;
+end;
+
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
+begin
+  PvpOn := true;
+  PvpDelayMin := MinMs;
+  PvpDelayMax := MaxMs;
+  if PvpDelayMax < PvpDelayMin then PvpDelayMax := PvpDelayMin;
+end;
+
+// a mob with MaxHP above this is a champion
+function ChampLimit(): integer;
+begin
+  result := ChampHP;
+  if result <= 0 then result := CHAMPION_HP;
 end;
 
 // never targeted by default (other players' summons, chests...); our own summon is skipped anyway
@@ -500,9 +600,9 @@ begin
     result := Engine.InZone(X, Y, Z);
 end;
 
-// our own pets / summons + ignore list
+// our own pets / summons + ignore list (IDs, names)
 function IsIgnored(i: integer): boolean;
-var j, OID, PetOID: integer;
+var j, OID, PetOID, ID: integer;
   N: string;
 begin
   result := true;
@@ -511,6 +611,9 @@ begin
     PetOID := PetList(j).OID;
     if OID = PetOID then exit;
   end;
+  ID := NpcList(i).ID;
+  for j := 0 to Length(IgnoreIDs) - 1 do
+    if ID = IgnoreIDs[j] then exit;
   result := false;
   N := LowerCase(NpcList(i).Name);
   for j := 0 to Length(IgnoreNames) - 1 do
@@ -613,6 +716,45 @@ begin
   if i >= 0 then result := NpcList(i).CurHP;
 end;
 
+// SetSkipChampions: a champion NOT busy with us / the summon within Radius of X, Y (our AoE there would pull it)
+function FreeChampNear(X, Y, Radius: integer): boolean;
+var i, Atk, Tgt, PetOID: integer;
+  DX, DY: double;
+  T: TL2Live;
+begin
+  result := false;
+  if not SkipChamps then exit;
+  PetOID := 0;
+  if PetList.Count > 0 then PetOID := PetList(0).OID;
+  for i := 0 to NpcList.Count - 1 do begin
+    if NpcList(i).Dead or IsIgnored(i) then continue;
+    if NpcList(i).MaxHP <= ChampLimit() then continue;
+    DX := NpcList(i).X - X;
+    DY := NpcList(i).Y - Y;
+    if Sqrt(DX * DX + DY * DY) > Radius then continue;
+    Atk := NpcList(i).AtkOID;
+    Tgt := 0;
+    T := NpcList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    if (Atk = User.OID) or (Tgt = User.OID) then continue;          // on us: may be hit
+    if (PetOID <> 0) and ((Atk = PetOID) or (Tgt = PetOID)) then continue;
+    result := true;
+    exit;
+  end;
+end;
+
+// our AoE around the target would catch a champion not on us
+function AoeHitsFreeChamp(OID, Radius: integer): boolean;
+var t: integer;
+begin
+  result := false;
+  if not SkipChamps then exit;
+  t := NpcIdx(OID);
+  if t < 0 then exit;
+  if Radius <= 0 then Radius := AOE_RADIUS;
+  result := FreeChampNear(NpcList(t).X, NpcList(t).Y, Radius);
+end;
+
 // alive mobs (target included) within Radius of the target; Radius 0 = AOE_RADIUS
 function MobsAround(OID, Radius: integer): integer;
 var i, t, TX, TY, NX, NY: integer;
@@ -668,9 +810,11 @@ begin
             (not MobHasBuff(OID, MySkillID[k])) and (DebuffAge(k, OID) >= cardinal(MySkillParam[k]))
     else if Kind = KIND_AOE then
       Ok := ((MySkillCastRange[k] <= 0) or (MobDist(OID) <= MySkillCastRange[k])) and   // target in cast range
-            (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS)
+            (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS) and
+            (not AoeHitsFreeChamp(OID, MySkillParam[k]))          // SetSkipChampions: no champion pulled by it
     else if Kind = KIND_PBAOE then
-      Ok := MobsAroundMe(MySkillParam[k]) >= MySkillMinMobs[k]
+      Ok := (MobsAroundMe(MySkillParam[k]) >= MySkillMinMobs[k]) and
+            (not FreeChampNear(User.X, User.Y, MySkillParam[k]))
     else
       Ok := true;
     if not Ok then continue;
@@ -792,6 +936,65 @@ begin
   end;
 end;
 
+// ===================== New mob delay (SetNewMobDelay) =====================
+// A mob that just appeared (respawn / came into sight) is not taken as a new target, not pulled and
+// not walked to for a random FreshMin..FreshMax ms after we first saw it - not at the very moment it
+// spawns. Mobs busy with us are fought at once (they do not go through MobReady).
+
+// one look at the NPCs (every main loop tick): a new one gets its "ready" time, the gone ones are forgotten
+procedure FreshTick();
+var i, j, n, OID: integer;
+  T, Ready: cardinal;
+  Found: boolean;
+  NewOID: array of integer;
+  NewReady: array of cardinal;
+begin
+  if not FreshOn then exit;
+  T := GetTickCount;
+  n := NpcList.Count;
+  SetLength(NewOID, n);
+  SetLength(NewReady, n);
+  n := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if n >= Length(NewOID) then break;    // the list grew meanwhile: the rest at the next look
+    if NpcList(i).Dead then continue;
+    OID := NpcList(i).OID;
+    Found := false;
+    Ready := 0;
+    for j := 0 to Length(FreshOID) - 1 do
+      if FreshOID[j] = OID then begin
+        Ready := FreshReady[j];
+        Found := true;
+        break;
+      end;
+    if not Found then Ready := T + cardinal(FreshMin + Random(FreshMax - FreshMin + 1));
+    NewOID[n] := OID;
+    NewReady[n] := Ready;
+    Inc(n);
+  end;
+  SetLength(FreshOID, n);
+  SetLength(FreshReady, n);
+  for i := 0 to n - 1 do begin
+    FreshOID[i] := NewOID[i];
+    FreshReady[i] := NewReady[i];
+  end;
+end;
+
+// NpcList(i) may be taken as a new target: its delay is over (not seen yet = it just appeared)
+function MobReady(i: integer): boolean;
+var j, OID: integer;
+begin
+  result := true;
+  if not FreshOn then exit;
+  OID := NpcList(i).OID;
+  result := false;
+  for j := 0 to Length(FreshOID) - 1 do
+    if FreshOID[j] = OID then begin
+      result := GetTickCount >= FreshReady[j];
+      exit;
+    end;
+end;
+
 // ===================== Targets =====================
 
 // mob is busy with us / the summon: hits one of us, or holds one of us as its target (casts at us)
@@ -875,6 +1078,8 @@ begin
       if not IsOnUs(i) then continue;
     end else begin
       if NpcList(i).Dead or IsIgnored(i) then continue;
+      if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) then continue;   // a champion: only when it is on us
+      if not MobReady(i) then continue;   // SetNewMobDelay: just appeared
     end;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
@@ -911,6 +1116,7 @@ begin
     result := true;
     exit;
   end;
+  if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) then exit;   // a champion not on us: dropped
   if not (InFarmArea(NX, NY, NZ) and (User.DistTo(NX, NY, NZ) <= TargetRange)) then exit;
   result := LineClear(NX, NY, NZ);
 end;
@@ -936,7 +1142,7 @@ begin
   Engine.BlinkWindow(true);
 end;
 
-// a champion (MaxHP above CHAMPION_HP) appeared in the farm area: once per mob,
+// a champion (MaxHP above SetChampionHP / CHAMPION_HP) appeared in the farm area: once per mob,
 // forgotten when it dies / leaves, so a respawned one alerts again
 procedure ChampionTick();
 var i, n, OID, MaxHP, NX, NY, NZ: integer;
@@ -950,7 +1156,7 @@ begin
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead or IsIgnored(i) then continue;
     MaxHP := NpcList(i).MaxHP;
-    if MaxHP <= CHAMPION_HP then continue;
+    if MaxHP <= ChampLimit() then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
@@ -971,13 +1177,15 @@ begin
   for i := 0 to Length(Cur) - 1 do SeenChamps[i] := Cur[i];
 end;
 
-// a player came within PLAYER_ALERT_RANGE: blink the window, once per player while he stays
+// a player came within PlayerRange (SetPlayerAlert, 0 = off): blink the window, once per player while he stays
 // close (forgotten when he leaves the range, so coming back alerts again)
 procedure PlayerTick();
 var i, j, n, OID, PX, PY, PZ, Dist: integer;
-  Known: boolean;
+  Known, Skip: boolean;
+  Nm: string;
   Cur: array of integer;
 begin
+  if PlayerRange <= 0 then exit;
   if GetTickCount - LastPlayerCheck < 500 then exit;
   LastPlayerCheck := GetTickCount;
   SetLength(Cur, 0);
@@ -988,7 +1196,14 @@ begin
     PY := CharList(i).Y;
     PZ := CharList(i).Z;
     Dist := User.DistTo(PX, PY, PZ);
-    if Dist > PLAYER_ALERT_RANGE then continue;
+    if Dist > PlayerRange then continue;
+    if Length(NoAlertNames) > 0 then begin   // AddNoAlertPlayer: own chars / friends - no alert
+      Nm := LowerCase(CharList(i).Name);
+      Skip := false;
+      for j := 0 to Length(NoAlertNames) - 1 do
+        if Nm = NoAlertNames[j] then Skip := true;
+      if Skip then continue;
+    end;
     n := Length(Cur);
     SetLength(Cur, n + 1);
     Cur[n] := OID;
@@ -1021,6 +1236,125 @@ begin
   end;
   PetStep(OID);
   SpamSkill(OID);
+end;
+
+// ===================== PvP answer (SetPvpAnswer) =====================
+// A player hits us: a new auto attack on us (his AtkOID is us and his AtkTime changed) or a cast at us.
+// After a random PvpDelayMin..PvpDelayMax we answer him with our drain / nukes (the mobs wait). Sent
+// without Ctrl: a player who hit us is flagged and is hit; a not flagged one (a stranger buffing us)
+// cannot be - no PK by mistake
+
+function PvpIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// one look at the players: a stranger hitting us -> PvpOID (the first one) / his PvpLast
+procedure PvpScan();
+var i, j, k, n, OID, Atk, Tgt, MyClan, ChClan: integer;
+  AT: cardinal;
+  T: TL2Live;
+  Hit, Skip: boolean;
+  Nm: string;
+  NewOID, NewAtk: array of integer;
+  NewTime: array of cardinal;
+begin
+  MyClan := User.ClanID;
+  SetLength(NewOID, 0);
+  SetLength(NewAtk, 0);
+  SetLength(NewTime, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    OID := CharList(i).OID;
+    if OID = User.OID then continue;
+    if CharList(i).Dead or CharList(i).IsMember then continue;      // dead / our party
+    ChClan := CharList(i).ClanID;
+    if (MyClan <> 0) and (ChClan = MyClan) then continue;           // our clan
+    Atk := CharList(i).AtkOID;
+    AT := CharList(i).AtkTime;
+    Tgt := 0;
+    T := CharList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    n := Length(NewOID);
+    SetLength(NewOID, n + 1);
+    SetLength(NewAtk, n + 1);
+    SetLength(NewTime, n + 1);
+    NewOID[n] := OID;
+    NewAtk[n] := Atk;
+    NewTime[n] := AT;
+    if (Atk <> User.OID) and (Tgt <> User.OID) then continue;
+    // a new auto attack on us: he was not on us at the last look, or he swung again
+    Hit := false;
+    if Atk = User.OID then begin
+      k := -1;
+      for j := 0 to Length(PvpSeenOID) - 1 do
+        if PvpSeenOID[j] = OID then begin k := j; break; end;
+      Hit := (k >= 0) and ((PvpSeenAtk[k] <> User.OID) or (PvpSeenTime[k] <> AT));
+    end;
+    if (not Hit) and (Tgt = User.OID) and (CharList(i).Cast.EndTime > 0) then Hit := true;   // casting at us
+    if not Hit then continue;
+    if Length(NoAlertNames) > 0 then begin   // AddNoAlertPlayer: own chars / friends
+      Nm := LowerCase(CharList(i).Name);
+      Skip := false;
+      for j := 0 to Length(NoAlertNames) - 1 do
+        if Nm = NoAlertNames[j] then Skip := true;
+      if Skip then continue;
+    end;
+    if PvpOID = 0 then begin
+      PvpOID := OID;
+      PvpAt := GetTickCount + cardinal(PvpDelayMin + Random(PvpDelayMax - PvpDelayMin + 1));
+      Alert('[PvP]', CharList(i).Name + ' attacks me, answering in ' + IntToStr(PvpAt - GetTickCount) + ' ms', '');
+    end;
+    if OID = PvpOID then PvpLast := GetTickCount;
+  end;
+  SetLength(PvpSeenOID, Length(NewOID));
+  SetLength(PvpSeenAtk, Length(NewOID));
+  SetLength(PvpSeenTime, Length(NewOID));
+  for i := 0 to Length(NewOID) - 1 do begin
+    PvpSeenOID[i] := NewOID[i];
+    PvpSeenAtk[i] := NewAtk[i];
+    PvpSeenTime[i] := NewTime[i];
+  end;
+end;
+
+// the PvP answer: true = we hit the player this tick (no mob fight now)
+function PvpStep(): boolean;
+var i, k, PX, PY, PZ: integer;
+begin
+  result := false;
+  if not PvpOn then exit;
+  if GetTickCount - PvpScanAt >= PVP_SCAN_MS then begin
+    PvpScanAt := GetTickCount;
+    PvpScan();
+  end;
+  if PvpOID = 0 then exit;
+  i := PvpIdx(PvpOID);
+  if (i < 0) or CharList(i).Dead or (GetTickCount - PvpLast > PVP_FORGET_MS) then begin
+    Engine.Msg('[PvP]', 'The player is gone / dead / stopped, back to the mobs', 0);
+    if CurTarget = PvpOID then CurTarget := 0;
+    PvpOID := 0;
+    exit;
+  end;
+  if GetTickCount < PvpAt then exit;   // the random delay first, the mobs meanwhile
+  PX := CharList(i).X;
+  PY := CharList(i).Y;
+  PZ := CharList(i).Z;
+  if User.DistTo(PX, PY, PZ) > MaxCastRange then exit;   // out of our reach: no chasing
+  if (CurTarget <> PvpOID) or (GetTickCount - LastSetTarget >= RETARGET_MS) then begin
+    Engine.SetTarget(PvpOID);
+    CurTarget := PvpOID;
+    LastSetTarget := GetTickCount;
+  end;
+  k := BestOfKind(KIND_DRAIN, PvpOID);
+  if k < 0 then k := BestOfKind(KIND_NUKE, PvpOID);
+  if k >= 0 then Engine.DUseSkill(MySkillID[k], false, false);   // no Ctrl: only a flagged player is hit
+  result := true;
 end;
 
 // ===================== Supplies =====================
@@ -1447,6 +1781,8 @@ begin
   BestD := 999999;
   for i := 0 to NpcList.Count - 1 do begin
     if NpcList(i).Dead or IsIgnored(i) then continue;
+    if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) and (not MobOnUs(i)) then continue;   // not run to it
+    if not MobReady(i) then continue;   // SetNewMobDelay: just appeared
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
     NZ := NpcList(i).Z;
@@ -1777,28 +2113,54 @@ function TappedLately(OID: integer): boolean;
 var i: integer;
 begin
   result := false;
-  for i := 0 to 15 do
+  for i := 0 to 31 do
     if (TapOID[i] = OID) and (GetTickCount - TapTime[i] < PULL_TAP_MS) then begin
       result := true;
       exit;
     end;
 end;
 
+// how many times we tapped this mob lately (a free mob again: none of them aggroed it)
+function TapCount(OID: integer): integer;
+var i: integer;
+begin
+  result := 0;
+  for i := 0 to 31 do
+    if (TapOID[i] = OID) and (GetTickCount - TapTime[i] < PULL_TAP_KEEP_MS) then Inc(result);
+end;
+
 procedure MarkTapped(OID: integer);
 begin
   TapOID[TapHead] := OID;
   TapTime[TapHead] := GetTickCount;
-  TapHead := (TapHead + 1) mod 16;
+  TapHead := (TapHead + 1) mod 32;
 end;
 
-// a free mob: alive, ours to take, in the zone, not busy with us yet, not tapped a moment ago
+// the tap on this mob goes out from this far: SetPullTapRange (no line = SetCastRange), PULL_TAP_STEP
+// closer for every tap that did not aggro it (a wall, the skill reaches less), never closer than SetCastRange
+function TapReach(OID: integer): integer;
+var Base, Low: integer;
+begin
+  Base := PullTapRange;
+  if Base <= 0 then Base := MaxCastRange;
+  Low := MaxCastRange;
+  if Low > Base then Low := Base;
+  result := Base - TapCount(OID) * PULL_TAP_STEP;
+  if result < Low then result := Low;
+end;
+
+// a free mob: alive, ours to take, in the zone, not busy with us yet, not tapped a moment ago,
+// not a champion (SetSkipChampions), not one we could not walk to lately
 function IsFreeMob(i: integer): boolean;
 var NX, NY, NZ: integer;
 begin
   result := false;
   if NpcList(i).Dead or IsIgnored(i) then exit;
   if MobOnUs(i) then exit;
+  if SkipChamps and (NpcList(i).MaxHP > ChampLimit()) then exit;   // SetSkipChampions: never pulled
+  if not MobReady(i) then exit;   // SetNewMobDelay: just appeared
   if TappedLately(NpcList(i).OID) then exit;
+  if IsUnreachable(NpcList(i).OID) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
@@ -1895,7 +2257,7 @@ end;
 // one gathering step. true = this tick is handled (running / tapping / going to a group),
 // false = the normal fight goes on (pack gathered, or nothing worth gathering)
 function PullTick(): boolean;
-var UX, UY, OID, MI, TX, TY, TZ, Aggro, Free, Need: integer;
+var UX, UY, UZ, OID, MI, TX, TY, TZ, Aggro, Free, Need, Reach, S: integer;
 begin
   result := false;
   if (PullRange <= 0) or (PullMin <= 0) then exit;
@@ -1948,15 +2310,29 @@ begin
   MI := NpcIdx(OID);
   if MI < 0 then exit;
 
-  // within cast range: one nuke into it - the mobs are social, its group around aggroes too
-  if MobDist(OID) <= MaxCastRange then begin
+  // within the tap reach (SetPullTapRange; closer after taps that did not aggro it): one nuke into it -
+  // the mobs are social, its group around aggroes too. The tap skill still in reuse: stand here and
+  // wait for it (walking on would take us into the mobs)
+  Reach := TapReach(OID);
+  if MobDist(OID) <= Reach then begin
+    S := PullSkill();
+    if SkillLeft(S) > 0 then begin
+      if PullMoveOID <> 0 then begin   // we were walking at a mob: stop where we are
+        UZ := User.Z;
+        MoveServer(UX, UY, UZ);
+        PullMoveOID := 0;
+      end;
+      exit;
+    end;
+    if TapCount(OID) > 0 then
+      Engine.Msg('[Pull]', NpcList(MI).Name + ' did not aggro, tapping it again from ' + IntToStr(Reach), 0);
     Engine.SetTarget(OID);
     CurTarget := OID;
-    Engine.DUseSkill(PullSkill(), false, false);
+    Engine.DUseSkill(S, false, false);
     MarkTapped(OID);
     exit;
   end;
-  // farther: walk only until it is within cast range (no running into the mobs)
+  // farther: walk only until it is within the tap reach (no running into the mobs)
   if (OID <> PullMoveOID) or (GetTickCount - LastPullMove >= PULL_MOVE_MS) then begin
     TX := NpcList(MI).X;
     TY := NpcList(MI).Y;
@@ -1992,6 +2368,7 @@ begin
   if FreeRadius <= 0 then FreeRadius := 900;
   if MaxCastRange <= 0 then MaxCastRange := 600;
   if not HeightSet then HeightRange := 400;
+  if not PlayerRangeSet then PlayerRange := PLAYER_ALERT_RANGE;
   if PatrolRange <= 0 then PatrolRange := 200;
   if not PetAttackSet then PetAttackMinMaxHP := -1;   // summon melee off unless SetPetAttack
   AddDefaultIgnoreNames();
@@ -2052,6 +2429,8 @@ begin
     CheckWeapon();     // anti-disarm
     ChampionTick();    // champion respawned in the zone -> alert
     PlayerTick();      // a player close by -> blink
+    FreshTick();       // SetNewMobDelay: new mobs get their delay
+    if PvpStep() then continue;   // SetPvpAnswer: a player hits us -> our nukes at him
 
     // "Can't see target." -> walk to that mob (FindPath), fighting whoever hits us on the way
     if CantSeeTarget() and (CurTarget <> 0) then begin

@@ -38,6 +38,9 @@ begin
   AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
   SetSpamMs(100);
+  // a player (not party / clan / AddNoAlertPlayer) hits us -> after a random 0.7-1.5 sec our drain / nukes
+  // at him until he stops / dies / leaves; no line = off
+  SetPvpAnswer(700, 1500);
 
   // ===== summon =====
   //SetSummon(1154);   // summon skill (summoned when missing)
@@ -59,17 +62,42 @@ begin
   SetCastRange(600);     // our skills reach this far: a target farther away -> walk closer first
   SetHeightRange(400);   // mobs higher / lower than us by more than this are never targeted (0 = any)
 
+  // a mob that just respawned is taken (target / pull / walk to it) only after a random 0.5-1 sec
+  // (500..1000 ms); mobs that hit us are fought at once. No line = at once
+  SetNewMobDelay(500, 1000);
+
   // ===== pack gathering: SetPull(range, min mobs, max mobs, tap skill) =====
   //   nobody on us and at least MIN free mobs within RANGE -> every mob there that is NOT aggroed
-  //   gets a nuke from cast range (again if it did not aggro); only mobs within RANGE of the point
+  //   gets a nuke from SetPullTapRange (again if it did not aggro); only mobs within RANGE of the point
   //   where it started - no running far away. MAX mobs on us (MIN if MAX = 0) / nothing free left /
   //   20 sec -> attack the pack with the AoE. Fewer than MIN around -> no chasing single mobs,
   //   go to the next group of MIN+.
   //   TAP skill = the nuke for those hits (0 = our nuke that is ready first)
-  SetPull(600, 4, 8, 1239);
+  SetPull(1000, 4, 8, 1239);
+  // the tap goes out from this far (the real range of the TAP skill; no line = SetCastRange): we stand
+  // back and the mobs come to us. A tapped mob that did not aggro (the skill reaches less, a wall) is
+  // tapped again 150 closer each time, down to SetCastRange. The tap skill in reuse -> we wait standing
+  SetPullTapRange(900);
 
   // extra names to never target (other players' summons, chests... are skipped by default)
   // AddIgnoreName('Some Mob');
+  AddIgnoreID(32049);   // NPC ID 32049 - never targeted
+
+  // champions (MaxHP above SetChampionHP): true = never taken as a new target, not run to, not pulled,
+  // not hit by our AoE - fought only when the champion is on us / the summon itself
+  SetSkipChampions(true);
+  // SetChampionHP(100000);   // a mob with MaxHP above this is a champion (the champion alert too)
+
+  // ===== "player close" alert of the script: 0 = off (the profile alarm.xml watches players);
+  // the champion alert stays on. SetPlayerAlert(700) - back on; the nicks below never trigger it
+  // (and are never answered by SetPvpAnswer) =====
+  SetPlayerAlert(0);
+  AddNoAlertPlayer('kkk');
+  AddNoAlertPlayer('eee');
+  AddNoAlertPlayer('elephantKING');
+  AddNoAlertPlayer('antKING');
+  AddNoAlertPlayer('horseKING');
+  // AddNoAlertPlayer('Friend');
 
   // ===== rebuff: watched buff ID + buff bypasses =====
   // buff running out -> fight off until OUT of combat -> safe point (if set) -> summon ->

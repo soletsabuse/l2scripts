@@ -12,7 +12,7 @@ begin
   SetZone('abg_io.zmap');                                    // Library\Zones
   // bot interface ON while farming (the script fights, the interface deletes junk / drinks potions):
   // the profile from Library\Configurations, fighting in it must be OFF (AutoAtk), pickup better OFF
-  SetConfig('alarm.xml');
+  SetConfig('io_abg.xml');
   SetInterface(true);
   SetTeleport('_bbs_teleport?id=93&fromtown=6');  // Aden gatekeeper -> spot
 
@@ -33,6 +33,10 @@ begin
   // AoE farm without the interface: pack size, mass spoil skill, mass sweep skill,
   // [AoE damage skills] ([0] = plain attack), [mob IDs] ([0] = any mob in the zone)
   SetAoeFarm(4, 302, 444, [36], [20956]);
+
+  // mass spoil counted like the pack scripts: one mass spoil per mob is enough - cast only while a mob
+  // next to us (200) was not under one yet (late mobs get theirs too), max 12 per pack
+  SetSpoilPerMob(1);
 
   // no mobs in sight while pulling -> walk these points (inside the zone)
   // SetPatrol(0, [x1, y1, z1,  x2, y2, z2]);

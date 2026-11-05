@@ -2,11 +2,13 @@
 <zone>
 	<ExternalPoly>
 		<points>
-			<point x="-10714" y="-44061"/>
-			<point x="-10714" y="-43009"/>
-			<point x="-9072" y="-43018"/>
-			<point x="-8383" y="-43535"/>
-			<point x="-9036" y="-44061"/>
+			<point x="186981" y="-113608"/>
+			<point x="187061" y="-109365"/>
+			<point x="189840" y="-107525"/>
+			<point x="191196" y="-107590"/>
+			<point x="191864" y="-110435"/>
+			<point x="191358" y="-113797"/>
+			<point x="189140" y="-114972"/>
 		</points>
 	</ExternalPoly>
 	<InternalPolies/>
