@@ -68,7 +68,7 @@ begin
    AddNoAlertPlayer('elephantKING');
    AddNoAlertPlayer('antKING');
    AddNoAlertPlayer('horseKING');
-   //AddNoAlertPlayer();
+   AddNoAlertPlayer('Meki');
   // AddNoAlertPlayer('Friend');
 
   // ===== bot interface: a profile .xml from Library\Configurations =====
