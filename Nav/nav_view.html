@@ -232,7 +232,7 @@
     <button data-tool="spot" data-ic="star">Spot</button>
     <button data-tool="safe" data-ic="shield">Safe</button>
     <button data-tool="node" data-ic="node" title="Own graph node: the bot runs through it too">Node</button>
-    <button data-tool="rail" data-ic="rail" title="Rail: the bot runs it point by point, never cutting it">Rail</button>
+    <button data-tool="rail" data-ic="rail" title="Rail: the bot runs it point by point, never cutting it; from the teleport landing point - the way to the spot">Rail</button>
     <button data-tool="erase" data-ic="erase" title="Remove a node, rail, farm spot, the safe point or a room corner">Erase</button>
   </div>
   <div class="grp">
@@ -281,7 +281,7 @@
       <li><b>Spot</b> — a farm spot: click to place, drag the star to move</li>
       <li><b>Safe</b> — the safe point: click to place, drag to move</li>
       <li><b>Node</b> — an own graph node the bot runs through too</li>
-      <li><b>Rail</b> — points in order, <kbd>Enter</kbd> to finish: the bot runs it point by point without cutting (for places where it catches pillars / corners)</li>
+      <li><b>Rail</b> — points in order, <kbd>Enter</kbd> to finish: the bot runs it point by point without cutting (for places where it catches pillars / corners). Started next to the teleport landing point (within 800) — it is the way to the spot after the teleport, the place needs no green</li>
       <li><b>Erase</b> — click a node, rail, farm spot, the safe point or a room corner</li></ul></section>
     <section><h4>View &amp; keys</h4><ul>
       <li>Wheel — zoom · right mouse or <kbd>Space</kbd> + drag — pan</li>
@@ -342,7 +342,7 @@ const TOOLS = {
   spot: ['star', 'Farm spot', 'Click to place, drag the star to move. Coordinates and rooms — the panel on the right.'],
   safe: ['shield', 'Safe point', 'Click to place, drag to move.'],
   node: ['node', 'Node', 'An own graph node: the bot runs through it too. Click to place, drag to move.'],
-  rail: ['rail', 'Rail', 'Click the points in order; Enter or a click on the last point finishes, Esc cancels, Backspace removes the last point, drag a point to move it. The bot runs a rail point by point, never cutting it; routes prefer rails. Long stretches are split into steps up to 500.'],
+  rail: ['rail', 'Rail', 'Click the points in order; Enter or a click on the last point finishes, Esc cancels, Backspace removes the last point, drag a point to move it. The bot runs a rail point by point, never cutting it; routes prefer rails. Long stretches are split into steps up to 500. A rail with an end within 800 of the teleport landing point is the way to the spot after the teleport: run to its other end, no green needed there.'],
   erase: ['erase', 'Erase', 'Click a node (own or yellow), a rail, a farm spot, the safe point or a room corner to remove it. A removed yellow node shows as a red cross — click it to bring it back.'] };
 // the overlays sit under the top bars (their height changes with the window width / the tool hint)
 function layoutTop() { const h = $('top').offsetHeight;
@@ -1034,7 +1034,7 @@ const CARDS = [
     { k: 'teleport', l: 'Teleport from Aden', ph: '_bbs_teleport?id=...&fromtown=6', h: 'gatekeeper bypass' },
     { k: 'stp.npc', l: 'Second teleport: NPC', type: 'num' },
     { k: 'stp.bypass', l: 'Its bypasses', type: 'lines', h: 'one per line' },
-    { k: 'path', l: 'Path from the landing point', type: 'lines', ph: 'x y z\nx y z', h: 'x y z points, one per line, run by the server path' }] },
+    { k: 'path', l: 'Path from the landing point', type: 'lines', ph: 'x y z\nx y z', h: 'x y z points, one per line, run by the server path. Easier: draw a Rail from the landing point into the zone — after the teleport the bot runs it first (its end within 800 of the landing point), no green needed there' }] },
   { ic: 'sliders', c: '#a3aec0', t: 'Misc', sub: 'Experience, debug and run tuning', f: [
     { k: 'exp_off', l: 'Experience off', type: 'bool', h: 'exp?state=off' },
     { k: 'debug_file', l: 'Debug log to file', type: 'bool', h: 'a detailed log of the pull / fight / rooms in Library\\Logs\\dbg_<nick>_<time>_N.log (to look into problems)' },

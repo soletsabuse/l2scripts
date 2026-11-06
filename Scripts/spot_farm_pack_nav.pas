@@ -270,6 +270,8 @@ const
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
+  PK_ROAD_NEAR      = 800;      // after the teleport: a rail of the map with an end this close = the way to the spot
+  PK_ROAD_STEP      = 500;      // ... run in steps of at most this (the server path is found only up to ~600)
   PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
   PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
   PATH_REACHED      = 150;     // "I am at the point"
@@ -445,6 +447,9 @@ var
   PkPauseMin, PkPauseMax: integer;    // SetRoomPause / K room_pause_min|max: the pause before the next room, ms
   PkPauseMinSet, PkPauseMaxSet: boolean;
   PkRoomPauseUntil: cardinal;     // ... until then (PkRoomDone sets it)
+  PkRdX, PkRdY: array of integer; // the rails of the .navgrid ("W x1 y1 x2 y2 ..."): all their points in a row
+  PkRdFirst: array of integer;    // ... rail r = points PkRdFirst[r] .. PkRdFirst[r + 1] - 1
+  PkRdN: integer;                 // ... how many rails
   AlertBlink: boolean;            // SetAlertBlink: blink the game window in the taskbar
   PlayerAlertSet, PrivateAlertSet, PlayerSoundSet, PrivateSoundSet, DeathSoundSet, AlertBlinkSet: boolean;
 
@@ -1633,6 +1638,38 @@ end;
 // runs by a nav map of nav_view.html (file in Library\Nav) instead of the zone; the map is the pull
 // area too, and its settings ("K key value" lines, tab Settings of the viewer) are applied right now -
 // the script lines after SetNavGrid override them
+// a rail of the .navgrid ("W x1 y1 x2 y2 ...", drawn with the Rail tool of the viewer): kept for the way
+// from the teleport landing point (PkRoadWalk) - the nav map reads the rails itself for the runs in the zone
+procedure PkRoadAdd(S: string);
+var k, n, X, Y, Base: integer;
+begin
+  Base := Length(PkRdX);
+  n := 0;
+  k := 1;
+  while (PtField(S, k) <> '') and (PtField(S, k + 1) <> '') do begin
+    X := StrToIntDef(PtField(S, k), 0);
+    Y := StrToIntDef(PtField(S, k + 1), 0);
+    SetLength(PkRdX, Base + n + 1);
+    SetLength(PkRdY, Base + n + 1);
+    PkRdX[Base + n] := X;
+    PkRdY[Base + n] := Y;
+    Inc(n);
+    k := k + 2;
+  end;
+  if n < 2 then begin                  // not a rail
+    SetLength(PkRdX, Base);
+    SetLength(PkRdY, Base);
+    exit;
+  end;
+  if PkRdN = 0 then begin
+    SetLength(PkRdFirst, 1);
+    PkRdFirst[0] := 0;
+  end;
+  Inc(PkRdN);
+  SetLength(PkRdFirst, PkRdN + 1);
+  PkRdFirst[PkRdN] := Base + n;
+end;
+
 procedure SetNavGrid(Name: string);
 var L: TStringList;
   i, n: integer;
@@ -1645,14 +1682,24 @@ begin
   L := TStringList.Create;
   L.LoadFromFile(F);
   n := 0;
+  SetLength(PkRdX, 0);
+  SetLength(PkRdY, 0);
+  SetLength(PkRdFirst, 0);
+  PkRdN := 0;
   for i := 0 to L.Count - 1 do begin
     S := L[i];
+    if Copy(S, 1, 2) = 'W ' then begin  // a rail: also the way from the teleport landing point
+      PkRoadAdd(S);
+      continue;
+    end;
     if Copy(S, 1, 2) <> 'K ' then continue;   // the grid rows are skipped fast
     PkSetting(LowerCase(PtField(S, 1)), PkRest(S, 2));
     Inc(n);
   end;
   L.Free;
   if n > 0 then Engine.Msg('[Init]', 'Settings from ' + Name + ': ' + IntToStr(n), 128);
+  if PkRdN > 0 then Engine.Msg('[Init]', 'Rails in ' + Name + ': ' + IntToStr(PkRdN) +
+    ' (one with an end next to the teleport landing point is the way to the spot)', 0);
 end;
 
 // ===================== Supplies =====================
@@ -3038,13 +3085,111 @@ begin
   end;
 end;
 
-// after the teleport: the path points one after another with the bot's own Engine.MoveTo (it runs
-// there itself and returns when it is there / cannot get there) - a missed point: the next one anyway
+// one point of the rail from the landing point: the server path (no nav map: the place is not painted),
+// one more try when it did not get there; true = there
+function PkRoadStep(X, Y: integer): boolean;
+var UZ: integer;
+begin
+  UZ := User.Z;
+  result := NavRunPlain(X, Y, UZ, PATH_REACHED);
+  if (not result) and (not User.Dead) then begin
+    UZ := User.Z;
+    result := NavRunPlain(X, Y, UZ, PATH_REACHED);
+  end;
+  if DbgOn() then Dbg('[Path]', 'rail point ' + IntToStr(X) + ',' + IntToStr(Y) + ': ' + IntToStr(Ord(result)) +
+    ' (we at ' + IntToStr(User.X) + ',' + IntToStr(User.Y) + ')');
+end;
+
+// after the teleport: a rail of the map (the Rail tool of the viewer) with an end within PK_ROAD_NEAR of us
+// is the way from the landing point - run point by point to its other end by the server path (no nav map
+// needed there: the place does not have to be painted); a missed point -> the next one. true = run
+function PkRoadWalk(): boolean;
+var r, a, b, i, Best, Dir, Upto, j, m, X, Y, PX, PY, UX, UY, Missed: integer;
+  D, BestD, DX, DY: double;
+  FromEnd: boolean;
+begin
+  result := false;
+  if PkRdN = 0 then exit;
+  UX := User.X;
+  UY := User.Y;
+  Best := -1;
+  FromEnd := false;
+  BestD := PK_ROAD_NEAR + 1;
+  for r := 0 to PkRdN - 1 do begin
+    a := PkRdFirst[r];
+    b := PkRdFirst[r + 1] - 1;
+    DX := PkRdX[a] - UX;              // doubles: a squared integer overflows
+    DY := PkRdY[a] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D < BestD then begin
+      BestD := D;
+      Best := r;
+      FromEnd := false;
+    end;
+    DX := PkRdX[b] - UX;
+    DY := PkRdY[b] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D < BestD then begin
+      BestD := D;
+      Best := r;
+      FromEnd := true;
+    end;
+  end;
+  if Best < 0 then exit;
+  a := PkRdFirst[Best];
+  b := PkRdFirst[Best + 1] - 1;
+  if FromEnd then begin                // drawn from the spot to the landing point: run it backwards
+    i := b;
+    Upto := a;
+    Dir := -1;
+  end else begin
+    i := a;
+    Upto := b;
+    Dir := 1;
+  end;
+  Engine.Msg('[Path]', 'The rail from the landing point: ' + IntToStr(b - a + 1) + ' points, its start ' +
+    IntToStr(Round(BestD)) + ' away', 128);
+  PX := UX;
+  PY := UY;
+  Missed := 0;
+  while not User.Dead do begin
+    X := PkRdX[i];
+    Y := PkRdY[i];
+    // a long stretch: points in between (the server path is found only up to ~600)
+    DX := X - PX;
+    DY := Y - PY;
+    D := Sqrt(DX * DX + DY * DY);
+    m := Trunc((D - 1) / PK_ROAD_STEP);
+    for j := 1 to m do begin
+      if User.Dead then exit;
+      if not PkRoadStep(PX + Round(DX * j / (m + 1)), PY + Round(DY * j / (m + 1))) then Inc(Missed);
+    end;
+    if User.Dead then exit;
+    if not PkRoadStep(X, Y) then Inc(Missed);
+    PX := X;
+    PY := Y;
+    if i = Upto then break;
+    i := i + Dir;
+  end;
+  if User.Dead then exit;
+  if Missed > 0 then Engine.Msg('[Path]', 'The rail is run (' + IntToStr(Missed) + ' points not reached - check it there)', 128)
+  else Engine.Msg('[Path]', 'The rail is run', 0);
+  result := true;
+end;
+
+// after the teleport: the rail from the landing point (PkRoadWalk), then the path points one after another
+// with the bot's own Engine.MoveTo (it runs there itself and returns when it is there / cannot get there)
+// - a missed point: the next one anyway
 function WalkToSpot(): boolean;
 var i, X, Y, Z: integer;
 begin
   result := false;
   Engine.Msg('[Path]', '=== Walking to the spot ===', 128);
+  PkRoadWalk();                        // a rail drawn from the landing point: first
+  if User.Dead then begin
+    Engine.Msg('[Path]', 'Died on the way', 128);
+    exit;
+  end;
   i := 0;
   while (i + 2) < Length(Path) do begin
     if User.Dead then begin
