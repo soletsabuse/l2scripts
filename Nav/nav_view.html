@@ -183,6 +183,17 @@
   .rw .x { padding: 4px 6px; background: transparent; border-color: transparent; color: var(--dim); }
   .rw .x:hover { color: var(--bad); background: var(--panel3); }
   .addrow { justify-self: start; font-size: 12px; color: var(--accent); background: transparent; border-style: dashed; }
+  .rw.hd { font-size: 11px; color: var(--dim); }
+  .fld .wt { color: #c4ccd8; }
+  .fld .acts { display: flex; gap: 8px; align-items: center; }
+  .fld.wide > .wt, .fld.wide > .rows, .fld.wide > .acts { grid-column: 1; }
+  .fld[data-k="mage"] > .rows, .fld[data-k="_skills"] > .rows { max-width: 880px; }
+  .rw .ord { color: var(--muted); font-size: 12px; font-weight: 600; text-align: center; }
+  .rw .rb { display: flex; gap: 2px; }
+  .rw .mv { padding: 4px 5px; background: transparent; border-color: transparent; color: var(--dim); }
+  .rw .mv:hover:not(:disabled) { color: var(--text); background: var(--panel3); }
+  .rw .mv:disabled { opacity: .25; cursor: default; }
+  .fld .acts .muted { font-size: 12px; }
   details.adv { border-top: 1px solid #1a2029; }
   details.adv summary { cursor: pointer; color: var(--muted); padding: 11px 0; font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; }
   details.adv summary::-webkit-details-marker { display: none; }
@@ -202,7 +213,7 @@
 <header id="bar">
   <div class="brand"><span class="logo" data-ic="map"></span><b>NavMesh</b><span id="fileName" class="file">no map</span></div>
   <div class="grp">
-    <button id="open" data-ic="open" title="Open .navgrid / .zmap / .navtrace / .txt (or drop files anywhere on the page)">Open</button><input id="file" type="file" accept=".zmap,.navtrace,.navgrid,.txt" multiple hidden>
+    <button id="open" data-ic="open" title="Open .navgrid / .zmap / .navtrace / .txt (or drop files anywhere on the page)">Open</button><input id="file" type="file" accept=".zmap,.navtrace,.navgrid,.txt,.json" multiple hidden>
     <button id="save" class="primary" data-ic="save" title="Save the .navgrid (Ctrl+S)">Save</button>
     <button id="cfgBtn" data-ic="sliders" title="Farm script settings">Settings</button>
   </div>
@@ -319,7 +330,8 @@ const IC = {
   magnet: '<path d="M5 4h4v7a3 3 0 0 0 6 0V4h4v7a7 7 0 0 1-14 0z"/><path d="M5 8h4M15 8h4"/>',
   flask: '<path d="M9 3h6M10 3v6l-5.6 10A1.4 1.4 0 0 0 5.6 21h12.8a1.4 1.4 0 0 0 1.2-2L14 9V3"/><path d="M7.3 15h9.4"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
-  compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>' };
+  compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>' };
 const icon = n => '<svg class="i" viewBox="0 0 24 24">' + (IC[n] || '') + '</svg>';
 // the tools: name and the hint in the bar under the toolbar
 const TOOLS = {
@@ -676,12 +688,14 @@ async function picker(fn, opts) {
 async function openFiles() {
   if (!window.showOpenFilePicker) { $('file').click(); return; }
   let hs;
-  try { hs = await picker(o => showOpenFilePicker(o), { multiple: true, types: [{ description: 'maps, zones, runs, scripts',
-    accept: { 'text/plain': ['.navgrid', '.zmap', '.navtrace', '.txt'] } }] }); }
+  try { hs = await picker(o => showOpenFilePicker(o), { multiple: true, types: [{ description: 'maps, zones, runs, scripts, the skill list',
+    accept: { 'text/plain': ['.navgrid', '.zmap', '.navtrace', '.txt', '.json'] } }] }); }
   catch (e) { if (e.name !== 'AbortError') $('file').click(); return; }
   const nav = hs.find(h => /\.(navgrid|navtrace)$/i.test(h.name));
   if (nav) rememberDir(nav);
-  load(await Promise.all(hs.map(h => h.getFile())));
+  const js = hs.filter(h => /\.json$/i.test(h.name)), rest = hs.filter(h => !js.includes(h));
+  for (const h of js) await loadSkills(await h.getFile(), h);   // skills.json: the skill list (its handle kept for Save)
+  if (rest.length) load(await Promise.all(rest.map(h => h.getFile())));
 }
 
 async function save() {
@@ -824,12 +838,124 @@ const PULL = [
 const PULL_ADV = [
   ['touch_grace_ms', 'Aggro time after a touch, ms', 3000], ['touch_max', 'Touches without aggro', 3], ['skip_ms', 'Skip a stuck mob, ms', 8000],
   ['ignore_ms', 'Skip a passive mob, ms', 30000], ['approach_ms', 'Cannot reach a mob, ms', 15000], ['tap_after_ms', 'Tap after the run-by, ms', 1000],
-  ['tap_ms', 'Tap: time for the hit on top of the run, ms', 1000], ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
+  ['tap_ms', 'Tap: time for the hit on top of the run, ms', 1000], ['tap_skill_ms', 'Tap skill: time for its hit after the cast, ms', 3000],
+  ['heal_cast_ms', 'Heal while pulling: we stand for its cast at most, ms', 2000],
+  ['tap_fire_ms', 'Tap skill: no start of its cast in this (out of sight) - closer, ms', 1200], ['tap_resend_ms', 'Tap skill: sent again this often until it starts, ms', 150],
+  ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
   ['hit_range', 'Hit range', 80], ['stuck_ms', 'Stuck, ms', 1500], ['aggro_dist', 'Aggro farther than this does not count', 1500],
   ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 50]];
-const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0' };
+const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1' };
 const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
-  'player_alert', 'chat_alert', 'champion_alert', 'telegram'];
+  'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max'];
+// the skill list of the mage fight: Library\Nav\skills.json, one for every map (the farm script reads it) - how
+// each skill is cast, its cast range, AoE radius, name. A page opened from the disk cannot read a file by itself:
+// the list opened / saved here last is kept in the browser (IndexedDB) with the file's handle, and at the start
+// the file itself is read again when the browser still allows it. The map's K mage lines: priority, skill, when, value
+const SKILL_FILE = 'skills.json';
+const SKILL_TYPES = [['TARGET', 'At the target'], ['AOE', 'AoE at the target'], ['SELF_AOE', 'AoE round us, no target'], ['SELF', 'On us (heal, buff)']];
+const SKILL_SHORT = { TARGET: 'at the target', AOE: 'AoE at the target', SELF_AOE: 'AoE round us', SELF: 'on us' };
+// the text of skills.json -> the list; null = not a skill list
+function parseSkills(t) {
+  let j; try { j = JSON.parse(String(t || '').replace(/^\uFEFF/, '')); } catch (e) { return null; }
+  const a = Array.isArray(j) ? j : j && Array.isArray(j.skills) ? j.skills : null;
+  if (!a) return null;
+  return a.filter(s => s && Math.floor(+s.id) > 0).map(s => { const ty = String(s.type || '').toUpperCase();
+    return { id: String(Math.floor(+s.id)), type: SKILL_SHORT[ty] ? ty : 'TARGET', range: String(Math.floor(+s.range) || 0),
+      rad: String(Math.floor(+s.radius) || 0), name: String(s.name || '') }; });
+}
+let skillDb = [], skillDbDirty = false, skillFile = null;   // the list; edited, not saved; the handle of skills.json
+let skillSeen = null;   // the text of skills.json as this page read / wrote it last (a change made outside it is not overwritten silently)
+const skillById = id => skillDb.find(s => s.id === String(id));
+const skillLabel = s => s.id + ' · ' + (s.name || 'no name') + ' — ' + SKILL_SHORT[s.type] +
+  (s.type === 'TARGET' || s.type === 'AOE' ? ' ' + (+s.range || 600) : '') + (s.type === 'AOE' || s.type === 'SELF_AOE' ? ', radius ' + (+s.rad || 0) : '');
+const MAGE_CONDS = [['READY', 'Whenever ready'], ['HP_BELOW', 'Our HP % below'], ['MOBS', 'Mobs in its area, at least'],
+  ['PER_MOB', 'Again on a mob after, ms'], ['MOB_HP_ABOVE', 'Target MaxHP above'], ['EVERY', 'At most every, ms']];
+const MAGE_PH = { READY: '—', HP_BELOW: '70', MOBS: '3', PER_MOB: '30000 (0 — once)', MOB_HP_ABOVE: '100000', EVERY: '5000' };
+// cfg.mage: [skill, when, value] in the order of the priority (the upper row first; saved as K mage 1.., 2.., ...)
+const mageOn = () => (cfg.mage || []).some(r => +r[0]);
+// a K mage line / AddMageSkill: the row goes after the rows of the same or a higher priority
+function mageAdd(prio, skill, cond, val) {
+  const L = cfg.mage = cfg.mage || [], p = parseInt(prio) || 1;
+  const row = [String(skill || ''), String(cond || 'READY').toUpperCase(), val == null ? '' : String(val)];
+  if (row[1] === 'HP_BELOW' && !(+row[2] > 0)) row[2] = '';   // "HP below 0%" never goes: empty = the default (70)
+  row.p = p; let i = L.length; while (i > 0 && (L[i - 1].p || 0) > p) i--; L.splice(i, 0, row);
+}
+// skills.json as the farm script reads it: one skill per line
+function skillsText() {
+  const clean = s => String(s || '').replace(/["\\{}\[\]\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const rows = skillDb.filter(s => Math.floor(+s.id) > 0).map(s => '    { "id": ' + Math.floor(+s.id) + ', "type": "' + s.type + '", "range": ' +
+    (Math.floor(+s.range) || 0) + ', "radius": ' + (Math.floor(+s.rad) || 0) + ', "name": "' + clean(s.name) + '" }');
+  return ['{',
+    '  "about": "Skills of the mage fight, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage lines of a .navgrid name skills of this list",',
+    '  "types": {',
+    '    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",',
+    '    "AOE": "cast at the target from range, hits every mob within radius of it",',
+    '    "SELF_AOE": "no target: hits every mob within radius of us",',
+    '    "SELF": "on us (heal, buff)"',
+    '  },',
+    '  "skills": [',
+    ...(rows.length ? [rows.join(',\r\n')] : []),
+    '  ]',
+    '}', ''].join('\r\n');
+}
+// the list now is the file: kept in the browser for the next start (with the file's handle: Save writes it again)
+function skillsKeep(h, text) {
+  skillDbDirty = false; if (h) skillFile = h; if (text != null) skillSeen = text;
+  const plain = skillDb.map(s => ({ id: s.id, type: s.type, range: s.range, rad: s.rad, name: s.name }));
+  idb('readwrite', st => { st.put(plain, 'skills'); if (skillSeen != null) st.put(skillSeen, 'skillsSeen'); if (h) st.put(h, 'skillsFile'); });
+}
+// the start: the kept copy, then the file itself if the browser still lets the page read it
+idb('readonly', st => st.get('skills')).then(a => {
+  if (Array.isArray(a) && !skillDb.length && !skillDbDirty) { skillDb = a.filter(s => s && +s.id > 0); skillsUiRefresh(true); } });
+idb('readonly', st => st.get('skillsSeen')).then(t => { if (typeof t === 'string' && skillSeen === null) skillSeen = t; });
+idb('readonly', st => st.get('skillsFile')).then(async h => {
+  if (!h || !h.getFile || skillFile) return; skillFile = h;
+  try { if (await h.queryPermission({ mode: 'read' }) !== 'granted') { skillsUiRefresh(true); return; }
+    const t = await (await h.getFile()).text(), L = parseSkills(t);
+    if (L && !skillDbDirty) { skillDb = L; skillsKeep(null, t); } } catch (e) { }
+  skillsUiRefresh(true);
+});
+async function loadSkills(file, h) {
+  const t = await file.text(), L = parseSkills(t);
+  if (!L) { toast(file.name + ': not a skill list (JSON with "skills": [...])'); return false; }
+  skillDb = L; skillsKeep(h, t); skillsUiRefresh(true);
+  toast(L.length + ' skills from ' + file.name + (file.name.toLowerCase() === SKILL_FILE ? '' : ' — the farm script reads only Library\\Nav\\' + SKILL_FILE));
+  return true;
+}
+async function openSkills() {
+  if (skillDbDirty && !confirm('The skill list has unsaved changes. Open the file and drop them?')) return;
+  if (window.showOpenFilePicker) {
+    try { const [h] = await picker(o => showOpenFilePicker(o), { types: [{ description: 'skill list', accept: { 'application/json': ['.json'] } }] });
+      await loadSkills(await h.getFile(), h); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const i = mk('input', { type: 'file', accept: '.json' }); i.onchange = () => { if (i.files[0]) loadSkills(i.files[0], null); }; i.click();
+}
+async function saveSkills() {
+  const text = skillsText(), done = (h, t) => { skillsKeep(h, h ? text : null); skillsUiRefresh(true); toast(t); };
+  if (skillFile && skillFile.createWritable) try {   // the file opened / saved before: written again, no dialog
+    if (await skillFile.requestPermission({ mode: 'readwrite' }) === 'granted') {
+      const cur = await (await skillFile.getFile()).text();   // changed outside the page since it was read here: ask
+      if (skillSeen !== null && cur !== skillSeen && cur !== text &&
+        !confirm(skillFile.name + ' was changed outside this page since it was opened here.\n\nOK — write the list of the page over it; Cancel — keep the file (Open it to see it)')) return;
+      const w = await skillFile.createWritable(); await w.write(text); await w.close();
+      done(skillFile, 'Saved ' + skillFile.name + ' — ' + skillDb.length + ' skills'); return; }
+  } catch (e) { }
+  try { if (window.showSaveFilePicker) { const h = await picker(o => showSaveFilePicker(o), { suggestedName: SKILL_FILE, types: [{ description: 'skill list', accept: { 'application/json': ['.json'] } }] });
+    const w = await h.createWritable(); await w.write(text); await w.close();
+    done(h, 'Saved ' + h.name + (h.name.toLowerCase() === SKILL_FILE ? ' — it must lie in Library\\Nav' : ' — the farm script reads only Library\\Nav\\' + SKILL_FILE)); return; } }
+  catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = SKILL_FILE; a.click();
+  done(null, 'Downloaded ' + SKILL_FILE + ' — put it into Library\\Nav');
+}
+// the skill list changed: the fields that pick from it are drawn again (the list itself only when asked)
+function skillsUiRefresh(self) {
+  for (const k of ['mage', 'mage_tap', ...(self ? ['_skills'] : [])]) {
+    const el = document.querySelector('#cfg .fld[data-k="' + k + '"]'), f = CARDS.flatMap(c => c.f || []).find(x => x.k === k);
+    if (el && f) el.replaceWith(fieldUi(f));
+  }
+  cfgChips(); cfgCounts(); cfgFilter();
+}
 // the settings cards: ic = icon (IC), c = accent colour; fields: k = key, l = label, type, ph = default shown grey, h = hint
 const CARDS = [
   { ic: 'user', c: '#5aa9ff', t: 'Account & start', sub: 'Game login and bot files', f: [
@@ -839,9 +965,9 @@ const CARDS = [
     { k: 'config', l: 'Profile .xml', ph: 'alarm.xml', h: 'Library\\Configurations. Mode Profile: it farms; the other modes: an alarm one (auto attack off)' }] },
   { ic: 'sword', c: '#ff6b7a', t: 'Farm', sub: 'What to hit and how', f: [
     { k: 'pack.size', l: 'Pack size', type: 'num', ph: '6', h: 'how many mobs to gather before the fight' },
-    { k: 'pack.spoil', l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302, 0 — no spoil' },
+    { k: 'pack.spoil', l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302 (with Mage skills — none), 0 — no spoil' },
     { k: 'spoil_per_mob', l: 'Mass spoils per mob', type: 'num', ph: '2', h: 'system messages are not read: a mob counts as spoiled once it was under this many mass spoils (resurrected / late ones get as many too)' },
-    { k: 'pack.sweep', l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444, 0 — no sweep' },
+    { k: 'pack.sweep', l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444 (with Mage skills — none), 0 — no sweep' },
     { k: 'pack.mobs', l: 'Mob IDs', type: 'ids', ph: '22126, 22127', h: 'empty — any mob in the zone' },
     { k: 'mode', l: 'Mode', type: 'sel', opts: [['', 'Auto: rooms if drawn, else packs'], ['PACK', 'Pack → to a corner'],
       ['SINGLE', 'Single, where they stand'], ['AUTO', 'Auto: many — pack, few — single'], ['ROOMS', 'Rooms'], ['PROFILE', 'Profile: the bot interface farms']],
@@ -860,11 +986,29 @@ const CARDS = [
     { k: 'room_order', l: 'Room order', type: 'sel', opts: [['', 'Smart: where most mobs are (by room "min")'], ['SEQ', 'In turn: A, B, C… without counting mobs']],
       h: 'in turn — in the order of the room list on the map from the room nearest to the start (started in B — B, C, …, A); its pack is dead — on to the next one at once, mobs on us come along' },
     { k: 'room_cycle_wait', l: 'Pause after a round, s', type: 'num', ph: '0', h: 'in turn: all rooms done — wait this long, then a new round (0 — at once)' },
+    { k: 'room_pause_min', l: 'Pause before the next room, ms: from', type: 'num', ph: '1000', h: 'a room done — a random «human» pause, from … to ms, before the run to the next one (mobs on us — no pause); 0 and 0 — none' },
+    { k: 'room_pause_max', l: '… to, ms', type: 'num', ph: '3000' },
     { k: 'room_recount', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
     { k: 'room_ignore_way', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight)' },
     { k: 'room_players', l: 'Player in the room, s', type: 'num', ph: '60', h: 'a stranger in the room this many seconds — leave (0 — at once, -1 — ignore). A room with a stranger seen from afar is not chosen' },
     { k: 'room_avoid', l: 'Avoid it for, s', type: 'num', ph: '30', h: 'after leaving because of a player the room is avoided this many seconds' },
     { k: '_map', type: 'map' }] },
+  { ic: 'spark', c: '#b18cff', t: 'Mage', sub: 'The pack is killed by skills instead of the auto attack', f: [
+    { k: 'mage', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
+      cols: [['Skill', 'skill', null, '3fr'], ['Use when', 'sel', MAGE_CONDS, '1.6fr'], ['Value', 'num', r => MAGE_PH[r[1]] || '', '.8fr']],
+      newRow: () => { const used = (cfg.mage || []).map(r => r[0]), s = skillDb.find(s => +s.id && !used.includes(s.id)); return [s ? s.id : '', 'READY', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card below: here they are picked from it' }),
+      h: 'any row — a mage: no auto attack, no spoil / sweep. The skills are picked from the Skills card (skills.json); the order is the priority (the arrows move a row): every moment the upper skill that may go is cast — its condition holds, it is ready, the target is within its cast range. Skills «Our HP % below» (drains, heals; empty — 70) go while pulling and on the runs to the farm spot too: a drain at the nearest mob on us within its range, we stand for its cast. The pull: it starts at the farm spot of the room (the Spot tool; none — the middle of the room), every mob of the room gets a pull skill from its cast range and only in sight (no cast through a wall: we go round it; no body pull), then to the farm spot as before. The target is the mob with the most mobs round it (the biggest AoE radius), within the longest cast range' },
+    { k: 'mage_tap', l: 'Pull skills, in order', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add pull skill',
+      cols: [['Skill', 'skill', s => s.type === 'TARGET' || s.type === 'AOE', '3fr']],
+      newRow: () => { const used = (cfg.mage_tap || []).map(r => r[0]), fight = (cfg.mage || []).map(r => skillById(r[0])).filter(Boolean);
+        const s = [...fight, ...skillDb].find(s => +s.id && s.type === 'TARGET' && !used.includes(s.id)); return [s ? s.id : '']; },
+      h: 'every mob of the room gets one of these: the first of the list that is ready (no reuse) and reaches it — one in reuse, the next one goes, the pull does not wait for it. We stop a bit inside its cast range (Skills card), cast it at the mob, wait for the hit and go to the next one; the room comes after us. Empty — the upper «at the target» skill of the fight used «whenever ready»' },
+    { k: 'mage_body', l: 'Body pull instead', type: 'bool', h: 'no pull skills: the mage runs past the mobs as the others do (the list above is not used)' },
+    { k: 'mage_spam_ms', l: 'Skill spam, ms', type: 'num', ph: '100', h: 'as sh_solo: a skill packet this often, no waiting for the cast — the next nuke is pressed while the reuse ends and goes at once; a skill with a condition (drain, AoE, debuff) is waited for until it goes. The target is counted again every 200 ms: the most mobs round it, then the lowest HP' }] },
+  { ic: 'book', c: '#8c9bff', t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the Mage card picks from it', db: true, f: [
+    { k: '_skills', l: 'Skill list', type: 'skilldb',
+      h: 'how each skill is cast, its cast range and AoE radius. Saved by its own button into skills.json (the farm script reads it there), not with the .navgrid; the page remembers the file it opened / saved' }] },
   { ic: 'target', c: '#ffb454', t: 'Weapon', sub: 'Farm weapon and the tap for the pull', f: [
     { k: 'weapon', l: 'Farm weapon', type: 'num', h: 'item ID; empty — what is in hands at start' },
     { k: 'tap.id', l: 'Tap weapon', type: 'num', h: 'a mob does not aggro on a run-by — hit it with this, then on' },
@@ -884,7 +1028,8 @@ const CARDS = [
     { k: 'private_alert', l: 'Private messages', type: 'bool' },
     { k: 'chat_alert', l: 'General chat closer than', type: 'num', ph: '1000', h: 'a player (not party / clan) wrote in the general chat closer than this; an unseen one (GM in invisibility) too. 0 — off' },
     { k: 'champion_alert', l: 'Champion from MaxHP', type: 'num', ph: '100000', h: '0 — off' },
-    { k: 'telegram', l: 'Telegram key', type: 'pass', h: 'the key from the Adrenaline cabinet' }] },
+    { k: 'telegram', l: 'Telegram key', type: 'pass', h: 'the key from the Adrenaline cabinet' },
+    { k: 'death_stop', l: 'Stop after a death', type: 'bool', h: 'died → «To Village» → up in town: the script stops (the alert goes to Telegram too). Off — back to the spot via Aden. A farm with no teleport waits for a resurrection either way' }] },
   { ic: 'compass', c: '#5ee6ff', t: 'Way to the spot', sub: 'Empty — farms where it was started', f: [
     { k: 'teleport', l: 'Teleport from Aden', ph: '_bbs_teleport?id=...&fromtown=6', h: 'gatekeeper bypass' },
     { k: 'stp.npc', l: 'Second teleport: NPC', type: 'num' },
@@ -915,6 +1060,8 @@ function cfgParse(line) {
     case 'ignore': cfg.ignore = ids(rest); break;
     case 'pull': if (f[0]) cfg['pull.' + f[0].toLowerCase()] = f[1] || ''; break;
     case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0']); break;
+    case 'mage': mageAdd(f[0], f[1], f[2], f[3]); break;   // by priority: the rows are kept in its order
+    case 'mage_tap': if (f[0] === '0') cfg.mage_body = '1'; else for (const id of f) if (+id) list('mage_tap', [id]); break;   // the pull skills in order
     case 'supply': list('supply', [f[0] || '', f[1] || '', f[2] || '']); break;
     default: if (SIMPLE.includes(key) || key in BOOLS) cfg[key] = rest; else cfgExtra.push(line.trim());
   }
@@ -932,7 +1079,14 @@ function cfgLines() {
   if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
   for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) put('selfbuff', +r[0] || 0, +r[1] || 0);
-  if ((v('pack.size') || cfgRooms()) && !cfgProfile()) put('pack', v('pack.size') || 0, v('pack.spoil') === '' ? 302 : v('pack.spoil'), v('pack.sweep') === '' ? 444 : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
+  // the priority = the row; an empty value = the grey default of its condition (HP below 70, 3 mobs...)
+  (cfg.mage || []).filter(r => +r[0]).forEach((r, i) => put('mage', i + 1, +r[0], r[1] || 'READY',
+    String(r[2] || '').trim() === '' ? parseInt(MAGE_PH[r[1] || 'READY']) || 0 : +r[2] || 0));
+  const taps = (cfg.mage_tap || []).map(r => +r[0]).filter(Boolean);   // the pull skills in order (body pull: K mage_body 1 below)
+  if (taps.length && v('mage_body') !== '1') put('mage_tap', ...taps);
+  // a mage has no spoil / sweep: empty fields mean 0 then, not 302 / 444
+  const mg = mageOn();
+  if ((v('pack.size') || cfgRooms()) && !cfgProfile()) put('pack', v('pack.size') || 0, v('pack.spoil') === '' ? (mg ? 0 : 302) : v('pack.spoil'), v('pack.sweep') === '' ? (mg ? 0 : 444) : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
   if (v('tap.id')) put('tap', v('tap.id'), v('tap.range') || 0);
   if (v('dagger.id')) put('dagger', v('dagger.id'), v('dagger.hp') || 0);
   if (v('ignore')) put('ignore', ids(v('ignore')).replace(/ /g, ''));
@@ -971,8 +1125,14 @@ function importScript(text) {
     ['SetRoomPlayers', 'room_players'], ['SetDebug', 'debug'], ['SetPlayerAlert', 'player_alert'], ['SetChatAlert', 'chat_alert'], ['SetChampionAlert', 'champion_alert']])
     call(fn, a => { const p = nums(a); if (p.length) set(k, p[0]); });
   call('SetPull', a => { const s = strs(a), p = nums(a.replace(/'[^']*'/g, '')); if (s[0] && p.length) set('pull.' + s[0].toLowerCase(), p[0]); });
-  let sb = false, su = false;
+  let sb = false, su = false, ms = false;
   call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0']); n++; });
+  call('AddMageSkill', a => { const m = a.match(/^\s*(-?\d+)\s*,\s*(\d+)\s*,\s*'(\w*)'\s*,\s*(-?\d+)/); if (!m) return;
+    if (!ms) { cfg.mage = []; ms = true; } mageAdd(m[1], m[2], m[3], m[4]); n++; });
+  let mt = false;   // SetMageTap(0) = body pull; SetMageTap(x) + AddMageTap(y)... = the pull skills in order
+  call('SetMageTap', a => { const p = nums(a); if (!p.length) return; if (!+p[0]) { set('mage_body', '1'); return; }
+    cfg.mage_tap = [[String(p[0])]]; mt = true; n++; });
+  call('AddMageTap', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!mt) { cfg.mage_tap = []; mt = true; } cfg.mage_tap.push([String(p[0])]); n++; });
   call('AddSupply', a => { const m = a.match(/^\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)/); if (!m) return; if (!su) { cfg.supply = []; su = true; }
     cfg.supply.push([String(ITEM_CONST[m[1].toUpperCase()] || +m[1] || ''), m[2], m[3]]); n++; });
   call('SetSafePoint', a => { const p = nums(a); if (p.length >= 3) safe = { x: +p[0], y: +p[1], z: +p[2] }; });
@@ -996,11 +1156,14 @@ function fieldUi(f) {
       mk('div', { class: 'h', text: 'drawn on the map with the Room, Spot and Safe tools' }));
     return row;
   }
-  const row = mk('div', { class: 'fld' + (f.wide ? ' wide' : '') });
-  row.dataset.s = [f.l, f.h, f.k, ...(f.cols || []).map(c => c[0]), ...(f.opts || []).map(o => o[1])].join(' ').toLowerCase();
+  if (f.type === 'skilldb') return skillDbUi(f);
+  const row = mk('div', { class: 'fld' + (f.wide ? ' wide' : '') }); row.dataset.k = f.k;
+  const opts = () => typeof f.opts === 'function' ? f.opts() : f.opts || [];   // a list built when drawn (the skills)
+  row.dataset.s = [f.l, f.h, f.k, ...(f.cols || []).map(c => c[0]), ...opts().map(o => o[1])].join(' ').toLowerCase();
   const isSet = () => f.type === 'bool' ? cv0(f.k) !== '' && cv0(f.k) !== BOOLS[f.k] : f.type === 'rows' ? !!(cfg[f.k] || []).length : cv0(f.k) !== '';
   const mark = () => { row.classList.toggle('set', isSet()); cfgCounts(); };
   if (!f.wide) row.append(mk('label', { text: f.l || '', title: f.k }));
+  else if (f.titled) row.append(mk('div', { class: 'wt', text: f.l }));
   let inp;
   const store = s => { s = (s || '').trim(); if (s === '') delete cfg[f.k]; else cfg[f.k] = s; mark(); dirty(); };
   if (f.type === 'bool') {
@@ -1008,28 +1171,52 @@ function fieldUi(f) {
     c.onchange = () => { const v = c.checked ? '1' : '0'; if (v === BOOLS[f.k]) delete cfg[f.k]; else cfg[f.k] = v; mark(); dirty(); };
     inp = mk('label', { class: 'tg' }, c, mk('span'));
   } else if (f.type === 'sel') {
-    inp = mk('select'); for (const [v, t] of f.opts) inp.append(mk('option', { value: v, text: t })); inp.value = cv0(f.k); inp.onchange = () => { store(inp.value); if (f.k === 'mode') cfgUi(); };
+    const o = opts(); inp = mk('select'); for (const [v, t] of o) inp.append(mk('option', { value: v, text: t }));
+    if (cv0(f.k) && !o.some(x => x[0] === cv0(f.k))) inp.append(mk('option', { value: cv0(f.k), text: 'ID ' + cv0(f.k) + ' (not in the list)' }));
+    inp.value = cv0(f.k); inp.onchange = () => { store(inp.value); if (f.k === 'mode') cfgUi(); };
   } else if (f.type === 'lines') {
     inp = mk('textarea', { placeholder: f.ph || '', spellcheck: false, rows: 3 }); inp.value = cv0(f.k); inp.oninput = () => store(inp.value);
   } else if (f.type === 'rows') {
     inp = mk('div', { class: 'rows' });
-    const cols = f.cols.map(c => c[1] === 'item' ? '2fr' : '1fr').join(' ') + ' auto';
+    // f.ord: the order of the rows is the priority - the row number in front, arrows to move a row up / down
+    const cols = (f.ord ? '22px ' : '') + f.cols.map(c => c[3] || (c[1] === 'item' ? '2fr' : c[1] === 'skill' ? '2.6fr' : c[1] === 'sel' ? '1.6fr' : '1fr')).join(' ') + ' auto';
     const draw = () => { inp.innerHTML = '';
-      (cfg[f.k] || []).forEach((r, i) => {
+      const note = f.note ? f.note() : null; if (note) inp.append(note);
+      if (f.hdr && (cfg[f.k] || []).length) {   // the column names over the rows
+        const hd = mk('div', { class: 'rw hd' }); hd.style.gridTemplateColumns = cols;
+        if (f.ord) hd.append(mk('span', { text: '#', class: 'ord' }));
+        for (const c of f.cols) hd.append(mk('span', { text: c[0] })); hd.append(mk('span')); inp.append(hd);
+      }
+      (cfg[f.k] || []).forEach((r, i, L) => {
         const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
+        if (f.ord) line.append(mk('span', { class: 'ord', text: i + 1, title: 'priority: the upper row goes first' }));
         f.cols.forEach((c, j) => {
           let e;
           if (c[1] === 'item') { e = mk('select'); for (const [id, nm] of ITEMS) e.append(mk('option', { value: id, text: nm }));
             if (r[j] && !ITEMS.some(x => String(x[0]) === String(r[j]))) e.append(mk('option', { value: r[j], text: 'ID ' + r[j] })); e.value = r[j]; e.onchange = () => { r[j] = e.value; dirty(); }; }
-          else { e = mk('input', { type: 'number', placeholder: c[2] || c[0], title: c[0] }); e.value = r[j] || ''; e.oninput = () => { r[j] = e.value.trim(); dirty(); }; }
+          else if (c[1] === 'skill') {   // a skill of the skill list (skills.json); c[2] = which ones (none = all)
+            e = mk('select', { title: c[0] }); e.append(mk('option', { value: '', text: '— pick a skill —' }));
+            for (const s of skillDb) if (+s.id && (typeof c[2] !== 'function' || c[2](s))) e.append(mk('option', { value: s.id, text: skillLabel(s) }));
+            if (r[j] && !skillById(r[j])) e.append(mk('option', { value: r[j], text: 'ID ' + r[j] + ' — not in the skill list' }));
+            e.value = r[j] || ''; e.onchange = () => { r[j] = e.value; dirty(); }; }
+          else if (c[1] === 'sel') { e = mk('select', { title: c[0] }); for (const [v, t] of c[2]) e.append(mk('option', { value: v, text: t }));
+            e.value = r[j] || c[2][0][0]; e.onchange = () => { r[j] = e.value; dirty(); draw(); }; }   // redraw: the hints of the other columns follow
+          else { const ph = typeof c[2] === 'function' ? c[2](r) : c[2];
+            e = mk('input', { type: 'number', placeholder: ph || c[0], title: c[0] + (ph ? ': ' + ph : '') }); e.value = r[j] || ''; e.oninput = () => { r[j] = e.value.trim(); dirty(); }; }
           line.append(e);
         });
         const x = mk('button', { class: 'x', title: 'remove', onclick: () => { cfg[f.k].splice(i, 1); if (!cfg[f.k].length) delete cfg[f.k]; draw(); mark(); dirty(); } });
-        x.innerHTML = icon('close'); line.append(x);
+        x.innerHTML = icon('close');
+        if (f.ord) {   // swap with the row above / below
+          const mv = (d, ic, t) => { const b = mk('button', { class: 'mv', title: t, disabled: !L[i + d], onclick: () => {
+            [L[i], L[i + d]] = [L[i + d], L[i]]; draw(); dirty(); } }); b.innerHTML = icon(ic); return b; };
+          line.append(mk('span', { class: 'rb' }, mv(-1, 'up', 'up: a higher priority'), mv(1, 'down', 'down: a lower priority'), x));
+        } else line.append(x);
         inp.append(line);
       });
-      inp.append(mk('button', { class: 'addrow', text: '+ Add row', onclick: () => {
-        (cfg[f.k] = cfg[f.k] || []).push(f.cols.map(c => c[1] === 'item' ? String(ITEMS[0][0]) : '')); draw(); mark(); dirty(); } }));
+      inp.append(mk('button', { class: 'addrow', text: f.add || '+ Add row', onclick: () => {
+        (cfg[f.k] = cfg[f.k] || []).push(f.newRow ? f.newRow() : f.cols.map(c => c[1] === 'item' ? String(ITEMS[0][0]) : c[1] === 'sel' ? c[2][0][0] : ''));
+        draw(); mark(); dirty(); } }));
     };
     draw();
   } else {
@@ -1046,6 +1233,41 @@ function fieldUi(f) {
   if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
   row.classList.toggle('set', isSet()); return row;
 }
+// the skill list (skills.json) to edit: ID, how it is cast, cast range, AoE radius, name; Open / Save by its own buttons
+function skillDbUi(f) {
+  const row = mk('div', { class: 'fld wide' }); row.dataset.k = f.k;
+  row.dataset.s = [f.l, f.h, SKILL_FILE, 'skills', ...skillDb.map(s => s.name)].join(' ').toLowerCase();
+  const list = mk('div', { class: 'rows' }), cols = '.9fr 1.7fr .9fr .9fr 2.2fr auto';
+  const sv = btn('save', 'Save ' + SKILL_FILE, saveSkills, skillDbDirty ? 'primary dirty' : '');
+  const st = mk('span', { class: 'muted' });
+  const status = () => { st.textContent = skillDbDirty ? 'changed — not saved yet' : !skillDb.length ? '' :
+    skillDb.length + ' skills · ' + (skillFile ? skillFile.name : 'the copy kept by the page'); };
+  const touched = () => { skillDbDirty = true; sv.className = 'primary dirty'; status(); cfgCounts(); };
+  const draw = () => { list.innerHTML = '';
+    if (!skillDb.length) list.append(mk('div', { class: 'h', text: 'No skills yet: press Open ' + SKILL_FILE + ' and pick Library\\Nav\\' + SKILL_FILE +
+      ' (once — the page remembers it), or add the skills here and save them there' }));
+    else { const hd = mk('div', { class: 'rw hd' }); hd.style.gridTemplateColumns = cols;
+      for (const t of ['ID', 'Cast', 'Range', 'AoE radius', 'Name', '']) hd.append(mk('span', { text: t })); list.append(hd); }
+    skillDb.forEach((s, i) => {
+      const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
+      const num = (k, ph) => { const e = mk('input', { type: 'number', placeholder: ph, title: ph }); e.value = s[k];
+        e.oninput = () => { s[k] = e.value.trim(); touched(); }; e.onchange = () => skillsUiRefresh(); return e; };
+      const ty = mk('select', { title: 'how it is cast' }); for (const [v, t] of SKILL_TYPES) ty.append(mk('option', { value: v, text: t }));
+      ty.value = s.type; ty.onchange = () => { s.type = ty.value; touched(); skillsUiRefresh(); };
+      const nm = mk('input', { type: 'text', placeholder: 'name', spellcheck: false }); nm.value = s.name;
+      nm.oninput = () => { s.name = nm.value; touched(); }; nm.onchange = () => skillsUiRefresh();
+      const x = mk('button', { class: 'x', title: 'remove', onclick: () => { skillDb.splice(i, 1); touched(); draw(); skillsUiRefresh(); } });
+      x.innerHTML = icon('close');
+      line.append(num('id', 'skill ID'), ty, num('range', 'cast range'), num('rad', 'AoE radius'), nm, x); list.append(line);
+    });
+    list.append(mk('button', { class: 'addrow', text: '+ Add skill', onclick: () => {
+      skillDb.push({ id: '', type: 'TARGET', range: '600', rad: '0', name: '' }); touched(); draw(); } }));
+  };
+  draw(); status();
+  row.append(mk('div', { class: 'wt', text: f.l }), mk('div', { class: 'acts' }, btn('open', 'Open ' + SKILL_FILE, openSkills), sv, st), list);
+  if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
+  return row;
+}
 function cfgChips() {
   const box = $('cfgChips'); if (!box) return; box.innerHTML = '';
   const chip = (t, c) => box.append(mk('span', { class: 'chip ' + (c || ''), text: t }));
@@ -1057,6 +1279,19 @@ function cfgChips() {
   else if (cfgRooms()) chip('pack = the whole room · ' + mobs, 'ok');
   else if (v('pack.size')) chip('pack of ' + v('pack.size') + ' · ' + mobs, 'ok'); else chip('no pack size — the farm will not start', 'warn');
   chip('mode: ' + (MODE[mode] || mode), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
+  const mg = (cfg.mage || []).filter(r => +r[0]);
+  const miss = [...new Set([...mg, ...(cfg.mage_tap || [])].map(r => r[0]).filter(x => +x && !skillById(x)))];
+  if (mg.length) chip(cfgProfile() ? 'mage skills: not used in Profile mode' : 'mage: ' + mg.length + ' skills, no auto attack', cfgProfile() ? 'warn' : 'ok');
+  if (mg.length && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
+  else if (miss.length) chip('not in ' + SKILL_FILE + ': ' + miss.join(', ') + ' — cast at the target from 600', 'warn');
+  if (mg.length && !cfgProfile() && !mg.some(r => r[1] === 'HP_BELOW'))
+    chip('mage: no skill «Our HP % below» (a drain / heal) — it does not heal itself while pulling', 'warn');
+  if (mg.length && !cfgProfile() && cfgRooms()) {   // a mage starts the pull of a room at its farm spot
+    const nm = s => String(s || '').trim().replace(/\s+/g, '_').toUpperCase();
+    const own = r => spots.some(p => p.room ? p.room.split(',').includes(nm(r.name)) : spotAuto(p) === r.name);
+    const no = rooms.filter(r => r.pts.length >= 3 && !own(r)).map(r => r.name);
+    if (no.length) chip('mage: no farm spot for room ' + no.join(', ') + ' — its pull starts in its middle (Spot tool)', 'warn');
+  }
   if (mode === 'ROOMS' && !rooms.length) chip('rooms mode, but no rooms on the map', 'warn');
   chip(rooms.length + ' rooms · ' + spots.length + ' farm spots', rooms.length || spots.length ? 'ok' : '');
   chip(safe ? 'safe point set' : 'no safe point', safe ? 'ok' : '');
@@ -1067,8 +1302,9 @@ function cfgChips() {
 // changed fields per card: the card header and the side menu
 function cfgCounts() {
   document.querySelectorAll('#cfg .card').forEach((card, i) => {
-    const n = card.querySelectorAll('.fld.set').length, c = card.querySelector('.cnt');
-    if (c) { c.textContent = n ? n + ' changed' : 'defaults'; c.classList.toggle('none', !n); }
+    const db = CARDS[i] && CARDS[i].db, n = db ? 0 : card.querySelectorAll('.fld.set').length, c = card.querySelector('.cnt');
+    if (c && db) { c.textContent = skillDb.length + ' skills' + (skillDbDirty ? ' · not saved' : ''); c.classList.toggle('none', !skillDbDirty); }   // the skill list
+    else if (c) { c.textContent = n ? n + ' changed' : 'defaults'; c.classList.toggle('none', !n); }
     const a = document.querySelector('#cfg aside a[data-i="' + i + '"] .n'); if (a) { a.textContent = n || ''; a.style.display = n ? '' : 'none'; }
   });
 }
@@ -1319,7 +1555,10 @@ window.addEventListener('keydown', e => {
   if (e.key === 'Backspace' && railDraw && railDraw.pts.length > 1) { railDraw.pts.pop(); draw(); e.preventDefault(); }
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
-async function load(files) { for (const f of files) parseFile(await f.text(), f.name); fit(); if (grid) regen(); else draw();
+async function load(files) { let maps = 0;
+  for (const f of files) if (/\.json$/i.test(f.name)) await loadSkills(f, null); else { parseFile(await f.text(), f.name); maps++; }
+  if (!maps) return;
+  fit(); if (grid) regen(); else draw();
   if (cfgOpen()) cfgUi(); }
 $('file').onchange = e => { load(e.target.files); e.target.value = ''; };
 $('open').onclick = openFiles;
@@ -1334,7 +1573,7 @@ $('helpClose').onclick = () => $('help').style.display = 'none';
 for (const id of ['help', 'scriptBox']) $(id).addEventListener('mousedown', e => { if (e.target.id === id) $(id).style.display = 'none'; });
 $('scriptClose').onclick = () => $('scriptBox').style.display = 'none';
 $('scriptCopy').onclick = async () => { const t = $('scriptText'); try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand('copy'); } toast('Script copied'); };
-window.addEventListener('beforeunload', e => { if (cfgDirty) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', e => { if (cfgDirty || skillDbDirty) { e.preventDefault(); e.returnValue = ''; } });
 $('regen').onclick = regen;
 $('undo').onclick = undo;
 $('brush').oninput = () => { $('brushV').textContent = $('brush').value; draw(); };

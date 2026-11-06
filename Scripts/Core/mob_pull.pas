@@ -3,7 +3,10 @@ unit MobPull;
 // Mob pull (body pull): run next to free mobs by the server path until the pack follows us. A mob
 // behind a wall is reached along the nav map (Core\nav_move.pas: NavWaypoint) when it is built. We never
 // stop while mobs are on us (the pack catches up and hits): touching a mob = at once to the next.
-// A mob that does not aggro from the run past it is hit once (with the tap weapon if set). Mobs that
+// A mob that does not aggro from the run past it is hit once (with the tap weapon if set; a caster:
+// PullSetTapSkill - that skill from its range, no weapon, only with the mob in sight on the nav map;
+// PullAddTapSkill - more skills: the first ready one that reaches the mob goes; with PullSetTapAlways
+// every mob). Our HP low: a drain / heal of PullAddHeal goes first, then the pull goes on. Mobs that
 // are on the ignore list (PullIgnoreID: archers that shoot from their place...) are never pulled. Ends: pack full and nothing close, nothing free left,
 // HP low, no new aggro for a while, pull time over, stop asked. The fight is the caller's job.
 //
@@ -29,7 +32,20 @@ procedure PullSetZRange(R: integer);             // only mobs at most R up / dow
 procedure PullSetGrid(GridFile: string);         // only mobs on walkable cells of this .navgrid
 procedure PullSetRadius(X, Y, R: integer);       // no grid: only mobs within R of this point (0 = bot zone)
 procedure PullSetTap(WeaponID, Range: integer);  // a mob that does not aggro is hit with this weapon from Range
-procedure PullSetTapAlways(Enable: boolean);     // every mob is pulled by a hit of the tap weapon
+procedure PullSetTapSkill(SkillID, Range: integer);   // a caster: the tap is this skill from Range (0 = the weapon / a hit)
+// one more tap skill after it: every mob gets the first skill of the list that is ready (no reuse) and
+// reaches it - one in reuse, the next one goes (the pull does not wait for one reuse)
+procedure PullAddTapSkill(SkillID, Range: integer);
+// while pulling: our HP % below HPBelow -> this skill (Range > 0: a drain at the nearest mob on us / of the
+// pull within Range and in sight; 0: on us, no target). Any number, the first one that may go; the pull
+// goes on after it
+procedure PullAddHeal(SkillID, HPBelow, Range: integer);
+procedure PullClearHeals();
+// the heal / drain of PullAddHeal now if our HP is low (the pull calls it every tick; the caller may call it
+// on its own runs - to the farm spot); we stand for its cast (heal_cast_ms, our HP going up ends it
+// sooner). true = cast
+function PullHealTick(): boolean;
+procedure PullSetTapAlways(Enable: boolean);     // every mob is pulled by a hit of the tap weapon / skill
 procedure PullSetFarmWeapon(ID: integer);        // weapon put back after the tap (0 = the one in hands)
 procedure PullSet(Key: string; Value: integer);  // tuning by name (see the list in PullSet)
 procedure PullIgnore(OID, Ms: integer);          // do not run at this mob for Ms (it still counts as aggro)
@@ -100,6 +116,15 @@ var
   MpZRange: integer;
   MpRX, MpRY, MpRR: integer;
   MpTapWeapon, MpTapRange, MpFarmWeapon: integer;
+  MpTapSkill: integer;          // PullSetTapSkill: the tap is this skill from MpTapRange (a caster), no weapon
+  MpTapSks, MpTapRngs: array of integer;   // ... + PullAddTapSkill: all tap skills in order, their ranges
+  MpHealSk, MpHealHP, MpHealRng: array of integer;   // PullAddHeal: heal / drain skills, our HP % level, range (0 = on us)
+  MpHealFail: array of cardinal;  // ... ordered but no cast seen (MP...): not tried again before this
+  MpHealCastMs: integer;          // heal_cast_ms: we stand this long for its cast (our HP up -> sooner)
+  MpTapSkillMs: integer;        // tap_skill_ms: after the cast its hit must land within this
+  MpTapFireMs: integer;         // tap_fire_ms: the tap skill sent (DUseSkill) must start (its reuse) within this
+  MpTapResendMs: integer;       // tap_resend_ms: until it starts it is sent again this often
+  MpTapSkillTold: boolean;      // "no such tap skill" said
   MpTapAlways: boolean;
   MpNames: array of string;
   MpNkID: array[0..511] of integer;      // PullNameIgnored: NPC kinds seen ...
@@ -191,6 +216,11 @@ begin
   MpOvershoot := 150;      // running at a mob we click this far past it: no stop at the click point
   MpSingleRange := 3000;   // one by one: mobs farther than this (by the way to them) are not taken
   MpPackDensity := 0;      // auto mode: this many free mobs near us -> pull a pack (0 = half the pack)
+  MpTapSkill := 0;         // the tap: 0 = the tap weapon / a hit, else this skill from MpTapRange
+  MpTapSkillMs := 3000;    // tap skill: its cast + flight - the hit must land within this after the cast
+  MpHealCastMs := 2000;    // heal / drain while pulling: we stand this long for its cast (HP up -> sooner)
+  MpTapFireMs := 1200;     // tap skill sent with DUseSkill: no start (reuse) in this -> out of sight: closer
+  MpTapResendMs := 150;    // ... until it starts it is sent again this often (one packet may be dropped)
   MpTapRange := 80;
 end;
 
@@ -232,6 +262,10 @@ begin
   else if K = 'overshoot' then MpOvershoot := Value
   else if K = 'single_range' then MpSingleRange := Value
   else if K = 'pack_density' then MpPackDensity := Value
+  else if K = 'tap_skill_ms' then MpTapSkillMs := Value
+  else if K = 'heal_cast_ms' then MpHealCastMs := Value
+  else if K = 'tap_fire_ms' then MpTapFireMs := Value
+  else if K = 'tap_resend_ms' then MpTapResendMs := Value
   else Engine.Msg('[Pull]', 'PullSet: unknown "' + Key + '"', 255);
 end;
 
@@ -288,6 +322,69 @@ begin
   MpTapWeapon := WeaponID;
   MpTapRange := Range;
   if MpTapRange <= 0 then MpTapRange := MpHitRange;
+end;
+
+// a caster: the tap is SkillID cast from Range (we stop there, cast, wait for its hit, run on); no weapon
+// swap. With PullSetTapAlways(true) every mob is pulled so (no run past them). 0 = the tap weapon / a hit
+procedure PullSetTapSkill(SkillID, Range: integer);
+begin
+  MpInit();
+  MpTapSkill := SkillID;
+  MpTapSkillTold := false;
+  SetLength(MpTapSks, 0);
+  SetLength(MpTapRngs, 0);
+  if SkillID <= 0 then exit;
+  MpTapRange := Range;
+  if MpTapRange <= 0 then MpTapRange := 600;
+  SetLength(MpTapSks, 1);
+  SetLength(MpTapRngs, 1);
+  MpTapSks[0] := SkillID;
+  MpTapRngs[0] := MpTapRange;
+end;
+
+// one more tap skill (after PullSetTapSkill: the list goes in this order); none before -> it is the first
+procedure PullAddTapSkill(SkillID, Range: integer);
+var n, R: integer;
+begin
+  MpInit();
+  if SkillID <= 0 then exit;
+  R := Range;
+  if R <= 0 then R := 600;
+  if MpTapSkill <= 0 then begin
+    PullSetTapSkill(SkillID, R);
+    exit;
+  end;
+  n := Length(MpTapSks);
+  SetLength(MpTapSks, n + 1);
+  SetLength(MpTapRngs, n + 1);
+  MpTapSks[n] := SkillID;
+  MpTapRngs[n] := R;
+end;
+
+// a heal / drain while pulling (PullHealTick): our HP % below HPBelow -> SkillID; Range > 0 = at a mob
+// within Range (a drain), 0 = on us
+procedure PullAddHeal(SkillID, HPBelow, Range: integer);
+var n: integer;
+begin
+  MpInit();
+  if (SkillID <= 0) or (HPBelow <= 0) then exit;
+  n := Length(MpHealSk);
+  SetLength(MpHealSk, n + 1);
+  SetLength(MpHealHP, n + 1);
+  SetLength(MpHealRng, n + 1);
+  SetLength(MpHealFail, n + 1);
+  MpHealSk[n] := SkillID;
+  MpHealHP[n] := HPBelow;
+  MpHealRng[n] := Range;
+  MpHealFail[n] := 0;
+end;
+
+procedure PullClearHeals();
+begin
+  SetLength(MpHealSk, 0);
+  SetLength(MpHealHP, 0);
+  SetLength(MpHealRng, 0);
+  SetLength(MpHealFail, 0);
 end;
 
 procedure PullSetTapAlways(Enable: boolean);
@@ -680,7 +777,13 @@ begin
     TX := MpWpX;
     TY := MpWpY;
     if First or (Sqrt(MpSq(TX - MpClickX) + MpSq(TY - MpClickY)) > MpReclickDist) or
-       (MpStillMs() >= MpStopMs) then MpClick(TX, TY, MZ);
+       (MpStillMs() >= MpStopMs) then begin
+      if NavDebugOn() then
+        Dbg('[Move]', 'pull: to the mob at ' + IntToStr(MX) + ',' + IntToStr(MY) + ' round a wall via the node ' +
+          IntToStr(TX) + ',' + IntToStr(TY) + ' (we at ' + IntToStr(UX) + ',' + IntToStr(UY) + ', still ' +
+          IntToStr(MpStillMs()) + ' ms)');
+      MpClick(TX, TY, MZ);
+    end;
     exit;
   end;
   // straight at the mob: the overshoot direction is kept between clicks (no turning back after we
@@ -704,6 +807,9 @@ begin
   end;
   MpChaseMX := MX;
   MpChaseMY := MY;
+  if NavDebugOn() then
+    Dbg('[Move]', 'pull: straight at the mob at ' + IntToStr(MX) + ',' + IntToStr(MY) + ' d=' + IntToStr(Round(L)) +
+      ', click past it ' + IntToStr(TX) + ',' + IntToStr(TY) + ' (we at ' + IntToStr(UX) + ',' + IntToStr(UY) + ')');
   MpClick(TX, TY, MZ);
 end;
 
@@ -875,7 +981,7 @@ begin
   FY := UY - MpDirY;
   FL := Sqrt(FX * FX + FY * FY);
   Grace := MpTouchGraceMs;
-  if MpTapWeapon > 0 then Grace := MpTapAfterMs;   // no aggro soon -> it gets tapped
+  if (MpTapWeapon > 0) or (MpTapSkill > 0) then Grace := MpTapAfterMs;   // no aggro soon -> it gets tapped
   MpCntAll := 0;
   MpCntArea := 0;
   MpCntRange := 0;
@@ -1217,6 +1323,15 @@ begin
   result := MpWear(W);
 end;
 
+// the reuse left of our skill (0 = ready); false in Has = this character has no such skill
+function MpSkillLeft(ID: integer; var Has: boolean): cardinal;
+var Sk: TL2Skill;
+begin
+  result := 0;
+  Has := SkillList.ByID(ID, Sk);
+  if Has then result := Sk.EndTime;
+end;
+
 function PullTapActive(): boolean;
 begin
   result := MpTapOn;
@@ -1239,7 +1354,7 @@ function MpNeedTap(OID, Cnt: integer; NearSince: cardinal): boolean;
 var Slot: integer;
 begin
   result := false;
-  if MpTapWeapon <= 0 then exit;
+  if (MpTapWeapon <= 0) and (MpTapSkill <= 0) then exit;
   if MpTapAlways then begin
     result := true;
     exit;
@@ -1370,6 +1485,150 @@ begin
     IntToStr(Round(User.Speed)) + ' + ' + IntToStr(MpTapMs));
 end;
 
+// the tap skills this character does not have (its skill list is loaded) leave the list, said once;
+// none left -> the pull runs past them (no tap skill)
+procedure MpTapDropMissing();
+var k, n: integer;
+  Has: boolean;
+begin
+  n := 0;
+  for k := 0 to Length(MpTapSks) - 1 do begin
+    MpSkillLeft(MpTapSks[k], Has);
+    if Has then begin
+      MpTapSks[n] := MpTapSks[k];
+      MpTapRngs[n] := MpTapRngs[k];
+      Inc(n);
+    end else
+      Engine.Msg('[Pull]', 'No tap skill ' + IntToStr(MpTapSks[k]) + ' on this character - not used for the pull', 128);
+  end;
+  SetLength(MpTapSks, n);
+  SetLength(MpTapRngs, n);
+  if n > 0 then begin
+    MpTapSkill := MpTapSks[0];
+    MpTapRange := MpTapRngs[0];
+  end else begin
+    Engine.Msg('[Pull]', 'No tap skill left - pulling by running past them', 128);
+    MpTapSkill := 0;
+  end;
+end;
+
+// the tap skill for a mob D away: the first of the list that is ready (no reuse) and reaches it; none ->
+// the first ready one at all (we go up to its range); none ready -> the one ready soonest (we wait at its
+// range). Rng = its range. 0 = no tap skills
+function MpTapPick(D: double; var Rng: integer): integer;
+var k: integer;
+  Left, Best: cardinal;
+  Has: boolean;
+begin
+  result := 0;
+  Rng := MpTapRange;
+  for k := 0 to Length(MpTapSks) - 1 do
+    if (MpSkillLeft(MpTapSks[k], Has) = 0) and (D <= MpTapRngs[k]) then begin
+      result := MpTapSks[k];
+      Rng := MpTapRngs[k];
+      exit;
+    end;
+  for k := 0 to Length(MpTapSks) - 1 do
+    if MpSkillLeft(MpTapSks[k], Has) = 0 then begin
+      result := MpTapSks[k];
+      Rng := MpTapRngs[k];
+      exit;
+    end;
+  Best := 0;
+  for k := 0 to Length(MpTapSks) - 1 do begin
+    Left := MpSkillLeft(MpTapSks[k], Has);
+    if (result = 0) or (Left < Best) then begin
+      result := MpTapSks[k];
+      Rng := MpTapRngs[k];
+      Best := Left;
+    end;
+  end;
+end;
+
+// the tap skill needs the mob in sight: a wall of the nav map between us and it (we stand in the passage,
+// it is round the corner) -> no cast from here, we run on (round the wall, NavWaypoint) until it is in
+// sight and within the range. No nav map / no tap skill: never blind
+function MpTapBlind(MX, MY: integer): boolean;
+var UX, UY: integer;
+begin
+  result := false;
+  if (MpTapSkill <= 0) or (not NavIsReady()) then exit;
+  UX := User.X;
+  UY := User.Y;
+  result := not NavSee(UX, UY, MX, MY);
+end;
+
+// the drain target within R: the nearest live mob on us / hit by our tap, in sight; none -> the nearest
+// free mob of the pull in sight (it is pulled anyway); 0 = none
+function MpHealTarget(R: integer): integer;
+var i, OID, NX, NY, UX, UY, Pass: integer;
+  D, BestD: double;
+  Ok: boolean;
+begin
+  result := 0;
+  UX := User.X;
+  UY := User.Y;
+  for Pass := 0 to 1 do begin
+    BestD := R + 1;
+    for i := 0 to NpcList.Count - 1 do begin
+      if i >= NpcList.Count then break;  // the list got shorter while we walk it
+      if NpcList(i).Dead then continue;
+      OID := NpcList(i).OID;
+      if Pass = 0 then Ok := PullIsAggro(i) or MpWasHit(OID) else Ok := PullIsFree(i);
+      if not Ok then continue;
+      NX := NpcList(i).X;
+      NY := NpcList(i).Y;
+      D := MpDist(NX, NY);
+      if D >= BestD then continue;
+      if NavIsReady() and (not NavSee(UX, UY, NX, NY)) then continue;
+      BestD := D;
+      result := OID;
+    end;
+    if result <> 0 then exit;
+  end;
+end;
+
+function PullHealTick(): boolean;
+var k, OID, HP0: integer;
+  T0: cardinal;
+  Has, Landed: boolean;
+begin
+  result := false;
+  if Length(MpHealSk) = 0 then exit;
+  if User.Dead then exit;
+  for k := 0 to Length(MpHealSk) - 1 do begin
+    if User.HP >= MpHealHP[k] then continue;
+    if GetTickCount < MpHealFail[k] then continue;
+    if MpSkillLeft(MpHealSk[k], Has) > 0 then continue;        // reuse
+    if (SkillList.Count > 0) and (not Has) then continue;      // this character has no such skill
+    OID := 0;
+    if MpHealRng[k] > 0 then begin
+      OID := MpHealTarget(MpHealRng[k]);
+      if OID = 0 then continue;        // nobody to drain within its range: the next one (a heal on us)
+      Engine.SetTarget(OID);
+    end;
+    HP0 := User.HP;
+    Engine.DUseSkill(MpHealSk[k], false, false);   // no waiting in the bot: we stand for it below
+    MpMsg('HP ' + IntToStr(HP0) + '% - skill ' + IntToStr(MpHealSk[k]) + ' to heal');
+    // we stand for its cast (a move order would break it): until our HP goes up (it landed), at most
+    // heal_cast_ms
+    T0 := GetTickCount;
+    Landed := false;
+    while GetTickCount - T0 < cardinal(MpHealCastMs) do begin
+      Delay(100);
+      if User.Dead then break;
+      if (GetTickCount - T0 >= 400) and (User.HP > HP0) then begin
+        Landed := true;
+        break;
+      end;
+    end;
+    // no reuse started and no HP gained: the cast did not go (MP, out of sight...) - not again for 3 s
+    if (not Landed) and (MpSkillLeft(MpHealSk[k], Has) = 0) then MpHealFail[k] := GetTickCount + 3000;
+    result := true;
+    exit;
+  end;
+end;
+
 function PullRun(): integer;
 var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
@@ -1382,10 +1641,26 @@ var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   DbgAt: cardinal;                     // debug log: the last state line
   LimHi, LimLo: double;
   PackMax: integer;                    // the biggest pack size of this pull (for the log)
+  UX, UY, UZ: integer;
+  TapHas: boolean;                     // tap skill: this character has it
+  TapSk, TapRng: integer;              // tap skills: the one for this mob now (MpTapPick), its range
+  TapFired: boolean;                   // tap skill: the one sent went into reuse (it started)
+  TapSendX, TapSendY: integer;         // tap skill: where we stood when it was sent (the server may run us closer)
+  TapGo: double;                       // ... how far the server ran us before it started
+  TapLastSend: cardinal;               // tap skill: the last packet of it (re-sent until it starts)
+  TapCloseD: integer;                  // the run closer after no hit / no start goes this close (a skill: half the way)
+  k: integer;
 begin
   MpInit();
   result := 0;
   Tapping := false;
+  TapSk := 0;
+  TapRng := MpTapRange;
+  TapFired := false;
+  TapSendX := 0;
+  TapSendY := 0;
+  TapLastSend := 0;
+  TapCloseD := 40;
   TapHP0 := 0;
   TapStart := 0;
   TapArmedAt := 0;
@@ -1406,7 +1681,11 @@ begin
   PackMax := MpPack;
   DbgAt := 0;
   Dbg('[Pull]', 'start: pack ' + IntToStr(MpPack) + ' live ' + IntToStr(Ord(MpPackLive)) + ' leash ' + IntToStr(MpLeash) +
-    ' tap ' + IntToStr(MpTapWeapon) + ' always ' + IntToStr(Ord(MpTapAlways)) + ' room pts ' + IntToStr(PpN));
+    ' tap ' + IntToStr(MpTapWeapon) + ' skill ' + IntToStr(MpTapSkill) + ' range ' + IntToStr(MpTapRange) + ' always ' +
+    IntToStr(Ord(MpTapAlways)) + ' room pts ' + IntToStr(PpN) + ' tap skills ' + IntToStr(Length(MpTapSks)));
+  // tap skills this character does not have (the skill list is loaded) leave the list; none left -> pulled
+  // by running past them
+  if (MpTapSkill > 0) and (SkillList.Count > 0) then MpTapDropMissing();
   PullDbgMobs('[Pull]');
   while not MpMustStop() do begin
     DbgTick();
@@ -1457,6 +1736,18 @@ begin
         PullDbgMobs('[Pull] end');
         exit;
       end;
+    end;
+
+    // our HP low: a heal / drain of PullAddHeal first (we stand for its cast); the pull goes on after it -
+    // the mob we were tapping is tapped again (the drain changed the target)
+    if PullHealTick() then begin
+      LastGain := GetTickCount;        // healing is not "no new aggro"
+      if Tapping then begin
+        Tapping := false;
+        TapArmedAt := 0;
+        TapCloseUntil := 0;
+      end;
+      continue;
     end;
 
     // leash: the most lagging pack mob is about to lose us -> zigzag until it catches up
@@ -1517,10 +1808,12 @@ begin
       DbgAt := GetTickCount;
       Idx := MpIdx(OID);
       if Idx >= 0 then
-        Dbg('[Pull]', 'tick cnt ' + IntToStr(Cnt) + '/' + IntToStr(MpPack) + ' lim ' + IntToStr(Limit) + ' oid ' +
+        Dbg('[Pull]', 'tick cnt ' + IntToStr(Cnt) + '/' + IntToStr(MpPack) + ' lim ' + IntToStr(Limit) + ' at ' +
+          IntToStr(User.X) + ',' + IntToStr(User.Y) + ' oid ' +
           IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(NpcList(Idx).X, NpcList(Idx).Y))) +
           ' aggro=' + IntToStr(Ord(PullIsAggro(Idx))) + ' free=' + IntToStr(Ord(MpFreeOK(Idx))) +
-          ' tapping=' + IntToStr(Ord(Tapping)) + ' armed=' + IntToStr(Ord(TapArmedAt <> 0)) + ' tries=' +
+          ' tapping=' + IntToStr(Ord(Tapping)) + ' armed=' + IntToStr(Ord(TapArmedAt <> 0)) + ' sk=' + IntToStr(TapSk) +
+          ' left=' + IntToStr(MpSkillLeft(TapSk, TapHas)) + ' fired=' + IntToStr(Ord(TapFired)) + ' tries=' +
           IntToStr(TapTries) + ' wait=' + IntToStr(Ord(MpWaiting)) + ' far=' + IntToStr(Round(MpFarD)) +
           ' still=' + IntToStr(MpStillMs()) + ' gain=' + IntToStr(GetTickCount - LastGain) + ' t=' +
           IntToStr(GetTickCount - Started) + ' gameTgt=' + IntToStr(Ord(User.Target <> nil)))
@@ -1590,10 +1883,15 @@ begin
     MY := NpcList(Idx).Y;
     MZ := NpcList(Idx).Z;
 
-    // tap weapon: it does not aggro from the run past it -> one hit from tap range, at once run on
+    // tap weapon / tap skill: it does not aggro from the run past it (tap always: every mob) -> one hit from
+    // tap range, at once run on
     if Tapping or MpNeedTap(OID, Cnt, NearSince) then begin
       if not Tapping then begin
-        if MpDist(MX, MY) > MpTapRange then begin
+        // tap skills: the one for this mob now (ready and reaching it, else ready, else ready soonest), its range
+        TapRng := MpTapRange;
+        if MpTapSkill > 0 then TapSk := MpTapPick(MpDist(MX, MY), TapRng);
+        // farther than the tap range - or a tap skill and a wall between us (no cast through walls)
+        if (MpDist(MX, MY) > TapRng) or MpTapBlind(MX, MY) then begin
           if LastSend = 0 then MpMoveReset();
           if MpStillMs() > MpStuckMs then begin
             MpMsg('Cannot get to ' + PullNpcName(Idx) + ' (stuck on the way), skipping it');
@@ -1601,11 +1899,20 @@ begin
             OID := 0;
             continue;
           end;
-          TapOk := MpTapReady();       // the tap weapon goes on while we run, not at the mob
+          if MpTapSkill <= 0 then TapOk := MpTapReady();   // the tap weapon goes on while we run, not at the mob
           MpChase(MX, MY, MZ, LastSend = 0);
           LastSend := GetTickCount;
           Delay(MpTickMs);
           continue;
+        end;
+        if MpTapSkill > 0 then begin   // the skill: we stop here (the run clicks past the mob), the cast goes from here
+          UX := User.X;
+          UY := User.Y;
+          UZ := User.Z;
+          if NavDebugOn() then
+            Dbg('[Move]', 'pull: stop at ' + IntToStr(UX) + ',' + IntToStr(UY) + ' for the cast at ' + IntToStr(OID) +
+              ' d=' + IntToStr(Round(MpDist(MX, MY))) + ' (range ' + IntToStr(TapRng) + ')');
+          MpClick(UX, UY, UZ);
         end;
         Tapping := true;
         TapStart := GetTickCount;
@@ -1617,7 +1924,9 @@ begin
         TapUT0 := User.AtkTime;
         TapMy0 := NpcList(Idx).MyAtkTime;
         TapMine := false;
+        TapFired := false;
         Dbg('[Pull]', 'tap start on ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(MpDist(MX, MY))) +
+          ' skill ' + IntToStr(TapSk) + ' range ' + IntToStr(TapRng) +
           ' (we attacked ' + IntToStr(TapUA0) + ' at ' + IntToStr(TapUT0) + ', its MyAtkTime ' + IntToStr(TapMy0) + ')');
         Engine.SetTarget(OID);
       end;
@@ -1640,7 +1949,8 @@ begin
       if HP < TapHP0 then begin
         // no attack of ours seen at all yet (the bot may not fill these): a drop counts only from 300 ms
         // after our weapon is on (our swing), never right after the target
-        if TapMine or ((not MpAtkWorks) and (TapArmedAt <> 0) and (GetTickCount - TapArmedAt >= 300)) then begin
+        // (a tap skill: a drop after it started is ours - the bot does not show our attack for a skill)
+        if TapMine or TapFired or ((not MpAtkWorks) and (TapArmedAt <> 0) and (GetTickCount - TapArmedAt >= 300)) then begin
           MpHitAdd(OID);
           Engine.CancelTarget;
           Dbg('[Pull]', 'hit on ' + IntToStr(OID) + ': hp ' + IntToStr(TapHP0) + '->' + IntToStr(HP) + ' after ' +
@@ -1656,7 +1966,42 @@ begin
       // the tap time (MpTapTime: the way to the mob / our speed + tap_ms) counts from the moment the tap
       // weapon is really on (a short run to the mob: the swap was not done yet and the time ran out before
       // a single hit - it ran up to the mob and away); the swap itself gets 6 s more at most
-      if TapArmedAt = 0 then begin
+      if (TapArmedAt = 0) and (MpTapSkill > 0) then begin
+        // the tap skills: the first of the list that is ready and reaches the mob is cast as soon as it is
+        // ready (all in reuse: we wait standing); the one ready now reaches less than the mob is away (a
+        // shorter one, the longer ones in reuse) -> closer, up to its range. The time for its hit counts from
+        // the cast. Not castable 15 s (MP, reuse...) -> the mob is skipped
+        TapSk := MpTapPick(MpDist(MX, MY), TapRng);
+        if (TapCloseUntil = 0) and (MpSkillLeft(TapSk, TapHas) = 0) and
+           (MpDist(MX, MY) > TapRng + TapRng div 9) then begin
+          Dbg('[Pull]', 'tap skill ' + IntToStr(TapSk) + ' is ready but reaches ' + IntToStr(TapRng) + ', d=' +
+            IntToStr(Round(MpDist(MX, MY))) + ' - closer');
+          Tapping := false;
+          Delay(MpTickMs);
+          continue;
+        end;
+        if MpSkillLeft(TapSk, TapHas) = 0 then begin
+          // sent with DUseSkill as the fight does (no waiting for the cast: a blocking cast held the pull for
+          // seconds on a dead / unseen mob); its start (the reuse) is watched below
+          Engine.DUseSkill(TapSk, false, false);
+          TapLastSend := GetTickCount;
+          TapSendX := User.X;
+          TapSendY := User.Y;
+          Dbg('[Pull]', 'tap skill ' + IntToStr(TapSk) + ' sent at ' + IntToStr(OID) + ' after ' +
+            IntToStr(GetTickCount - TapStart) + ' ms, d=' + IntToStr(Round(MpDist(MX, MY))) + ' (its range ' +
+            IntToStr(TapRng) + ')');
+          TapArmedAt := GetTickCount;
+          TapTime := MpTapSkillMs;
+          TapFired := false;
+        end else if GetTickCount - TapStart > 15000 then begin
+          MpMsg('Tap skill ' + IntToStr(TapSk) + ' could not be cast at ' + PullNpcName(Idx) + ' in 15 s, skipping it');
+          PullIgnore(OID, MpIgnoreMs);
+          Engine.CancelTarget;
+          Tapping := false;
+          OID := 0;
+          continue;
+        end;
+      end else if TapArmedAt = 0 then begin
         if MpTapReady() then begin
           Dbg('[Pull]', 'tap weapon on after ' + IntToStr(GetTickCount - TapStart) + ' ms');
           TapArmedAt := GetTickCount;
@@ -1671,29 +2016,82 @@ begin
           continue;
         end;
       end;
+      // the tap skill sent: its reuse shows it started -> the time for its hit counts from there; no start
+      // in tap_fire_ms (out of sight, out of range) -> as if it did not hit: right up to it and again
+      if (MpTapSkill > 0) and (TapArmedAt <> 0) and (not TapFired) and (TapCloseUntil = 0) then begin
+        if MpSkillLeft(TapSk, TapHas) > 0 then begin
+          TapFired := true;
+          TapArmedAt := GetTickCount;
+          TapGo := Sqrt(MpSq(User.X - TapSendX) + MpSq(User.Y - TapSendY));
+          Dbg('[Pull]', 'tap skill ' + IntToStr(TapSk) + ' started on ' + IntToStr(OID) + ' after ' +
+            IntToStr(GetTickCount - TapStart) + ' ms, d=' + IntToStr(Round(MpDist(MX, MY))) + ', the server ran us ' +
+            IntToStr(Round(TapGo)));
+          // the server had to run us closer before it started: its real range is shorter than the list says -
+          // the next mobs get it from where it really reaches (no run-ups, no "no start" in between)
+          if TapGo > 80 then
+            for k := 0 to Length(MpTapSks) - 1 do
+              if (MpTapSks[k] = TapSk) and (Round(MpDist(MX, MY)) - 20 < MpTapRngs[k] - 50) then begin
+                MpTapRngs[k] := Round(MpDist(MX, MY)) - 20;
+                if MpTapRngs[k] < 150 then MpTapRngs[k] := 150;
+                if k = 0 then MpTapRange := MpTapRngs[k];
+                MpMsg('Skill ' + IntToStr(TapSk) + ' started only at ' + IntToStr(Round(MpDist(MX, MY))) +
+                  ' (the server ran us ' + IntToStr(Round(TapGo)) + ' closer): pulling with it from ' +
+                  IntToStr(MpTapRngs[k]) + ' now - set its range in skills.json');
+              end;
+        end else if (GetTickCount - TapArmedAt <= cardinal(MpTapFireMs)) or
+                    ((MpStillMs() < 300) and (GetTickCount - TapArmedAt <= cardinal(MpTapFireMs) * 4)) then begin
+          // not started yet: sent again every tap_resend_ms (as sh_solo spams) - one packet right at the end of
+          // its reuse is dropped by the server (our clock said ready a moment early). Still moving: the server
+          // runs us into its cast range - not a failure, wait
+          if GetTickCount - TapLastSend >= cardinal(MpTapResendMs) then begin
+            Engine.DUseSkill(TapSk, false, false);
+            TapLastSend := GetTickCount;
+          end;
+        end else begin
+          Dbg('[Pull]', 'tap skill ' + IntToStr(TapSk) + ' did not start on ' + IntToStr(OID) + ' in ' +
+            IntToStr(MpTapFireMs) + ' ms (out of sight?) - as no hit');
+          TapArmedAt := GetTickCount - TapTime - 1;   // -> the step below: right up to it, again
+        end;
+      end;
       // did not land in its time (behind something, out of sight, a bad spot): right up to it and hit
       // again, twice; only then it is skipped - every mob of the room must come
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > TapTime) and (TapTries < 2) then begin
         Inc(TapTries);
-        MpMsg('Tap on ' + PullNpcName(Idx) + ': no hit in ' + IntToStr(TapTime) + ' ms - right up to it, again (' +
-          IntToStr(TapTries) + '/2)');
-        TapCloseUntil := GetTickCount + MpTapTime(MX, MY);   // the run right up to it
+        // the weapon: right up to it; a skill: half the way (no closer than 150) - from there it is in sight
+        TapCloseD := 40;
+        if MpTapSkill > 0 then begin
+          TapCloseD := Round(MpDist(MX, MY)) div 2;
+          if TapCloseD < 150 then TapCloseD := 150;
+        end;
+        MpMsg('Tap on ' + PullNpcName(Idx) + ': no hit in ' + IntToStr(TapTime) + ' ms - closer (to ' +
+          IntToStr(TapCloseD) + '), again (' + IntToStr(TapTries) + '/2)');
+        TapCloseUntil := GetTickCount + MpTapTime(MX, MY);   // the run up to it
         TapArmedAt := GetTickCount;
         MpMoveReset();
+        if NavDebugOn() then
+          Dbg('[Move]', 'pull: closer to ' + IntToStr(OID) + ' at ' + IntToStr(MX) + ',' + IntToStr(MY) + ' d=' +
+            IntToStr(Round(MpDist(MX, MY))) + ' -> ' + IntToStr(TapCloseD) + ' (no hit / no start)');
         MpClick(MX, MY, MZ);
         Delay(MpTickMs);
         continue;
       end;
-      if (TapCloseUntil <> 0) and (GetTickCount < TapCloseUntil) and (MpDist(MX, MY) > 40) then begin
+      if (TapCloseUntil <> 0) and (GetTickCount < TapCloseUntil) and (MpDist(MX, MY) > TapCloseD) then begin
         if MpNeedClick(MX, MY) then MpClick(MX, MY, MZ);   // still on the way to it
         TapArmedAt := GetTickCount;    // the tap time starts when we stand at it
         Delay(MpTickMs);
         continue;
       end;
-      if (TapCloseUntil <> 0) and (GetTickCount >= TapCloseUntil) or ((TapCloseUntil <> 0) and (MpDist(MX, MY) <= 40)) then begin
+      if (TapCloseUntil <> 0) and (GetTickCount >= TapCloseUntil) or ((TapCloseUntil <> 0) and (MpDist(MX, MY) <= TapCloseD)) then begin
         TapCloseUntil := 0;
         TapTime := MpTapTime(MX, MY);  // its time from where we stand now
         Engine.SetTarget(OID);
+        if MpTapSkill > 0 then begin   // the skill is cast again from here (the next tick): we stop first
+          TapArmedAt := 0;
+          UX := User.X;
+          UY := User.Y;
+          UZ := User.Z;
+          MpClick(UX, UY, UZ);
+        end;
       end;
       if (TapArmedAt <> 0) and (GetTickCount - TapArmedAt > TapTime) then begin
         MpMsg('Tap on ' + PullNpcName(Idx) + ': no hit after 3 tries, skipping it');
@@ -1703,7 +2101,7 @@ begin
         OID := 0;
         continue;
       end;
-      if TapArmedAt <> 0 then Engine.Attack(MpTickMs) else Delay(MpTickMs);
+      if (TapArmedAt <> 0) and (MpTapSkill <= 0) then Engine.Attack(MpTickMs) else Delay(MpTickMs);
       continue;
     end;
 

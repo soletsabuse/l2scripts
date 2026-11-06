@@ -1,0 +1,17 @@
+{
+  "about": "Skills of the mage fight, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage lines of a .navgrid name skills of this list",
+  "types": {
+    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",
+    "AOE": "cast at the target from range, hits every mob within radius of it",
+    "SELF_AOE": "no target: hits every mob within radius of us",
+    "SELF": "on us (heal, buff)"
+  },
+  "skills": [
+    { "id": 1234, "type": "TARGET", "range": 900, "radius": 0, "name": "Vampiric Claw" },
+    { "id": 1239, "type": "TARGET", "range": 900, "radius": 0, "name": "Hurricane" },
+    { "id": 1287, "type": "SELF", "range": 600, "radius": 0, "name": "Seed of Wind" },
+    { "id": 1417, "type": "SELF_AOE", "range": 0, "radius": 250, "name": "Aura Flash" },
+    { "id": 1176, "type": "AOE", "range": 500, "radius": 300, "name": "Tempest" },
+    { "id": 1074, "type": "TARGET", "range": 900, "radius": 0, "name": "Surrender to wind" }
+  ]
+}

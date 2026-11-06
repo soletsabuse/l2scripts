@@ -41,6 +41,7 @@ procedure NavSetRunClear(Units: integer);
 // the run moments into the debug log (Core\dbg_log.pas, when it is on): clicks, the waypoint choice, node
 // runs, "not moved", give-ups, unstick, run results - each line with where we stand
 procedure NavSetDebug(Enable: boolean);
+function NavDebugOn(): boolean;               // the run log is on (NavSetDebug): callers add their own run lines
 function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
 function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
@@ -259,6 +260,11 @@ end;
 procedure NavSetDebug(Enable: boolean);
 begin
   NmDbg := Enable;
+end;
+
+function NavDebugOn(): boolean;
+begin
+  result := NmDbg and DbgOn();
 end;
 
 // one line of the run log: where we stand | what happens (callers check NmDbg first: no strings made
