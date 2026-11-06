@@ -1,0 +1,115 @@
+                  uses SysUtils;
+
+// =============================================================================
+// ============================ CONFIG =========================================
+// =============================================================================
+var
+  // NPC ID we run to and let kill us until target level is reached.
+  NPC_ID          : integer = 30708;
+
+  // Where to walk to find that NPC. Should be a point right next to it.
+  NPC_POINT       : array of integer = [118178, 76095, -2717];
+    
+  // Stop when User.Level <= TARGET_LEVEL.
+  TARGET_LEVEL    : integer = 62;
+  SKILL_ID        : integer = 100;
+  // Seconds we wait dead before pressing "To Village" (GoHome).
+  TO_VILLAGE_AFTER_S : integer = 1;
+// =============================================================================
+
+// Returns OID of the first live NPC with template ID = NpcID, or 0 if
+// none in NpcList.
+function FindNpcOID(NpcID: integer): integer;
+var
+  i, ID, OID: integer;
+  IsDead: boolean;
+begin
+  result := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    ID     := NpcList(i).ID;
+    IsDead := NpcList(i).Dead;
+    if (ID = NpcID) and (not IsDead) then begin
+      OID    := NpcList(i).OID;
+      result := OID;
+      exit;
+    end;
+  end;
+end;
+
+// Wait for the death sequence: stand still, press To Village, wait for
+// the resurrect animation to finish.
+procedure WaitRespawn();
+var
+  WaitCounter: integer;
+begin
+  Engine.Msg('[Death]', 'Died, ' + IntToStr(TO_VILLAGE_AFTER_S) +
+    's then To Village', 128);
+
+  WaitCounter := 0;
+  while (WaitCounter < TO_VILLAGE_AFTER_S) and User.Dead do begin
+    Delay(1000);
+    Inc(WaitCounter);
+  end;
+
+  if User.Dead then begin
+    Engine.Msg('[Death]', 'Press To Village', 128);
+    Engine.GoHome;
+  end;
+
+  while User.Dead do Delay(500);
+  Delay(3000);   // settle after respawn
+end;
+
+// Walk to the NPC, target it, auto-attack, and stand there until killed.
+procedure WalkToNpcAndDie();
+var
+  OID, CurOID: integer;
+begin
+  Engine.Msg('[Drain]', 'Walk to NPC ' + IntToStr(NPC_ID), 128);
+  Engine.MoveTo(NPC_POINT[0], NPC_POINT[1], NPC_POINT[2]);
+  Delay(500);
+
+  OID := FindNpcOID(NPC_ID);
+  if OID = 0 then begin
+    Engine.Msg('[Drain]', 'NPC ' + IntToStr(NPC_ID) +
+      ' not in range, retrying', 128);
+    Delay(2000);
+    exit;
+  end;
+
+  Engine.Msg('[Drain]', 'Engaging NPC, will die. Lvl ' +
+    IntToStr(User.Level) + ' -> target ' + IntToStr(TARGET_LEVEL), 128);
+
+  // re-target + re-attack every 1.5s in case the auto-attack stops
+  // (out of stamina, cc, etc.) -- we just want to keep taking hits
+  while not User.Dead do begin
+    CurOID := FindNpcOID(NPC_ID);
+    if CurOID <> 0 then begin
+      Engine.SetTarget(CurOID);
+      Delay(200);
+      //Engine.Attack(1111, true);
+      Engine.UseSkill(SKILL_ID, true, false);
+    end;
+    Delay(1500);
+  end;
+end;
+
+// =============================================================================
+// MAIN
+// =============================================================================
+begin
+  Engine.Msg('[Init]', 'Delevel started, current ' + IntToStr(User.Level) +
+    ' -> target ' + IntToStr(TARGET_LEVEL), 128);
+
+  while User.Level > TARGET_LEVEL do begin
+    if User.Dead then begin
+      WaitRespawn();
+      continue;
+    end;
+
+    WalkToNpcAndDie();
+  end;
+
+  Engine.Msg('[Done]', 'Reached level ' + IntToStr(User.Level) +
+    ' (target ' + IntToStr(TARGET_LEVEL) + '), stopping', 128);
+end.

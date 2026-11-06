@@ -164,6 +164,7 @@ const
   AOE_SPOIL_AREA    = 200;      // SetSpoilPerMob: mobs this close to us are taken as hit by a mass spoil
   AOE_SPOIL_GAP_MS  = 1500;     // SetSpoilPerMob: at least this long between mass spoils
   AOE_SPOIL_MAX     = 12;       // SetSpoilPerMob: max mass spoil casts per pack
+  AOE_FIGHT_WAIT_MS = 60000;    // AoE mode: wait this long for the other thread to finish its pack fight
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   PATH_STEP         = 1500;     // long path segments are split into pieces of this length
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
@@ -238,6 +239,7 @@ var
   AoeNextSpoil: cardinal;
   AoeSnapOID: array[0..31] of integer;      // mobs under the last mass spoil (taken at the cast)
   AoeSnapN: integer;
+  AoeFightBusy: boolean;          // true while some thread fights the pack (AoeFightPack): the other one waits
 
 // ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
   CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
@@ -863,6 +865,7 @@ function AoeMobIsAggroed(i: integer): boolean;
 var AtkOID, TargetOID, NX, NY, NZ: integer;
 begin
   result := false;
+  if i >= NpcList.Count then exit;   // the bot shrinks the list under us
   if NpcList(i).Dead then exit;
   AtkOID := NpcList(i).AtkOID;
   TargetOID := NpcList(i).Target.OID;
@@ -1195,10 +1198,20 @@ begin
   end;
 end;
 
-// spoil + AoE + sweep until nothing attacks us (also used by the rebuff to clear mobs)
+// spoil + AoE + sweep until nothing attacks us (also used by the rebuff to clear mobs).
+// Only one thread at a time (AoeFightBusy): the rebuff starting while AoeFarm_Thread fights its pack
+// waits for that fight to end - two threads in here at once crashed the script
 procedure AoeFightPack();
-var i, ai, OID: integer;
+var i, ai, OID, Waited: integer;
 begin
+  Waited := 0;
+  while AoeFightBusy and (Waited < AOE_FIGHT_WAIT_MS) do begin
+    if User.Dead or NeedReturn then exit;
+    Delay(200);
+    Waited := Waited + 200;
+  end;
+  AoeFightBusy := true;
+
   AoeSpoilReset();   // SetSpoilPerMob: a new pack, nobody spoiled yet
   while (AoeCountAggro() > 0) and (not User.Dead) and (not NeedReturn) do begin
     OID := 0;
@@ -1231,6 +1244,7 @@ begin
     end;
   end;
   if (not User.Dead) and (AoeSweepSkill > 0) then Engine.UseSkill(AoeSweepSkill);   // final sweep
+  AoeFightBusy := false;
 end;
 
 // pick up every drop near us
