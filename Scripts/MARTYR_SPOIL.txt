@@ -1,0 +1,10 @@
+          uses SysUtils;
+uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
+
+// All settings, rooms, farm spots and the safe point are in MARTYR_SPOIL.navgrid (Library\Nav):
+// open it in Library\Nav\nav_view.html, button "Settings". A line after SetNavGrid overrides the file.
+
+begin
+  SetNavGrid('MARTYR_SPOIL.navgrid');
+  RunFarm();
+end.
