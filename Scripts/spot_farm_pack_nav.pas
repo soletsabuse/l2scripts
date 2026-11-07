@@ -89,6 +89,11 @@ unit SpotFarmPackNav;
 //                                          //   reuse -> the next one, the pull does not wait)
 //                                          //   Rooms: the pull of a room starts at its farm spot (the Spot
 //                                          //   tool of the viewer, F lines), none -> in the room's middle
+//     AddMageBuff(1303, 0, 60);            // optional, any number: an own buff (skills.json, type SELF) gone
+//                                          //   or ending within 60 s (3rd param, -1 = 60; 0 = only when gone)
+//                                          //   -> cast on us at a calm moment: no mob on us (before a pull,
+//                                          //   between the rooms), never in a fight. 2nd param = the buff ID
+//                                          //   on us when it is not the skill's (0 = the same)
 //     AddSelfBuff(1068, 0);                // optional, any number: buff gone -> cast this skill on self
 //                                          //   (2nd param = buff ID to watch, 0 = same as the skill)
 //     SetSecondTeleport(30233, ['teleport_request', 'teleport_...']);  // optional: after the Aden
@@ -175,6 +180,7 @@ procedure AddMageSkill(Priority, SkillID: integer; Cond: string; Value: integer)
 procedure SetMageTap(SkillID: integer);
 procedure AddMageTap(SkillID: integer);
 procedure SetMageSpam(Ms: integer);
+procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
 procedure SetCornerRadius(Radius: integer);
 procedure SetZRange(Range: integer);
 procedure SetNavGrid(Name: string);
@@ -270,6 +276,8 @@ const
   AOE_PICKUP_RANGE  = 1500;     // AoE mode: pick up drops this close after a pack
   EQUIP_TRIES       = 5;       // UseItem attempts until the weapon is really on
   PATH_POINT_TIMEOUT = 60;      // seconds to reach one path point (MoveTo is repeated until then)
+  PK_ROAD_NEAR      = 800;      // after the teleport: a rail of the map with an end this close = the way to the spot
+  PK_ROAD_STEP      = 500;      // ... run in steps of at most this (the server path is found only up to ~600)
   PATROL_MOB_RANGE  = 900;      // profile patrol: a live mob this close (in the zone) stops the run
   PATROL_STEP_MS    = 800;     // profile patrol: one MoveTo step, then the target is checked again
   PATH_REACHED      = 150;     // "I am at the point"
@@ -362,6 +370,12 @@ const
                                 //   (wall, out of sight) -> we step up to it ...
   MG_CLOSE_RANGE    = 150;      // ... this close; no damage even there 3 times as long -> skipped
   MG_HP_BELOW_DEFAULT = 70;     // mage: HP_BELOW with no value (0) -> our HP below this %
+  MB_BEFORE_DEFAULT = 60;       // own buffs (K mage_buff): recast when less than this many seconds are left
+  MB_SEND_MS        = 2500;     // ... sent this long, never in reuse and the buff not on -> it does not go
+  MB_RESEND_MS      = 400;      // ... sent again this often until it goes (a packet may be dropped)
+  MB_CAST_MS        = 6000;     // ... in reuse (its cast runs): the buff must be on us within this
+  MB_FAIL_HOLD_MS   = 15000;    // ... it did not go (MP, silence...): not tried again for this long
+  MB_LOST_HOLD_MS   = 60000;    // ... cast, but its buff never showed on us (another buff ID): not for this long
   // how a skill is cast (TYPE in skills.json)
   MG_T_TARGET       = 1;        // at the target (nuke, drain, debuff)
   MG_T_AOE          = 2;        // at the target, hits every mob within RADIUS of it
@@ -445,6 +459,9 @@ var
   PkPauseMin, PkPauseMax: integer;    // SetRoomPause / K room_pause_min|max: the pause before the next room, ms
   PkPauseMinSet, PkPauseMaxSet: boolean;
   PkRoomPauseUntil: cardinal;     // ... until then (PkRoomDone sets it)
+  PkRdX, PkRdY: array of integer; // the rails of the .navgrid ("W x1 y1 x2 y2 ..."): all their points in a row
+  PkRdFirst: array of integer;    // ... rail r = points PkRdFirst[r] .. PkRdFirst[r + 1] - 1
+  PkRdN: integer;                 // ... how many rails
   AlertBlink: boolean;            // SetAlertBlink: blink the game window in the taskbar
   PlayerAlertSet, PrivateAlertSet, PlayerSoundSet, PrivateSoundSet, DeathSoundSet, AlertBlinkSet: boolean;
 
@@ -571,6 +588,11 @@ var
   MgDebK, MgDebOID: array[0..31] of integer;   // PER_MOB: skill row k went on mob OID ...
   MgDebAt: array[0..31] of cardinal;           // ... then
   MgDebHead: integer;
+  MbID, MbBuff, MbBefore: array of integer;   // AddMageBuff / K mage_buff: own buffs - the skill, the buff on us,
+                                  //   recast this many seconds before its end
+  MbName: array of string;        // ... its name in skills.json (MgPrepare)
+  MbHold: array of cardinal;      // ... did not go: not tried again before this
+  MbTold: array of boolean;       // ... "no such skill" said
 
 // ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
   CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
@@ -919,6 +941,29 @@ begin
   n := Length(MgTaps);
   SetLength(MgTaps, n + 1);
   MgTaps[n] := SkillID;
+end;
+
+// an own buff (the Mage card; any mode of the pack farm): gone or ending within BeforeSec seconds -> cast on
+// us at a calm moment (MgBuffTick: no mob on us - before a pull, between the rooms; never in a fight).
+// BuffID = the effect on us when it is not the skill's ID (0 = the same); BeforeSec < 0 = MB_BEFORE_DEFAULT,
+// 0 = only when it is gone
+procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
+var n: integer;
+begin
+  if SkillID <= 0 then exit;
+  n := Length(MbID);
+  SetLength(MbID, n + 1);
+  SetLength(MbBuff, n + 1);
+  SetLength(MbBefore, n + 1);
+  SetLength(MbName, n + 1);
+  SetLength(MbHold, n + 1);
+  SetLength(MbTold, n + 1);
+  MbID[n] := SkillID;
+  if BuffID > 0 then MbBuff[n] := BuffID else MbBuff[n] := SkillID;
+  if BeforeSec < 0 then MbBefore[n] := MB_BEFORE_DEFAULT else MbBefore[n] := BeforeSec;
+  MbName[n] := 'skill ' + IntToStr(SkillID);
+  MbHold[n] := 0;
+  MbTold[n] := false;
 end;
 
 // at the corner: run to and hit pack mobs up to Radius from the corner point (0 = stand in the
@@ -1583,6 +1628,8 @@ begin
     if V = '1' then SetMageTap(0);
   end
   else if K = 'mage_spam_ms' then SetMageSpam(StrToIntDef(V, 0))
+  else if K = 'mage_buff' then         // skill [buff ID on us, 0 = the skill's] [recast s before its end, none = 60]
+    AddMageBuff(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), -1))
   else if K = 'dagger' then SetPackDagger(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0))
   else if K = 'corner_radius' then SetCornerRadius(StrToIntDef(V, 0))
   else if K = 'auto_corner' then SetAutoCorner(StrToIntDef(V, 0))
@@ -1633,6 +1680,38 @@ end;
 // runs by a nav map of nav_view.html (file in Library\Nav) instead of the zone; the map is the pull
 // area too, and its settings ("K key value" lines, tab Settings of the viewer) are applied right now -
 // the script lines after SetNavGrid override them
+// a rail of the .navgrid ("W x1 y1 x2 y2 ...", drawn with the Rail tool of the viewer): kept for the way
+// from the teleport landing point (PkRoadWalk) - the nav map reads the rails itself for the runs in the zone
+procedure PkRoadAdd(S: string);
+var k, n, X, Y, Base: integer;
+begin
+  Base := Length(PkRdX);
+  n := 0;
+  k := 1;
+  while (PtField(S, k) <> '') and (PtField(S, k + 1) <> '') do begin
+    X := StrToIntDef(PtField(S, k), 0);
+    Y := StrToIntDef(PtField(S, k + 1), 0);
+    SetLength(PkRdX, Base + n + 1);
+    SetLength(PkRdY, Base + n + 1);
+    PkRdX[Base + n] := X;
+    PkRdY[Base + n] := Y;
+    Inc(n);
+    k := k + 2;
+  end;
+  if n < 2 then begin                  // not a rail
+    SetLength(PkRdX, Base);
+    SetLength(PkRdY, Base);
+    exit;
+  end;
+  if PkRdN = 0 then begin
+    SetLength(PkRdFirst, 1);
+    PkRdFirst[0] := 0;
+  end;
+  Inc(PkRdN);
+  SetLength(PkRdFirst, PkRdN + 1);
+  PkRdFirst[PkRdN] := Base + n;
+end;
+
 procedure SetNavGrid(Name: string);
 var L: TStringList;
   i, n: integer;
@@ -1645,14 +1724,24 @@ begin
   L := TStringList.Create;
   L.LoadFromFile(F);
   n := 0;
+  SetLength(PkRdX, 0);
+  SetLength(PkRdY, 0);
+  SetLength(PkRdFirst, 0);
+  PkRdN := 0;
   for i := 0 to L.Count - 1 do begin
     S := L[i];
+    if Copy(S, 1, 2) = 'W ' then begin  // a rail: also the way from the teleport landing point
+      PkRoadAdd(S);
+      continue;
+    end;
     if Copy(S, 1, 2) <> 'K ' then continue;   // the grid rows are skipped fast
     PkSetting(LowerCase(PtField(S, 1)), PkRest(S, 2));
     Inc(n);
   end;
   L.Free;
   if n > 0 then Engine.Msg('[Init]', 'Settings from ' + Name + ': ' + IntToStr(n), 128);
+  if PkRdN > 0 then Engine.Msg('[Init]', 'Rails in ' + Name + ': ' + IntToStr(PkRdN) +
+    ' (one with an end next to the teleport landing point is the way to the spot)', 0);
 end;
 
 // ===================== Supplies =====================
@@ -3038,13 +3127,111 @@ begin
   end;
 end;
 
-// after the teleport: the path points one after another with the bot's own Engine.MoveTo (it runs
-// there itself and returns when it is there / cannot get there) - a missed point: the next one anyway
+// one point of the rail from the landing point: the server path (no nav map: the place is not painted),
+// one more try when it did not get there; true = there
+function PkRoadStep(X, Y: integer): boolean;
+var UZ: integer;
+begin
+  UZ := User.Z;
+  result := NavRunPlain(X, Y, UZ, PATH_REACHED);
+  if (not result) and (not User.Dead) then begin
+    UZ := User.Z;
+    result := NavRunPlain(X, Y, UZ, PATH_REACHED);
+  end;
+  if DbgOn() then Dbg('[Path]', 'rail point ' + IntToStr(X) + ',' + IntToStr(Y) + ': ' + IntToStr(Ord(result)) +
+    ' (we at ' + IntToStr(User.X) + ',' + IntToStr(User.Y) + ')');
+end;
+
+// after the teleport: a rail of the map (the Rail tool of the viewer) with an end within PK_ROAD_NEAR of us
+// is the way from the landing point - run point by point to its other end by the server path (no nav map
+// needed there: the place does not have to be painted); a missed point -> the next one. true = run
+function PkRoadWalk(): boolean;
+var r, a, b, i, Best, Dir, Upto, j, m, X, Y, PX, PY, UX, UY, Missed: integer;
+  D, BestD, DX, DY: double;
+  FromEnd: boolean;
+begin
+  result := false;
+  if PkRdN = 0 then exit;
+  UX := User.X;
+  UY := User.Y;
+  Best := -1;
+  FromEnd := false;
+  BestD := PK_ROAD_NEAR + 1;
+  for r := 0 to PkRdN - 1 do begin
+    a := PkRdFirst[r];
+    b := PkRdFirst[r + 1] - 1;
+    DX := PkRdX[a] - UX;              // doubles: a squared integer overflows
+    DY := PkRdY[a] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D < BestD then begin
+      BestD := D;
+      Best := r;
+      FromEnd := false;
+    end;
+    DX := PkRdX[b] - UX;
+    DY := PkRdY[b] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D < BestD then begin
+      BestD := D;
+      Best := r;
+      FromEnd := true;
+    end;
+  end;
+  if Best < 0 then exit;
+  a := PkRdFirst[Best];
+  b := PkRdFirst[Best + 1] - 1;
+  if FromEnd then begin                // drawn from the spot to the landing point: run it backwards
+    i := b;
+    Upto := a;
+    Dir := -1;
+  end else begin
+    i := a;
+    Upto := b;
+    Dir := 1;
+  end;
+  Engine.Msg('[Path]', 'The rail from the landing point: ' + IntToStr(b - a + 1) + ' points, its start ' +
+    IntToStr(Round(BestD)) + ' away', 128);
+  PX := UX;
+  PY := UY;
+  Missed := 0;
+  while not User.Dead do begin
+    X := PkRdX[i];
+    Y := PkRdY[i];
+    // a long stretch: points in between (the server path is found only up to ~600)
+    DX := X - PX;
+    DY := Y - PY;
+    D := Sqrt(DX * DX + DY * DY);
+    m := Trunc((D - 1) / PK_ROAD_STEP);
+    for j := 1 to m do begin
+      if User.Dead then exit;
+      if not PkRoadStep(PX + Round(DX * j / (m + 1)), PY + Round(DY * j / (m + 1))) then Inc(Missed);
+    end;
+    if User.Dead then exit;
+    if not PkRoadStep(X, Y) then Inc(Missed);
+    PX := X;
+    PY := Y;
+    if i = Upto then break;
+    i := i + Dir;
+  end;
+  if User.Dead then exit;
+  if Missed > 0 then Engine.Msg('[Path]', 'The rail is run (' + IntToStr(Missed) + ' points not reached - check it there)', 128)
+  else Engine.Msg('[Path]', 'The rail is run', 0);
+  result := true;
+end;
+
+// after the teleport: the rail from the landing point (PkRoadWalk), then the path points one after another
+// with the bot's own Engine.MoveTo (it runs there itself and returns when it is there / cannot get there)
+// - a missed point: the next one anyway
 function WalkToSpot(): boolean;
 var i, X, Y, Z: integer;
 begin
   result := false;
   Engine.Msg('[Path]', '=== Walking to the spot ===', 128);
+  PkRoadWalk();                        // a rail drawn from the landing point: first
+  if User.Dead then begin
+    Engine.Msg('[Path]', 'Died on the way', 128);
+    exit;
+  end;
   i := 0;
   while (i + 2) < Length(Path) do begin
     if User.Dead then begin
@@ -5100,7 +5287,8 @@ begin
   if GetTickCount - PkSelfBuffAt >= 1000 then begin
     PkSelfBuffAt := GetTickCount;
     ZoneCheck();
-    if Length(SelfBuffSkill) > 0 then SelfBuffTick();
+    // a mage: the blocking own-buff cast (AddSelfBuff) not in its fight - at a calm moment (PackMain)
+    if (Length(SelfBuffSkill) > 0) and (Length(MgID) = 0) then SelfBuffTick();
   end;
   if (WeaponID > 0) and (GetTickCount - PkWeaponAt >= WEAPON_POLL_MS) then begin
     PkWeaponAt := GetTickCount;
@@ -5332,6 +5520,9 @@ begin
       if DbID[j] = MgPull[i] then MgPullRng[i] := DbR[j];
     if MgPullRng[i] <= 0 then MgPullRng[i] := MG_DEFAULT_RANGE;
   end;
+  for i := 0 to Length(MbID) - 1 do    // the own buffs (K mage_buff): their names
+    for j := 0 to Length(DbID) - 1 do
+      if (DbID[j] = MbID[i]) and (DbN[j] <> '') then MbName[i] := DbN[j];
 end;
 
 // RunFarm, a mage: the pull skills go to the pull (Core\mob_pull.pas: every mob gets the first one ready
@@ -5368,6 +5559,129 @@ begin
   end;
   if S <> '' then Engine.Msg('[Init]', 'Mage: heals itself while pulling / running with ' + S, 0)
   else Engine.Msg('[Init]', 'Mage: no skill used "our HP below" (a drain / heal) - no healing while pulling', 128);
+end;
+
+// ===================== Own buffs (AddMageBuff / K mage_buff) =====================
+// At a calm moment only - no mob on us (once a second in PackMain, right before every pull): a buff gone or
+// ending within its "before" seconds -> its skill on us, standing, until the buff is on. Never in a fight:
+// the fight is not held up by a cast; a buff gone in it waits for the end of the fight
+
+// own buff k on us: the ms left; Has = it is on us (a toggle / an endless one: on with 0 left)
+function MbLeft(k: integer; var Has: boolean): cardinal;
+var B: TL2Buff;
+begin
+  result := 0;
+  Has := User.Buffs.ByID(MbBuff[k], B);
+  if Has then result := B.EndTime;
+end;
+
+// own buff k is due: gone, or ending within its "before" seconds (a toggle / an endless one: only when off)
+function MbDue(k: integer): boolean;
+var Has: boolean;
+  T: cardinal;
+begin
+  T := MbLeft(k, Has);
+  if not Has then result := true
+  else if T = 0 then result := false
+  else result := T < cardinal(MbBefore[k]) * 1000;
+end;
+
+// own buff k on us, standing: the skill sent (again every MB_RESEND_MS: a packet may be dropped) until it
+// goes into reuse / the buff is on; then its cast is waited for until the buff is on (MB_CAST_MS). A mob on
+// us before it went: given up (the fight first). true = the buff is on
+function MbCast(k: integer): boolean;
+var Has0, Has, Went: boolean;
+  T0, T, Started, SentAt, WentAt: cardinal;
+  ID: integer;
+  S: string;
+begin
+  result := false;
+  ID := MbID[k];
+  T0 := MbLeft(k, Has0);
+  if not Has0 then S := 'is gone'
+  else S := 'ends in ' + IntToStr(T0 div 1000) + ' s';
+  Engine.Msg('[Buff]', MbName[k] + ' (' + IntToStr(ID) + ') ' + S + ' - casting it', 0);
+  Started := GetTickCount;
+  SentAt := 0;
+  WentAt := 0;
+  Went := false;
+  while not User.Dead do begin
+    T := MbLeft(k, Has);
+    if Has and ((not Has0) or (T = 0) or (T > T0 + 2000)) then begin   // on us / fresh again
+      result := true;
+      break;
+    end;
+    if (not Went) and (SpSkillLeft(ID) > 0) then begin
+      Went := true;                    // in reuse: its cast runs
+      WentAt := GetTickCount;
+    end;
+    if Went then begin
+      if GetTickCount - WentAt > MB_CAST_MS then begin
+        MbHold[k] := GetTickCount + MB_LOST_HOLD_MS;
+        Engine.Msg('[Buff]', MbName[k] + ' was cast, but buff ' + IntToStr(MbBuff[k]) + ' did not show on us - ' +
+          'set its buff ID (Mage card > Own buffs); again in ' + IntToStr(MB_LOST_HOLD_MS div 1000) + ' s', 128);
+        break;
+      end;
+    end else begin
+      if (PkCountAggro() > 0) or AoeMustStop() then break;   // a mob on us before it went: the fight first
+      if GetTickCount - Started > MB_SEND_MS then begin
+        MbHold[k] := GetTickCount + MB_FAIL_HOLD_MS;
+        Engine.Msg('[Buff]', MbName[k] + ' does not go (MP? silence?) - again in ' +
+          IntToStr(MB_FAIL_HOLD_MS div 1000) + ' s', 128);
+        break;
+      end;
+      if (SentAt = 0) or (GetTickCount - SentAt >= MB_RESEND_MS) then begin
+        Engine.DUseSkill(ID, false, false);
+        SentAt := GetTickCount;
+      end;
+    end;
+    Delay(50);
+  end;
+  if DbgOn() then Dbg('[Buff]', MbName[k] + ' (' + IntToStr(ID) + '): on ' + IntToStr(Ord(result)) + ', went ' +
+    IntToStr(Ord(Went)) + ', ' + IntToStr(GetTickCount - Started) + ' ms, left ' + IntToStr(T0 div 1000) + ' -> ' +
+    IntToStr(T div 1000) + ' s');
+end;
+
+// own buffs at a calm moment: no mob on us, not dead / recovering / on the way back - every buff gone or
+// ending within its "before" seconds and out of reuse goes on us (MbCast). true = something was cast
+function MgBuffTick(): boolean;
+var k: integer;
+begin
+  result := false;
+  if Length(MbID) = 0 then exit;
+  if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then exit;
+  if SkillList.Count = 0 then exit;    // the skill list is not loaded yet (just logged in)
+  if PkCountAggro() > 0 then exit;     // a fight: later
+  for k := 0 to Length(MbID) - 1 do begin
+    if GetTickCount < MbHold[k] then continue;
+    if not HasSkill(MbID[k]) then begin
+      if not MbTold[k] then begin
+        Engine.Msg('[Buff]', 'No skill ' + MbName[k] + ' (' + IntToStr(MbID[k]) + ') on this character - own buff skipped', 128);
+        MbTold[k] := true;
+      end;
+      continue;
+    end;
+    if not MbDue(k) then continue;
+    if SpSkillLeft(MbID[k]) > 0 then continue;   // reuse: a later tick
+    if MbCast(k) then result := true;
+    if User.Dead or (PkCountAggro() > 0) then exit;
+  end;
+end;
+
+// RunFarm: the own buffs as the script took them
+procedure MgBuffInfo();
+var k: integer;
+  S: string;
+begin
+  S := '';
+  for k := 0 to Length(MbID) - 1 do begin
+    if S <> '' then S := S + ', ';
+    S := S + MbName[k] + ' (' + IntToStr(MbID[k]);
+    if MbBuff[k] <> MbID[k] then S := S + ', buff ' + IntToStr(MbBuff[k]);
+    if MbBefore[k] > 0 then S := S + ', ' + IntToStr(MbBefore[k]) + ' s before its end)'
+    else S := S + ', when gone)';
+  end;
+  Engine.Msg('[Init]', 'Own buffs: ' + S + ' - cast with no mob on us (before a pull, between the rooms)', 0);
 end;
 
 // targets are taken this close: the longest cast range of our skills at the target
@@ -6531,6 +6845,8 @@ begin
     PkMageStartAt(cur);
     if AoeMustStop() then exit;
   end;
+  if MgBuffTick() then                 // own buffs (K mage_buff) before the pull: no mob on us yet
+    if AoeMustStop() or User.Dead then exit;
   k := RoomFree(cur) + PkCountAggro();
   if k < 1 then k := 1;
   PkState('rooms: pulling room ' + RoomName(cur) + ' full: ' + IntToStr(PkCountAggro()) + ' on us, ' +
@@ -6634,6 +6950,8 @@ begin
     PkTapRestore();                  // the farm weapon goes back on before a pull without the tap
     exit;
   end;
+  MgBuffTick();                      // own buffs (K mage_buff) before the pull: no mob on us yet
+  if AoeMustStop() or User.Dead then exit;
   PkState('pack: pulling (pack ' + IntToStr(PkPackSize) + ')');
   PullSetStop(AoeMustStop());        // one thread: nothing else changes it during the pull
   PullRun();                         // the pull: Core\mob_pull.pas
@@ -6936,7 +7254,8 @@ begin
       NextSec := GetTickCount + 1000;
       DeathTick();
       RebuffTick();
-      if Length(SelfBuffSkill) > 0 then SelfBuffTick();
+      if (Length(SelfBuffSkill) > 0) and ((Length(MgID) = 0) or (PkCountAggro() = 0)) then SelfBuffTick();
+      MgBuffTick();                    // own buffs (K mage_buff): no mob on us only
       PkLightTick();
     end;
     if (WeaponID > 0) and (GetTickCount >= NextWeapon) then begin
@@ -7043,7 +7362,8 @@ begin
     else PullSkipChampions(DEFAULT_CHAMPION_HP);
   end;
   LoadIgnoreNames();
-  if MgOn() then MgPrepare();          // the skill list Library\Nav\skills.json, the order by priority
+  if MgOn() or (Length(MbID) > 0) then MgPrepare();   // the skill list Library\Nav\skills.json, the order by priority
+  if Length(MbID) > 0 then MgBuffInfo();
   if MgOn() and PkProfile and (not PackEnabled) then
     Engine.Msg('[Init]', 'Mode PROFILE: the interface farms, the mage skills are not used', 128)
   else if MgOn() then begin
