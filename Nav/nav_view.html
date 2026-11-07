@@ -1550,7 +1550,13 @@ window.addEventListener('mouseup', () => { if (painting) infoLine(); pan = null;
     if (k === 'rail') { rails[d.i] = railSplit(rails[d.i]); regen(); }
     else if (k === 'node') regen(); else { roomsUi(); draw(); } } });
 cv.addEventListener('mouseleave', () => { mouse = null; draw(); });
-cv.addEventListener('wheel', e => { e.preventDefault(); const k = e.deltaY < 0 ? 1.2 : 1 / 1.2;
+// the wheel zoom: by how far the wheel turned (one notch = 100; a touchpad / a smooth wheel sends many small
+// steps - each a small zoom, not a whole one); one notch in x1.2, out much slower: /1.04
+const ZOOM_IN = 1.2, ZOOM_OUT = 1.04;
+cv.addEventListener('wheel', e => { e.preventDefault();
+  const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1), n = Math.min(Math.abs(dy), 300) / 100;
+  if (!n) return;
+  const k = dy < 0 ? Math.pow(ZOOM_IN, n) : Math.pow(1 / ZOOM_OUT, n);
   ox = e.offsetX - (e.offsetX - ox) * k; oy = e.offsetY - (e.offsetY - oy) * k; scale *= k; draw(); levelsSoon(); }, { passive: false });
 window.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('scriptBox').style.display === 'grid') { $('scriptBox').style.display = 'none'; return; }
