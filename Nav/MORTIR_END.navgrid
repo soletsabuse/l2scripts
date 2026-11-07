@@ -1364,6 +1364,7 @@ K zrange 300
 K weapon 10894
 K room_order SEQ
 K debug 2
+K champion_alert 0
 K debug_file 1
 K debug_run 1
 K exp_off 1
