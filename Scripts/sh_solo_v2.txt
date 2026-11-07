@@ -122,10 +122,10 @@ begin
   // SetWeapon(1234);
 
   // ===== supplies: AddSupply(ITEM, min, max) - less than min -> buy up to max =====
-  AddSupply(BLESSED_SPIRITSHOT_B,     5000, 5000);
+  AddSupply(BLESSED_SPIRITSHOT_B,     8000, 10000);
   AddSupply(BEAST_BLESSED_SPIRITSHOT, 5000, 5000);
   AddSupply(SPIRIT_ORE,              10000, 20000);
-  AddSupply(MANA_DRUG,                300, 500);
+  AddSupply(MANA_DRUG,                400, 500);
 
   RunNecro();
 end.
