@@ -1351,7 +1351,6 @@ K pickup 0
 K skip_champions 1
 K room_recount 1
 K room_ignore_way 1
-K death_stop 0
 K supply 3950 5000 10000
 K supply 726 250 500
 K supply 3031 4500 7500
