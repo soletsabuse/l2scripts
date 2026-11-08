@@ -1357,7 +1357,6 @@ K spots_only 1
 K skip_champions 1
 K room_recount 1
 K room_ignore_way 1
-K death_stop 0
 K supply 3950 5000 10000
 K supply 1539 100 300
 K supply 726 300 500
