@@ -1357,6 +1357,7 @@ K zone DEV_MID.zmap
 K config alarm.xml
 K teleport _bbs_teleport?id=364&fromtown=6
 K second_tp 31099 menu_select?ask=506&reply=1
+K path -50692 79106 -4767 -49195 79118 -4765 -49124 80166 -4767 -48150 80102 -4767 -48088 79127 -4767 -46573 79143 -4765 -44641 79140 -4767 -44497 79315 -4767 -44516 79994 -4767
 K mage 1 1234 HP_BELOW 70
 K mage 2 1176 MOBS 3
 K mage 3 1417 MOBS 3
