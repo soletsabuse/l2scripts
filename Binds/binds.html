@@ -1,0 +1,836 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Equip binds</title>
+<style>
+  :root { --bg: #0a0d12; --panel: #11151c; --panel2: #171c25; --panel3: #1e2431; --line: #222936; --line2: #2e3746;
+    --text: #e6ebf2; --muted: #8893a4; --dim: #5d6878; --accent: #5aa9ff; --ok: #4dd4ac; --warn: #ffbf5a; --bad: #ff6b7a;
+    --shadow: 0 12px 40px rgba(0, 0, 0, .5); color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ===== top bar ===== */
+  #bar { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 8px 16px;
+    background: linear-gradient(180deg, #141922, #0f131a); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 9px; margin-right: 6px; }
+  .brand .logo { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: #06121f;
+    background: linear-gradient(135deg, #5aa9ff, #4dd4ac); box-shadow: 0 2px 10px rgba(90, 169, 255, .3); }
+  .brand .logo svg { stroke-width: 2.2; }
+  .brand b { font-size: 14px; font-weight: 650; }
+  .sp { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 99px; font-size: 12px;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .pill.ok { color: var(--ok); } .pill.ok .dot { background: var(--ok); }
+  .pill.warn { color: var(--warn); } .pill.warn .dot { background: var(--warn); }
+  .pill.bad { color: var(--bad); } .pill.bad .dot { background: var(--bad); }
+  .pill:empty { display: none; }
+
+  button { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 7px; padding: 5px 10px; font: inherit; cursor: pointer; white-space: nowrap;
+    transition: background .12s, border-color .12s, color .12s; }
+  button:hover { border-color: #46536a; background: var(--panel3); }
+  button.primary { background: linear-gradient(180deg, #4a97f0, #2f73c6); border-color: #5aa3f5; color: #fff; }
+  button.primary:hover { background: linear-gradient(180deg, #5aa3f5, #357bd0); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--panel3); color: var(--text); }
+  button.icon { padding: 4px 6px; }
+  button:disabled { opacity: .3; cursor: default; }
+  input[type=text], input[type=number], input[type=search], select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 7px; padding: 5px 8px; font: inherit; }
+  input[type=number] { width: 70px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+  input::placeholder { color: var(--dim); }
+  input[type=checkbox] { accent-color: var(--accent); margin: 0; }
+  label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .muted { color: var(--muted); }
+  .lbl { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  kbd { font: 12px Consolas, monospace; background: var(--panel3); border: 1px solid var(--line2); border-bottom-width: 2px;
+    border-radius: 5px; padding: 0 5px; }
+
+  main { max-width: 1000px; margin: 0 auto; padding: 16px 16px 60px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+
+  /* ===== intro / status ===== */
+  .intro h2 { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
+  .intro ol { margin: 8px 0 12px; padding-left: 20px; color: var(--muted); }
+  .intro ol li { margin: 3px 0; }
+  .intro b { color: var(--text); font-weight: 600; }
+  #errors:empty { display: none; }
+  #errors { border-color: #5a2a33; background: #1a1115; color: #ffb3bc; }
+  #errors ul { margin: 4px 0 0; padding-left: 18px; }
+  .general { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+  .general input[type=text] { width: 120px; }
+
+  /* ===== binds ===== */
+  .bind { padding: 0; overflow: visible; }
+  .bind.off { opacity: .5; }
+  .bind .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .bind .head input.name { flex: 1 1 160px; min-width: 120px; font-weight: 600; background: transparent; border-color: transparent; font-size: 14px; }
+  .bind .head input.name:hover { border-color: var(--line2); }
+  .bind .head input.name:focus { background: var(--panel2); }
+  .keybtn { font: 13px Consolas, monospace; min-width: 96px; justify-content: center; background: #15233a; border-color: #2f6299; color: #cfe5ff; }
+  .keybtn.none { color: var(--warn); border-color: #6b5527; background: #241d10; font-family: inherit; }
+  .keybtn.cap { background: #1d3b5f; border-color: var(--accent); color: #fff; animation: pulse 1s infinite; font-family: inherit; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(90, 169, 255, .25); } }
+  .kind { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--panel3); color: var(--muted); }
+  .kind.set { background: #12302a; color: var(--ok); }
+  .kind.combo { background: #2a2140; color: #c7a8ff; }
+  .kind.skill { background: #13273f; color: var(--accent); }
+  .bind .body { padding: 10px 12px 12px; display: grid; gap: 8px; }
+  .row { display: grid; grid-template-columns: 72px 1fr; gap: 8px; align-items: start; }
+  .row > .lbl { padding-top: 6px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 28px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 8px; border-radius: 8px; max-width: 100%;
+    background: var(--panel2); border: 1px solid var(--line2); }
+  .chip .slot { font-size: 10.5px; color: var(--dim); }
+  .chip .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip .ench { font-size: 11px; padding: 0 6px; border-radius: 5px; background: var(--panel3); color: var(--muted); cursor: pointer; border: 1px solid transparent; }
+  .chip .ench:hover { border-color: var(--line2); color: var(--text); }
+  .chip .ench.any { color: var(--warn); }
+  .chip .on { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  .chip .x { padding: 0 4px; border: 0; background: transparent; color: var(--dim); font-size: 15px; line-height: 1; }
+  .chip .x:hover { color: var(--bad); background: transparent; }
+  .chip.miss { border-color: #6a2e38; background: #221318; }
+  .chip.miss .nm { color: #ffb3bc; }
+  .chip.sk { border-color: #2c3f5c; }
+  .chip .no { font-size: 11px; color: var(--muted); }
+  .chip .arr { color: var(--dim); }
+  button.add { padding: 3px 9px; color: var(--accent); border-style: dashed; background: transparent; }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; color: var(--muted); padding-top: 2px; }
+  .opts label:hover { color: var(--text); }
+  .summary { font-size: 12.5px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 8px; }
+  .summary b { color: var(--text); font-weight: 600; }
+  .warns { display: flex; flex-direction: column; gap: 2px; }
+  .warns div { font-size: 12px; color: var(--warn); }
+  .warns div.bad { color: var(--bad); }
+  .flow { color: var(--dim); margin: 0 4px; }
+  #adds { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 18px; }
+  #adds button { padding: 8px 14px; }
+  .empty { text-align: center; color: var(--muted); padding: 26px 16px; border: 1px dashed var(--line2); border-radius: 12px; margin-bottom: 12px; }
+
+  details.help summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  details.help p, details.help li { color: var(--muted); }
+  details.help b { color: var(--text); font-weight: 600; }
+  details.help ul { padding-left: 18px; }
+
+  /* ===== picker ===== */
+  #pop { position: absolute; z-index: 20; width: 380px; max-width: calc(100vw - 24px); background: var(--panel); border: 1px solid var(--line2);
+    border-radius: 12px; box-shadow: var(--shadow); padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  #pop[hidden] { display: none; }
+  #pop input[type=search] { width: 100%; }
+  #popTop:empty { display: none; }
+  #popList { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; }
+  #popList .grp { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); padding: 8px 6px 3px; }
+  #popList .it { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 7px; cursor: pointer; }
+  #popList .it:hover, #popList .it.hl { background: var(--panel3); }
+  #popList .it .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #popList .it .e { color: var(--accent); font-size: 12px; }
+  #popList .it .n, #popList .it .id { color: var(--dim); font-size: 11.5px; }
+  #popList .it .wear { font-size: 10.5px; color: var(--ok); }
+  #popList .it .in { font-size: 10.5px; color: var(--accent); }
+  #popList .none { color: var(--muted); padding: 10px 6px; }
+  .popManual { display: flex; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .popManual input { flex: 1; min-width: 0; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(10px); opacity: 0; pointer-events: none;
+    background: #1b2230; border: 1px solid var(--line2); border-radius: 9px; padding: 8px 14px; box-shadow: var(--shadow);
+    transition: opacity .2s, transform .2s; max-width: calc(100vw - 32px); z-index: 30; }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+
+  @media (max-width: 560px) {
+    .row { grid-template-columns: 1fr; gap: 4px; }
+    .row > .lbl { padding-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div class="brand">
+    <span class="logo"><svg class="i" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="13" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 15h10"/></svg></span>
+    <b>Equip binds</b>
+  </div>
+  <button id="connect" class="primary" hidden>Подключить папку</button>
+  <select id="charSel" hidden title="Персонаж: у каждого свои бинды"></select>
+  <button id="otherDir" class="ghost" hidden title="Выбрать другую папку">папка…</button>
+  <span class="sp"></span>
+  <span id="botState" class="pill"></span>
+  <span id="saveState" class="pill"></span>
+</div>
+
+<main>
+  <section id="intro" class="card intro" hidden></section>
+  <section id="errors" class="card"></section>
+  <section id="general" class="card general" hidden>
+    <span class="lbl">Пати-чат</span>
+    <label><input type="checkbox" id="chatOn"> писать, что надето и что скастовано</label>
+    <label>от имени <input type="text" id="chatName" maxlength="16" placeholder="Equip"></label>
+    <span class="muted">видишь только ты, пати не нужна</span>
+    <span class="lbl">Цель</span>
+    <label title="Сбили цель (сняли или переключили не ты) — бот сразу выделяет её снова. Твой выбор цели работает как обычно: кликнутая цель становится удерживаемой, Esc снимает удержание. Мёртвую или пропавшую больше 30 с не держит"><input type="checkbox" id="holdOn"> держать цель, если сбивают</label>
+  </section>
+  <div id="list"></div>
+  <div id="adds" hidden>
+    <button data-add="set" title="Одна или несколько вещей: оружие, сет, бижа"><b>+</b> Шмот / оружие</button>
+    <button data-add="attack" title="Надеть оружие и сразу атаковать цель"><b>+</b> Оружие + атака</button>
+    <button data-add="combo"><b>+</b> Оружие → скилл → назад</button>
+    <button data-add="self" title="Надеть пушку, скастовать скилл на себя (бафф), вернуть прежнее оружие"><b>+</b> Оружие → скилл на себя → назад</button>
+    <button data-add="skill"><b>+</b> Только скилл</button>
+  </div>
+  <details class="help card">
+    <summary>Как это работает</summary>
+    <ul>
+      <li>В боте запусти <b>Scripts\equip_binds.txt</b> на персонаже. Он кладёт сюда, в <b>Library\Binds</b>, сумку и скиллы персонажа (<i>&lt;имя&gt;.game.json</i>) и читает отсюда его бинды (<i>&lt;имя&gt;.binds</i>).</li>
+      <li>Всё, что меняешь на странице, сохраняется само. Бот подхватывает изменения за секунду, без перезапуска, и пишет в пати-чат <i>binds updated</i>.</li>
+      <li><b>Шмот / оружие</b> надевает одну вещь (оружие) или сразу несколько (сет, бижа). Уже надетое пропускает, ничего не снимает. Сначала надевается оружие, потом остальное: лук сам надевает стрелы.</li>
+      <li><b>Атаковать цель</b> (галочка у любого бинда, кнопка «+ Оружие + атака»): в конце бот начинает автоатаку по текущей цели, у комбо — уже после возврата оружия. Если цели нет, бинд просто надевает. С галочкой Ctrl бьёт и игрока без флага.</li>
+      <li><b>Оружие → скилл → назад</b>: надевает вещи и кастует скилл, пока каст не начнётся (до 2,5 с, вместе с подбеганием к цели). Потом ждёт конца каста и надевает обратно то, что было надето до нажатия. Если скилл в откате, ничего не делает и пишет, сколько осталось.</li>
+      <li><b>На себя</b> (кнопка «+ Оружие → скилл на себя → назад»): бот надевает пушку, выделяет тебя и кастует скилл, например бафф, которому нужна именно эта пушка. Потом возвращает прежнее оружие, таргет остаётся на тебе. Цель для этого не нужна.</li>
+      <li><b>Сейф каст</b>: как только последний скилл бинда начал кастоваться, бот снимает цель, как крестик на окне цели (и при скилле на себя тоже). Каст не сбивается, а персонаж после скилла не бежит за целью и не бьёт её. Удержание цели при этом цель не возвращает.</li>
+      <li><b>Держать цель</b> (галочка вверху): если цель сбили (сняли или переключили не ты), бот сразу выделяет её снова. Ручной выбор работает как обычно: цель, которую ты кликнул, атаковал или выбрал через /nexttarget, /nexttarget2, /assist, становится удерживаемой, а Esc снимает удержание. Мёртвую цель бот не держит. Цель, которую не видно дольше 30 с, отпускает. После скилла на себя таргет остаётся на тебе.</li>
+      <li><b>Отмена бегом</b>: если, пока бинд прожимает скилл или ждёт каста, ты сам побежал (клик по земле или клавиши ходьбы), бинд отменяется. Скилл больше не шлётся, поэтому бот не тащит тебя к цели. Прежнее оружие сразу возвращается, атаки не будет. На надевание шмота бег не влияет.</li>
+      <li><b>Без очереди</b>: если во время бинда нажать другой, текущий обрывается и выполняется последний нажатый. Если оборвали комбо на временной пушке, следующий бинд всё равно вернёт исходное оружие. Бинд-шмот возвращает только слоты, которые сам не надевает.</li>
+      <li>Скиллов может быть несколько, они идут по очереди. Скилл в откате, кроме первого, пропускается.</li>
+      <li><b>Нужна цель</b>: без цели (или если цель — ты сам либо мёртвая) бинд ничего не делает и не меняет оружие. Если цель пропала, пока скилл прожимался, бот бросает попытки и сразу надевает всё обратно.</li>
+      <li><b>Заточка</b>: «+6» берёт вещь только с этой заточкой. Клик по ней переключает на «любая»: тогда берётся надетая копия, иначе самая заточенная.</li>
+      <li><b>Ctrl</b> — каст как с зажатым Ctrl: атакующий скилл по не флагнутому игроку. <b>Shift</b> — не подбегать к цели.</li>
+      <li>Клавиша срабатывает, только когда активно окно игры этого персонажа. Буквы без Ctrl/Alt срабатывают и при наборе в чате, поэтому лучше с модификатором.</li>
+    </ul>
+  </details>
+</main>
+
+<div id="pop" hidden>
+  <input type="search" id="popSearch" placeholder="поиск" autocomplete="off">
+  <div id="popTop"></div>
+  <div id="popList"></div>
+  <div class="popManual"><input type="text" id="popManual" placeholder=""><button id="popManualAdd">добавить</button></div>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e[k] = v;
+    else if (k in e && typeof v !== 'string') e[k] = v;
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids) if (c !== null && c !== undefined && c !== false) e.append(c);
+  return e;
+}
+let toastT = 0;
+function toast(t) { const b = $('toast'); b.textContent = t; b.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => b.classList.remove('show'), 3200); }
+
+// ===== the game: slots (BodyPart of the bot) =====
+const OID_MIN = 10000000;
+const SLOT = { 1: 'рубашка', 2: 'серьга', 4: 'серьга', 6: 'серьга', 8: 'ожерелье', 16: 'кольцо', 32: 'кольцо', 48: 'кольцо', 64: 'голова',
+  128: 'оружие', 256: 'щит / стрелы', 512: 'перчатки', 1024: 'грудь', 2048: 'ноги', 4096: 'сапоги', 8192: 'плащ', 16384: 'оружие 2р',
+  32768: 'доспех', 65536: 'шапка', 131072: 'костюм', 262144: 'шапка', 524288: 'шапка', 1048576: 'браслет', 2097152: 'браслет',
+  4194304: 'талисман', 268435456: 'пояс' };
+const GROUPS = [['Оружие', [128, 16384]], ['Левая рука', [256]], ['Броня', [64, 1024, 2048, 32768, 512, 4096, 8192, 1]],
+  ['Бижутерия', [8, 2, 4, 6, 16, 32, 48]]];
+const groupOf = part => { const g = GROUPS.findIndex(([, ps]) => ps.includes(part)); return g < 0 ? GROUPS.length : g; };
+
+// ===== files: Library\Binds, kept in IndexedDB (a page cannot name a folder by its path) =====
+function idb(mode, fn) { return new Promise(res => { try { const rq = indexedDB.open('equipbinds', 1);
+  rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+  rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => res(null); };
+  rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+// the bot writes ANSI (cp1251), the page writes the same: names in Russian reach the party chat right
+function decode(buf) { try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1251').decode(buf); } }
+function cp1251(s) {
+  const out = [];
+  for (const ch of s) { const c = ch.codePointAt(0);
+    if (c < 128) out.push(c); else if (c >= 0x410 && c <= 0x44F) out.push(c - 0x410 + 0xC0);
+    else if (c === 0x401) out.push(0xA8); else if (c === 0x451) out.push(0xB8); else out.push(63); }
+  return new Uint8Array(out);
+}
+
+let dir = null, oldDir = null;            // Library\Binds; oldDir: the one of the last time, not allowed yet
+let chars = [], cur = null;                // file tags of the characters (<tag>.game.json / <tag>.binds), the shown one
+let game = null, gameMod = 0;              // <cur>.game.json: the bag, the skills, what the bot made of the binds
+let cfg = null, cfgMod = 0, cfgSaved = '';  // <cur>.binds
+let saveT = 0, saving = false, saveAgain = false, savedAt = 0, saveErr = '';
+
+async function sub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
+async function fileOf(name) { try { return await (await dir.getFileHandle(name)).getFile(); } catch (e) { return null; } }
+
+async function start() {
+  if (!window.showDirectoryPicker) { intro('browser'); return; }
+  const h = await idb('readonly', st => st.get('dir'));
+  if (h) {
+    let p = 'prompt';
+    try { p = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+    if (p === 'granted') { await useDir(h); return; }
+    oldDir = h; intro('again');
+  } else intro('first');
+}
+async function connect(pickNew) {
+  try {
+    let h = pickNew ? null : oldDir;
+    if (h && await h.requestPermission({ mode: 'readwrite' }) !== 'granted') h = null;
+    if (!h) h = await showDirectoryPicker({ id: 'equipbinds', mode: 'readwrite' });
+    await useDir(h);
+  } catch (e) { if (e.name !== 'AbortError') toast('Не вышло: ' + e.message); }
+}
+$('connect').onclick = () => connect(false);
+$('otherDir').onclick = () => connect(true);
+
+async function useDir(h) {
+  if (h.name.toLowerCase() !== 'binds') h = (await sub(h, 'Binds')) || (await sub(h, 'Library', 'Binds')) || h;   // Library / the game folder picked
+  dir = h; oldDir = null;
+  idb('readwrite', st => st.put(h, 'dir'));
+  $('connect').hidden = true; $('otherDir').hidden = false;
+  await scanChars(true);
+}
+
+// the characters: every <tag>.game.json / <tag>.binds of the folder
+async function scanChars(first) {
+  const list = [];
+  let page = false;
+  try {
+    for await (const [name, e] of dir.entries()) {
+      if (e.kind !== 'file') continue;
+      if (/^binds\.html$/i.test(name)) page = true;
+      const m = /^(.+)\.game\.json$/i.exec(name) || /^(.+)\.binds$/i.exec(name);
+      if (m && !list.includes(m[1])) list.push(m[1]);
+    }
+  } catch (e) { intro('lost'); dir = null; return; }
+  list.sort((a, b) => a.localeCompare(b));
+  const same = list.length === chars.length && list.every((c, i) => c === chars[i]);
+  chars = list;
+  if (!same || first) {
+    const sel = $('charSel'); sel.textContent = '';
+    for (const c of chars) sel.append(el('option', { value: c, text: c }));
+    sel.hidden = !chars.length;
+  }
+  if (!chars.length) { cur = null; intro(page || dir.name.toLowerCase() === 'binds' ? 'nobot' : 'wrongdir'); return; }
+  if (!cur || !chars.includes(cur)) {
+    let want = null; try { want = localStorage.getItem('equipbinds.char'); } catch (e) {}
+    await loadChar(chars.includes(want) ? want : chars[0]);
+  }
+  $('charSel').value = cur;
+}
+$('charSel').onchange = e => loadChar(e.target.value);
+
+async function loadChar(tag) {
+  if (saveT) await saveNow();
+  cur = tag; game = null; gameMod = 0; cfg = null; cfgMod = 0; cfgSaved = ''; savedAt = 0; saveErr = '';
+  try { localStorage.setItem('equipbinds.char', tag); } catch (e) {}
+  await readGame(true);
+  await readCfg();
+  intro(null);
+  renderAll();
+}
+async function readGame(force) {
+  const f = await fileOf(cur + '.game.json');
+  if (!f) { const had = !!game; game = null; gameMod = 0; return had; }
+  if (!force && f.lastModified === gameMod) return false;
+  try { game = JSON.parse(decode(await f.arrayBuffer())); gameMod = f.lastModified; return true; }
+  catch (e) { return false; }   // the bot is writing it right now: the next look
+}
+async function readCfg() {
+  const f = await fileOf(cur + '.binds');
+  const text = f ? decode(await f.arrayBuffer()) : '';
+  cfg = parseCfg(text); cfgMod = f ? f.lastModified : 0; cfgSaved = f ? cfgText() : '';
+}
+
+// ===== the binds file: the general lines, then one [bind] block per bind (as equip_binds.txt reads it) =====
+function newBind(o) { return Object.assign({ on: true, key: '', name: '', items: [], skills: [], back: true, ctrl: false, shift: false, needTgt: true, attack: false, self: false, safe: false, delay: 0 }, o); }
+function parseCfg(text) {
+  const c = { chat: true, chatName: 'Equip', hold: false, binds: [] };
+  let b = null;
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line[0] === ';' || line[0] === '#') continue;
+    if (line.toLowerCase() === '[bind]') { b = newBind({ needTgt: false }); c.binds.push(b); continue; }   // no need_target line: off (as the bot)
+    const p = line.indexOf('='); if (p < 0) continue;
+    const k = line.slice(0, p).trim().toLowerCase(), v = line.slice(p + 1).trim();
+    if (!b) { if (k === 'chat') c.chat = v !== '0'; else if (k === 'hold_target') c.hold = v === '1'; else if (k === 'chat_name' && v) c.chatName = v; continue; }
+    if (k === 'on') b.on = v !== '0';
+    else if (k === 'key') b.key = v;
+    else if (k === 'name') b.name = v;
+    else if (k === 'items') b.items = v.split('|').map(s => s.trim()).filter(Boolean);
+    else if (k === 'skills') b.skills = v.split('|').map(s => parseInt(s, 10)).filter(n => n > 0);
+    else if (k === 'back') b.back = v !== '0';
+    else if (k === 'ctrl') b.ctrl = v === '1';
+    else if (k === 'shift') b.shift = v === '1';
+    else if (k === 'need_target') b.needTgt = v === '1';
+    else if (k === 'attack') b.attack = v === '1';
+    else if (k === 'self') b.self = v === '1';
+    else if (k === 'safe') b.safe = v === '1';
+    else if (k === 'delay') b.delay = Math.max(0, parseInt(v, 10) || 0);
+  }
+  return c;
+}
+const clean = s => String(s || '').replace(/[\r\n|]/g, ' ').trim();
+function cfgText() {
+  const L = ['; Equip binds of ' + (game && game.char || cur) + ': made in binds.html (Library\\Binds), read by equip_binds.txt on the fly',
+    'chat=' + (cfg.chat ? 1 : 0), 'chat_name=' + (clean(cfg.chatName) || 'Equip'), 'hold_target=' + (cfg.hold ? 1 : 0), ''];
+  cfg.binds.forEach((b, i) => L.push('[bind]', 'on=' + (b.on ? 1 : 0), 'key=' + b.key, 'name=' + (clean(b.name) || 'bind ' + (i + 1)),
+    'items=' + b.items.join('|'), 'skills=' + b.skills.join('|'), 'back=' + (b.back ? 1 : 0), 'ctrl=' + (b.ctrl ? 1 : 0),
+    'shift=' + (b.shift ? 1 : 0), 'need_target=' + (b.needTgt ? 1 : 0), 'attack=' + (b.attack ? 1 : 0), 'self=' + (b.self ? 1 : 0), 'safe=' + (b.safe ? 1 : 0), 'delay=' + (b.delay | 0), ''));
+  return L.join('\r\n');
+}
+
+// ===== saving: by itself, half a second after the last change =====
+function changed(full) {
+  if (full) renderList(); else refreshCards();
+  clearTimeout(saveT); saveT = setTimeout(saveNow, 500);
+  saveState();
+}
+async function saveNow() {
+  clearTimeout(saveT); saveT = 0;
+  if (!dir || !cur || !cfg) return;
+  if (saving) { saveAgain = true; return; }
+  const text = cfgText();
+  if (text === cfgSaved) { saveState(); return; }
+  saving = true; saveState();
+  try {
+    const fh = await dir.getFileHandle(cur + '.binds', { create: true });
+    const w = await fh.createWritable(); await w.write(cp1251(text)); await w.close();
+    cfgSaved = text; cfgMod = (await fh.getFile()).lastModified; savedAt = Date.now(); saveErr = '';
+  } catch (e) { saveErr = e.message || String(e); }
+  saving = false;
+  if (saveAgain) { saveAgain = false; saveNow(); }
+  saveState(); botState();
+}
+function saveState() {
+  const s = $('saveState');
+  if (!cfg) { s.className = 'pill'; s.textContent = ''; return; }
+  if (saveErr) { s.className = 'pill bad'; s.replaceChildren(el('span', { class: 'dot' }), 'не сохранилось: ' + saveErr); return; }
+  if (saveT || saving) { s.className = 'pill warn'; s.replaceChildren(el('span', { class: 'dot' }), 'сохраняю…'); return; }
+  s.className = 'pill ok'; s.replaceChildren(el('span', { class: 'dot' }), savedAt ? 'сохранено' : 'всё сохранено');
+}
+window.addEventListener('beforeunload', e => { if (saveT || saving) { saveNow(); e.preventDefault(); e.returnValue = ''; } });
+
+// what the bot says: the bag of when, the binds read, the errors
+function hhmm(s) { return String(s || '').replace(/^\d{4}-\d\d-\d\d /, ''); }
+function botState() {
+  const s = $('botState'), er = $('errors');
+  er.textContent = '';
+  if (!cur) { s.className = 'pill'; s.textContent = ''; return; }
+  if (!game) { s.className = 'pill warn'; s.replaceChildren(el('span', { class: 'dot' }), 'нет данных от бота: запусти equip_binds.txt этим персонажем'); return; }
+  const late = savedAt && gameMod < savedAt - 500;
+  if (late && Date.now() - savedAt > 4000) {
+    s.className = 'pill bad';
+    s.replaceChildren(el('span', { class: 'dot' }), 'бот не подхватил: запущен ли equip_binds.txt на ' + (game.char || cur) + '?');
+  } else if (late) {
+    s.className = 'pill warn'; s.replaceChildren(el('span', { class: 'dot' }), 'бот читает…');
+  } else {
+    const B = game.binds || {};
+    s.className = 'pill ok';
+    s.replaceChildren(el('span', { class: 'dot' }), 'бот: ' + (game.char || cur) + ' · ' + (B.read ? 'биндов ' + (B.count | 0) + ' (прочитал в ' + B.read + ')' : 'биндов нет') +
+      ' · сумка ' + hhmm(game.written));
+  }
+  const errs = (game.binds && game.binds.errors) || [];
+  if (errs.length) er.append(el('b', { text: 'Бот пропустил:' }), el('ul', null, ...errs.map(t => el('li', { text: t }))));
+}
+
+// ===== the page =====
+function intro(kind) {
+  const box = $('intro');
+  const show = !!kind;
+  box.hidden = !show;
+  for (const id of ['general', 'adds']) $(id).hidden = show || !cfg;
+  if (show) { $('list').textContent = ''; $('errors').textContent = ''; }
+  $('connect').hidden = !(kind === 'first' || kind === 'again' || kind === 'lost');
+  $('connect').textContent = kind === 'again' && oldDir ? 'Подключить папку ' + oldDir.name : 'Подключить папку';
+  if (!show) return;
+  box.textContent = '';
+  if (kind === 'browser') {
+    box.append(el('h2', { text: 'Нужен Chrome или Edge' }),
+      el('p', { class: 'muted', text: 'Страница сама пишет файлы биндов в папку Library\\Binds, а это умеют только Chrome и Edge. Открой binds.html в одном из них.' }));
+    return;
+  }
+  if (kind === 'first' || kind === 'again' || kind === 'lost') {
+    box.append(el('h2', { text: kind === 'again' ? 'Подключи папку ещё раз' : 'Подключи папку Library\\Binds' }),
+      el('ol', null,
+        el('li', null, 'Нажми ', el('b', { text: 'Подключить папку' }), ' и выбери ', el('b', { text: 'Library\\Binds' }), ' (здесь лежит этот binds.html).'),
+        el('li', null, 'Браузер спросит, можно ли странице менять файлы: ответь ', el('b', { text: 'да' }), '. Папку он запомнит, в следующий раз будет одна кнопка.'),
+        el('li', null, 'В боте запусти ', el('b', { text: 'Scripts\\equip_binds.txt' }), ': он положит сюда сумку и скиллы персонажа.')),
+      el('button', { class: 'primary', text: kind === 'again' && oldDir ? 'Подключить папку ' + oldDir.name : 'Подключить папку', onclick: () => connect(false) }));
+    return;
+  }
+  if (kind === 'nobot') {
+    box.append(el('h2', { text: 'Пока нет ни одного персонажа' }),
+      el('p', { class: 'muted' }, 'Запусти в боте ', el('b', { text: 'Scripts\\equip_binds.txt' }),
+        ' на нужном персонаже: через пару секунд здесь появятся его вещи и скиллы.'));
+    return;
+  }
+  if (kind === 'wrongdir') {
+    box.append(el('h2', { text: 'Это не та папка' }),
+      el('p', { class: 'muted' }, 'В «' + dir.name + '» нет файлов бота. Нужна ', el('b', { text: 'Library\\Binds' }), ', та, где лежит binds.html.'),
+      el('button', { class: 'primary', text: 'Выбрать другую папку', onclick: () => connect(true) }));
+  }
+}
+
+function renderAll() {
+  $('general').hidden = !cfg; $('adds').hidden = !cfg;
+  if (cfg) { $('chatOn').checked = cfg.chat; $('chatName').value = cfg.chatName; $('holdOn').checked = cfg.hold; }
+  renderList(); botState(); saveState();
+}
+$('chatOn').onchange = e => { cfg.chat = e.target.checked; changed(false); };
+$('holdOn').onchange = e => { cfg.hold = e.target.checked; changed(false); };
+$('chatName').oninput = e => { cfg.chatName = e.target.value; changed(false); };
+
+// ----- keys: as equip_binds.txt reads them -----
+const KEY_SHOW = { Minus: '-', Equal: '=', LBracket: '[', RBracket: ']', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+  Backslash: '\\', NumMul: 'Num *', NumAdd: 'Num +', NumSub: 'Num -', NumDot: 'Num .', NumDiv: 'Num /' };
+function keyName(code) {
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(code))) return m[1];
+  if ((m = /^Digit(\d)$/.exec(code))) return m[1];
+  if ((m = /^F(\d{1,2})$/.exec(code)) && +m[1] >= 1 && +m[1] <= 24) return 'F' + m[1];
+  if ((m = /^Numpad(\d)$/.exec(code))) return 'Num' + m[1];
+  return { Space: 'Space', Tab: 'Tab', Enter: 'Enter', NumpadEnter: 'Enter', Backspace: 'Backspace', Insert: 'Insert', Delete: 'Delete',
+    Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Backquote: '~', Minus: 'Minus', Equal: 'Equal', BracketLeft: 'LBracket', BracketRight: 'RBracket', Semicolon: 'Semicolon', Quote: 'Quote',
+    Comma: 'Comma', Period: 'Period', Slash: 'Slash', Backslash: 'Backslash', NumpadMultiply: 'NumMul', NumpadAdd: 'NumAdd',
+    NumpadSubtract: 'NumSub', NumpadDecimal: 'NumDot', NumpadDivide: 'NumDiv' }[code] || null;
+}
+function keyParts(key) {
+  const p = String(key || '').split('+').map(s => s.trim()).filter(Boolean);
+  const r = { ctrl: false, alt: false, shift: false, base: '' };
+  for (const x of p) { const u = x.toLowerCase(); if (u === 'ctrl') r.ctrl = true; else if (u === 'alt') r.alt = true; else if (u === 'shift') r.shift = true; else r.base = x; }
+  return r;
+}
+const keyNorm = key => { const k = keyParts(key); return k.base ? (k.ctrl ? 'C' : '') + (k.alt ? 'A' : '') + (k.shift ? 'S' : '') + '+' + k.base.toUpperCase() : ''; };
+function keyShow(key) {
+  const k = keyParts(key); if (!k.base) return '';
+  return (k.ctrl ? 'Ctrl+' : '') + (k.alt ? 'Alt+' : '') + (k.shift ? 'Shift+' : '') + (KEY_SHOW[k.base] || k.base);
+}
+const modsOf = e => (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '');
+
+let cap = null;   // the key button waiting for a key: { btn, b }
+function capStart(btn, b) { capStop(); cap = { btn, b }; btn.className = 'keybtn cap'; btn.textContent = 'нажми клавишу… (Esc — отмена)'; }
+function capStop() { if (!cap) return; const c = cap; cap = null; keyBtnLook(c.btn, c.b); }
+function capSet(key) { const b = cap.b; capStop(); b.key = key; changed(false); }
+window.addEventListener('keydown', e => {
+  if (!cap) {
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); saveNow(); }
+    if (e.code === 'Escape' && !$('pop').hidden) closePick();
+    return;
+  }
+  e.preventDefault(); e.stopPropagation();
+  if (e.code === 'Escape') { capStop(); return; }
+  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(e.code)) { cap.btn.textContent = modsOf(e) + '…'; return; }
+  const k = keyName(e.code);
+  if (!k) { toast('Эту клавишу бот не знает'); return; }
+  capSet(modsOf(e) + k);
+}, true);
+window.addEventListener('keyup', e => { if (cap) { e.preventDefault(); if (/^(Control|Shift|Alt|Meta)/.test(e.code)) cap.btn.textContent = modsOf(e) ? modsOf(e) + '…' : 'нажми клавишу… (Esc — отмена)'; } }, true);
+window.addEventListener('mousedown', e => {
+  if (!cap) return;
+  const m = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' }[e.button];
+  if (m) { e.preventDefault(); capSet(modsOf(e) + m); return; }
+  if (e.button === 0 && e.target !== cap.btn) capStop();
+}, true);
+window.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) e.preventDefault(); }, true);   // no browser back / forward
+window.addEventListener('auxclick', e => { if (e.button === 1 && cap) e.preventDefault(); }, true);
+function keyBtnLook(btn, b) {
+  if (b.key) { btn.className = 'keybtn'; btn.textContent = keyShow(b.key); btn.title = 'Клик: назначить другую клавишу'; }
+  else { btn.className = 'keybtn none'; btn.textContent = 'назначить клавишу'; btn.title = 'Клик, потом нажми сочетание: Ctrl+1, Alt+Q, F5, колесо / боковые кнопки мыши'; }
+}
+
+// ----- items and skills of a bind, by the bag / skill list the bot wrote -----
+function itemInfo(spec) {
+  const m = /^(\d+)(?:\+(\d+))?$/.exec(String(spec).trim());
+  if (!m) return { label: spec, miss: true, bad: true };
+  const id = +m[1], e = m[2] === undefined ? null : +m[2], byOid = id >= OID_MIN;
+  const tail = e === null ? '' : ' +' + e;
+  if (!game) return { label: (byOid ? 'вещь ' : 'ID ') + id + tail, id, e, byOid, unknown: true };
+  const items = game.items || [];
+  const hits = byOid ? items.filter(x => x.oid === id) : items.filter(x => x.id === id && (e === null || x.ench === e));
+  if (!hits.length) {
+    const same = byOid ? null : items.find(x => x.id === id);
+    return { label: (same ? same.name : (byOid ? 'вещь ' : 'ID ') + id) + tail, id, e, byOid, miss: true, part: same && same.part };
+  }
+  const best = hits.find(x => x.on) || hits.slice().sort((a, b) => b.ench - a.ench)[0];
+  return { label: best.name, id, e, byOid, part: best.part, on: hits.some(x => x.on), ench: best.ench };
+}
+function skillInfo(id) {
+  if (!game) return { label: 'скилл ' + id, unknown: true };
+  const s = (game.skills || []).find(x => x.id === id);
+  return s ? { label: s.name, lvl: s.lvl } : { label: 'скилл ' + id, miss: true };
+}
+const itemShort = spec => { const i = itemInfo(spec); return i.label + (i.e !== null && i.e > 0 ? ' +' + i.e : (i.e === null && !i.byOid && i.ench > 0 ? ' +' + i.ench : '')); };
+
+function itemChip(b, idx) {
+  const spec = b.items[idx], i = itemInfo(spec);
+  const ench = i.byOid ? null : el('span', {
+    class: 'ench' + (i.e === null ? ' any' : ''), text: i.e === null ? 'любая' : '+' + i.e,
+    title: i.e === null ? 'Любая заточка: надетая, иначе самая заточенная. Клик: только эта заточка' : 'Только эта заточка. Клик: любая',
+    onclick: () => { b.items[idx] = i.e === null ? i.id + '+' + (i.ench | 0) : String(i.id); changed(false); } });
+  return el('span', { class: 'chip' + (i.miss ? ' miss' : ''), title: (i.miss ? (i.bad ? 'Не разобрать: ' : 'Нет в сумке: ') : '') + spec },
+    i.part && SLOT[i.part] ? el('span', { class: 'slot', text: SLOT[i.part] }) : null,
+    el('span', { class: 'nm', text: i.label }), ench,
+    i.on ? el('span', { class: 'on', title: 'надето сейчас' }) : null,
+    i.miss && !i.bad ? el('span', { class: 'no', text: 'нет в сумке' }) : null,
+    el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.items.splice(idx, 1); changed(false); } }));
+}
+function skillChip(b, idx) {
+  const id = b.skills[idx], s = skillInfo(id);
+  return el('span', { class: 'chip sk' + (s.miss ? ' miss' : ''), title: 'ID ' + id },
+    idx > 0 ? el('span', { class: 'arr', text: 'затем' }) : null,
+    el('span', { class: 'nm', text: s.label }),
+    s.lvl ? el('span', { class: 'no', text: 'ур. ' + s.lvl }) : null,
+    s.miss ? el('span', { class: 'no', text: 'нет у персонажа' }) : null,
+    el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.skills.splice(idx, 1); changed(false); } }));
+}
+const kindOf = b => b.skills.length ? (b.items.length ? 'combo' : 'skill') : (b.items.length ? 'set' : '');
+const KIND_TEXT = { set: 'шмот', combo: 'комбо', skill: 'скилл', '': 'пустой' };
+const kindText = b => KIND_TEXT[kindOf(b)] + (b.attack && kindOf(b) ? ' + атака' : '');
+
+function warnsOf(b, i) {
+  const W = [];
+  if (!b.key) W.push(['Назначь клавишу', 1]);
+  else {
+    const n = keyNorm(b.key);
+    const other = cfg.binds.findIndex((x, j) => j !== i && x.on && keyNorm(x.key) === n);
+    if (b.on && other >= 0) W.push([(other < i ? 'Клавиша занята биндом «' + (cfg.binds[other].name || 'бинд ' + (other + 1)) + '»: этот бот пропустит' :
+      'Та же клавиша у бинда «' + (cfg.binds[other].name || 'бинд ' + (other + 1)) + '» ниже: он будет пропущен'), 1]);
+    const k = keyParts(b.key);
+    if (!k.ctrl && !k.alt && /^([A-Za-z0-9~]|Space|Minus|Equal|LBracket|RBracket|Semicolon|Quote|Comma|Period|Slash|Backslash|Num\d|NumMul|NumAdd|NumSub|NumDot|NumDiv)$/.test(k.base))
+      W.push(['Без Ctrl/Alt клавиша сработает и при наборе в чате игры']);
+    else if (!k.ctrl && !k.alt && !k.shift && /^F([1-9]|1[0-2])$/.test(k.base))
+      W.push([k.base + ' в игре — панель быстрого доступа: нажмётся и она']);
+  }
+  if (/[^\x20-\x7E]/.test(b.name)) W.push(['Название не латиницей: в окне бота будут кракозябры — лучше по-английски']);
+  if (!b.items.length && !b.skills.length) W.push(['Добавь вещи или скилл', 1]);
+  if (game) {
+    const miss = b.items.filter(s => itemInfo(s).miss);
+    if (miss.length) W.push(['Нет в сумке: ' + miss.map(itemShort).join(', ') + (b.skills.length ? '' : ' — остальное наденет'), 1]);
+    const ms = b.skills.filter(id => skillInfo(id).miss);
+    if (ms.length) W.push(['Нет у персонажа: ' + ms.map(id => 'скилл ' + id).join(', '), 1]);
+  }
+  return W;
+}
+function summaryOf(b) {
+  const parts = [];
+  if (b.items.length) parts.push(b.items.length <= 3 ? 'надеть ' + b.items.map(itemShort).join(', ') : 'надеть ' + b.items.length + ' вещей');
+  if (b.skills.length && b.needTgt && !b.self) parts.unshift('если есть цель');
+  for (const id of b.skills) parts.push(skillInfo(id).label + (b.self ? ' на себя' : ''));
+  if (b.skills.length && b.safe) parts.push('снять цель (сейф каст)');
+  if (b.skills.length && b.back) parts.push('вернуть, что было надето' + (b.delay > 0 ? ' (через ' + b.delay + ' мс)' : ''));
+  if (b.attack) parts.push('атаковать цель' + (b.ctrl ? ' (Ctrl)' : ''));
+  if (!parts.length) return null;
+  const s = el('div', { class: 'summary' }, el('b', { text: b.key ? keyShow(b.key) : 'без клавиши' }));
+  for (const p of parts) s.append(el('span', { class: 'flow', text: '→' }), p);
+  return s;
+}
+
+// a card; its parts that follow the bag / the other binds are drawn again by refreshCards (the inputs stay)
+function card(b, i) {
+  const n = cfg.binds.length;
+  const keyBtn = el('button', { onclick: () => (cap && cap.btn === keyBtn ? capStop() : capStart(keyBtn, b)) });
+  keyBtnLook(keyBtn, b);
+  const c = el('div', { class: 'card bind' + (b.on ? '' : ' off') },
+    el('div', { class: 'head' },
+      el('label', { title: 'Включён' }, el('input', { type: 'checkbox', checked: b.on, onchange: e => { b.on = e.target.checked; changed(false); } })),
+      keyBtn,
+      el('input', { type: 'text', class: 'name', value: b.name, placeholder: 'название латиницей (видно в пати-чате)', maxlength: 40,
+        oninput: e => { b.name = e.target.value; changed(false); } }),
+      el('span', { class: 'kind' }),
+      el('span', { class: 'sp' }),
+      el('button', { class: 'ghost icon', title: 'Выше', disabled: i === 0, onclick: () => move(i, -1), text: '↑' }),
+      el('button', { class: 'ghost icon', title: 'Ниже', disabled: i === n - 1, onclick: () => move(i, 1), text: '↓' }),
+      el('button', { class: 'ghost icon', title: 'Копия', onclick: () => { cfg.binds.splice(i + 1, 0, newBind(Object.assign(JSON.parse(JSON.stringify(b)), { key: '', name: (b.name || 'bind') + ' 2' }))); changed(true); } },
+        svgIcon('copy')),
+      el('button', { class: 'ghost icon', title: 'Удалить', onclick: () => { if (confirm('Удалить бинд «' + (b.name || keyShow(b.key) || 'без названия') + '»?')) { cfg.binds.splice(i, 1); changed(true); } } },
+        svgIcon('trash'))),
+    el('div', { class: 'body' },
+      el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Надеть' }), el('div', { class: 'chips items' })),
+      el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Скиллы' }), el('div', { class: 'chips skills' })),
+      el('div', { class: 'row opts-row' }, el('span', { class: 'lbl', text: 'После' }),
+        el('div', { class: 'opts' },
+          el('label', { title: 'В конце (у комбо — после возврата) начать автоатаку по текущей цели. Цели нет — просто надевает' },
+            el('input', { type: 'checkbox', checked: b.attack, onchange: e => { b.attack = e.target.checked; changed(false); } }), 'атаковать цель'),
+          el('label', { class: 'o-sk', title: 'После скиллов надеть обратно всё, что было надето до нажатия (оружие, стрелы, щит...)' },
+            el('input', { type: 'checkbox', checked: b.back, onchange: e => { b.back = e.target.checked; changed(false); } }), 'вернуть, что было надето'),
+          el('label', { class: 'o-sk', title: 'Скиллы — на себя: бот выделяет тебя и кастует (таргет остаётся на тебе), потом возвращает прежнее оружие, если «вернуть». Для баффов, которым нужна конкретная пушка' },
+            el('input', { type: 'checkbox', checked: b.self, onchange: e => { b.self = e.target.checked; changed(false); } }), 'на себя'),
+          el('label', { class: 'o-sk o-tgt', title: 'Нет цели (или цель — ты сам / мёртвая) — бинд ничего не делает, оружие не трогает. Цель пропала, пока скилл прожимался, — сразу назад' },
+            el('input', { type: 'checkbox', checked: b.needTgt, onchange: e => { b.needTgt = e.target.checked; changed(false); } }), 'нужна цель'),
+          el('label', { class: 'o-sk', title: 'Как только последний скилл начал кастоваться, бот снимает цель (и на себя тоже) — как крестик на окне цели. Каст не сбивается, персонаж не бежит и не бьёт цель после скилла' },
+            el('input', { type: 'checkbox', checked: b.safe, onchange: e => { b.safe = e.target.checked; changed(false); } }), 'сейф каст'),
+          el('label', { class: 'o-sk', title: 'Пауза между концом каста и возвратом. 0 — сразу' }, 'пауза',
+            el('input', { type: 'number', min: 0, max: 5000, step: 50, value: b.delay, oninput: e => { b.delay = Math.max(0, Math.min(5000, parseInt(e.target.value, 10) || 0)); changed(false); } }), 'мс'),
+          el('label', { class: 'o-ctrl', title: 'Как с зажатым Ctrl: скилл / атака по игроку без флага' },
+            el('input', { type: 'checkbox', checked: b.ctrl, onchange: e => { b.ctrl = e.target.checked; changed(false); } }), 'Ctrl (без флага)'),
+          el('label', { class: 'o-sk', title: 'Каст как с зажатым Shift: не подбегать к цели' },
+            el('input', { type: 'checkbox', checked: b.shift, onchange: e => { b.shift = e.target.checked; changed(false); } }), 'Shift (не подбегать)')))),
+    el('div', { class: 'warns' }));
+  c.querySelector('.body').append(el('div', { class: 'summary-slot' }));
+  c._b = b; c._i = i;
+  return c;
+}
+function svgIcon(kind) {
+  const ns = 'http://www.w3.org/2000/svg', s = document.createElementNS(ns, 'svg');
+  s.setAttribute('class', 'i'); s.setAttribute('viewBox', '0 0 24 24');
+  s.innerHTML = kind === 'copy' ? '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'
+    : '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>';
+  return s;
+}
+function move(i, d) { const b = cfg.binds.splice(i, 1)[0]; cfg.binds.splice(i + d, 0, b); changed(true); }
+
+function renderList() {
+  closePick(); cap = null;
+  const box = $('list'); box.textContent = '';
+  if (!cfg) return;
+  if (!cfg.binds.length) box.append(el('div', { class: 'empty' }, 'Биндов пока нет. Добавь первый кнопкой ниже.'));
+  cfg.binds.forEach((b, i) => box.append(card(b, i)));
+  refreshCards();
+}
+function refreshCards() {
+  for (const c of $('list').querySelectorAll('.bind')) {
+    const b = c._b, i = c._i, k = kindOf(b);
+    c.classList.toggle('off', !b.on);
+    const kd = c.querySelector('.kind'); kd.className = 'kind ' + k; kd.textContent = kindText(b);
+    const it = c.querySelector('.chips.items'); it.textContent = '';
+    b.items.forEach((s, j) => it.append(itemChip(b, j)));
+    it.append(el('button', { class: 'add', text: b.items.length ? '+ ещё вещь' : (k === 'skill' ? '+ вещь (оружие)' : '+ вещь'), onclick: e => openPick(e.currentTarget, b, 'items') }));
+    const sk = c.querySelector('.chips.skills'); sk.textContent = '';
+    b.skills.forEach((s, j) => sk.append(skillChip(b, j)));
+    sk.append(el('button', { class: 'add', text: b.skills.length ? '+ ещё скилл' : '+ скилл', onclick: e => openPick(e.currentTarget, b, 'skills') }));
+    if (pick && pick.b === b) pick.anchor = (pick.kind === 'items' ? it : sk).lastElementChild;   // the picker stays under the new "+" button
+    for (const o of c.querySelectorAll('.opts .o-sk')) o.hidden = !b.skills.length;
+    for (const o of c.querySelectorAll('.opts .o-tgt')) o.hidden = !b.skills.length || b.self;   // on self: no target needed
+    c.querySelector('.opts .o-ctrl').hidden = !b.skills.length && !b.attack;
+    const kb = c.querySelector('.head .keybtn'); if (kb && !(cap && cap.btn === kb)) keyBtnLook(kb, b);
+    c.querySelector('.summary-slot').replaceChildren(summaryOf(b) || '');
+    c.querySelector('.warns').replaceChildren(...warnsOf(b, i).map(([t, bad]) => el('div', { class: bad ? 'bad' : '', text: '⚠ ' + t })));
+    c.querySelector('.warns').style.padding = c.querySelector('.warns').childElementCount ? '0 12px 10px' : '0';
+  }
+}
+
+for (const btn of document.querySelectorAll('#adds button')) btn.onclick = () => {
+  const k = btn.dataset.add, n = cfg.binds.length + 1;
+  const b = newBind({ name: (k === 'set' ? 'Gear ' : k === 'attack' ? 'Weapon ' : k === 'combo' ? 'Combo ' : k === 'self' ? 'Self ' : 'Skill ') + n,   // Latin: the bot's window shows no Cyrillic
+    attack: k === 'attack', self: k === 'self', needTgt: k !== 'self' });
+  cfg.binds.push(b); changed(true);
+  const c = $('list').lastElementChild;
+  c.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(() => openPick(c.querySelector(k === 'skill' ? '.chips.skills .add' : '.chips.items .add'), b, k === 'skill' ? 'skills' : 'items'), 250);
+};
+
+// ===== the picker: items of the bag / skills of the character =====
+let pick = null;   // { b, kind, anchor }
+function openPick(anchor, b, kind) {
+  closePick(); capStop();
+  pick = { b, kind, anchor };
+  const p = $('pop'); p.hidden = false;
+  $('popSearch').value = '';
+  $('popManual').value = '';
+  $('popManual').placeholder = kind === 'items' ? 'ID вещи, ID+заточка (2395+6) или OID' : 'ID скилла';
+  renderPick(); placePick();
+  $('popSearch').focus();
+}
+function placePick() {
+  if (!pick) return;
+  const p = $('pop'), r = pick.anchor.getBoundingClientRect();
+  const w = p.offsetWidth, x = Math.max(12, Math.min(r.left + scrollX, scrollX + document.documentElement.clientWidth - w - 12));
+  p.style.left = x + 'px'; p.style.top = (r.bottom + scrollY + 6) + 'px';
+}
+function closePick() { pick = null; $('pop').hidden = true; }
+document.addEventListener('mousedown', e => { if (pick && !$('pop').contains(e.target) && e.target !== pick.anchor) closePick(); });
+window.addEventListener('resize', placePick);
+
+function renderPick() {
+  const list = $('popList'), top = $('popTop'), q = $('popSearch').value.trim().toLowerCase();
+  list.textContent = ''; top.textContent = '';
+  const { b, kind } = pick;
+  if (!game) { list.append(el('div', { class: 'none', text: 'Нет данных от бота: запусти equip_binds.txt этим персонажем. Пока можно вписать ID вручную.' })); return; }
+  if (kind === 'items') {
+    const worn = (game.items || []).filter(x => x.on);
+    if (worn.length && !q) top.append(el('button', { class: 'add', style: 'width:100%;justify-content:center',
+      text: 'Взять всё, что надето сейчас (' + worn.length + ')', title: 'Удобно для сета: оденься в игре как надо и нажми',
+      onclick: () => { for (const x of worn) b.items.push(x.id + '+' + x.ench); changed(false); toast('Добавлено ' + worn.length + ' вещей'); closePick(); } }));
+    // one row per item ID + enchant (copies counted)
+    const rows = new Map();
+    for (const x of game.items || []) {
+      const k = x.id + '+' + x.ench;
+      const r = rows.get(k) || { id: x.id, ench: x.ench, name: x.name, part: x.part, n: 0, on: 0 };
+      r.n++; if (x.on) r.on++; rows.set(k, r);
+    }
+    let all = [...rows.values()];
+    if (q) all = all.filter(r => r.name.toLowerCase().includes(q) || String(r.id) === q);
+    all.sort((a, b2) => groupOf(a.part) - groupOf(b2.part) || a.name.localeCompare(b2.name) || b2.ench - a.ench);
+    let g = -1;
+    for (const r of all) {
+      const gi = groupOf(r.part);
+      if (gi !== g) { g = gi; list.append(el('div', { class: 'grp', text: gi < GROUPS.length ? GROUPS[gi][0] : 'Прочее' })); }
+      const inBind = b.items.filter(s => s === r.id + '+' + r.ench || s === String(r.id)).length;
+      list.append(el('div', { class: 'it', onclick: () => { b.items.push(r.id + '+' + r.ench); changed(false); renderPick(); } },
+        el('span', { class: 'nm', text: r.name, title: r.name + ' · ID ' + r.id + (SLOT[r.part] ? ' · ' + SLOT[r.part] : '') }),
+        r.ench > 0 ? el('span', { class: 'e', text: '+' + r.ench }) : null,
+        r.n > 1 ? el('span', { class: 'n', text: '×' + r.n }) : null,
+        r.on ? el('span', { class: 'wear', text: 'надето' }) : null,
+        inBind ? el('span', { class: 'in', text: inBind > 1 ? '✓×' + inBind : '✓' }) : null));
+    }
+    if (!all.length) list.append(el('div', { class: 'none', text: q ? 'Ничего не нашлось' : 'В сумке нет вещей, которые надеваются' }));
+  } else {
+    let all = (game.skills || []).slice();
+    if (q) all = all.filter(s => s.name.toLowerCase().includes(q) || String(s.id) === q);
+    all.sort((a, c) => a.name.localeCompare(c.name));
+    for (const s of all) {
+      const inBind = b.skills.includes(s.id);
+      list.append(el('div', { class: 'it', onclick: () => { b.skills.push(s.id); changed(false); closePick(); } },
+        el('span', { class: 'nm', text: s.name }), el('span', { class: 'n', text: 'ур. ' + s.lvl }), el('span', { class: 'id', text: '#' + s.id }),
+        inBind ? el('span', { class: 'in', text: '✓' }) : null));
+    }
+    if (!all.length) list.append(el('div', { class: 'none', text: q ? 'Ничего не нашлось' : 'Бот не прислал скиллов' }));
+  }
+}
+$('popSearch').oninput = renderPick;
+$('popSearch').onkeydown = e => { if (e.key === 'Enter') { const f = $('popList').querySelector('.it'); if (f) f.click(); } };
+function manualAdd() {
+  const v = $('popManual').value.trim(); if (!v || !pick) return;
+  if (pick.kind === 'items') {
+    if (!/^\d+(\+\d+)?$/.test(v)) { toast('Вещь: ID, ID+заточка (2395+6) или OID'); return; }
+    pick.b.items.push(v);
+  } else {
+    const id = parseInt(v, 10); if (!(id > 0) || String(id) !== v) { toast('Скилл: его ID, число'); return; }
+    pick.b.skills.push(id);
+  }
+  $('popManual').value = ''; changed(false); if (pick.kind === 'skills') closePick(); else renderPick();
+}
+$('popManualAdd').onclick = manualAdd;
+$('popManual').onkeydown = e => { if (e.key === 'Enter') manualAdd(); };
+
+// ===== the bot's files, looked at all the time =====
+let tick = 0, polling = false;
+setInterval(async () => {
+  if (!dir || polling) return;
+  polling = true;
+  try {
+    if (++tick % 4 === 0) await scanChars(false);
+    if (cur) {
+      if (await readGame(false)) { refreshCards(); if (pick) renderPick(); }
+      // the binds file changed outside the page (by hand / the bot's first one): read again, if nothing is waiting here
+      const f = await fileOf(cur + '.binds');
+      if (f && f.lastModified !== cfgMod && !saveT && !saving) {
+        const text = decode(await f.arrayBuffer());
+        cfgMod = f.lastModified;
+        if (parseCfgText(text) !== cfgText()) { cfg = parseCfg(text); cfgSaved = cfgText(); renderAll(); toast('Файл биндов изменился снаружи — показан новый'); }
+      }
+      botState();
+    }
+  } finally { polling = false; }
+}, 1500);
+function parseCfgText(text) { const keep = cfg; cfg = parseCfg(text); const t = cfgText(); cfg = keep; return t; }
+
+start();
+</script>
+</body>
+</html>

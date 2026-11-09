@@ -23,6 +23,7 @@ procedure ChatMenuStart(MenuName: string);     // packet hooks on, outgoing chat
 procedure ChatMenuWords(Words: string);        // words that are commands without "!" ('r p u s')
 procedure ChatMenuOnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
 procedure ChatSay(Text: string);               // a fake party message from MenuName (only we see it)
+procedure ChatSayFrom(Name, Text: string);     // a fake party message from Name - no menu needed for it
 function ChatCommand(): string;                // next command typed (lower case, no "!"); '' = none
 
 implementation
@@ -102,9 +103,14 @@ begin
 end;
 
 // CreatureSay as this server sends it: objectId, chat type, name, -1, text
+procedure ChatSayFrom(Name, Text: string);
+begin
+  Engine.SendToClient('4A' + CmHexD(0) + CmHexD(CM_PARTY) + CmHexS(Name) + CmHexD(-1) + CmHexS(Text));
+end;
+
 procedure ChatSay(Text: string);
 begin
-  Engine.SendToClient('4A' + CmHexD(0) + CmHexD(CM_PARTY) + CmHexS(CmName) + CmHexD(-1) + CmHexS(Text));
+  ChatSayFrom(CmName, Text);
 end;
 
 procedure CmPush(Cmd: string);

@@ -1,0 +1,282 @@
+uses SysUtils, Classes;
+
+// Equip sniffer: how the custom gear UI puts items on. Run it, wait for "ready" in the chat, then in the
+// game do the steps SLOWLY (3-5 s apart):
+//   1) put a set on with the custom UI;  2) another set;  3) one item on by hand from the inventory
+//   (double click - to compare with the plain way);  4) wait 2 s and stop the script.
+// Log file: Library\Logs\equip_sniff_<time>.log (the path is printed at the start):
+//   BAG  - the equippable items in the bag at the start: OID, item ID, slot, on/off, enchant, name
+//   CLI  - every client packet (but movement / position / ping): opcode, 2nd opcode, size, hex, and the
+//          4 bytes in it that are the OID of an item in the bag / the item ID of an equippable one / our OID
+//   SRV  - server packets within 2 s after a client packet (at most 40 of them), the same way
+//   EQ   - an item put on / taken off (as the bot sees the bag)
+
+const
+  SRV_WINDOW_MS = 2000;   // server packets this long after a client packet are logged
+  SRV_MAX       = 40;     // ... at most this many
+  HEX_MAX       = 400;    // bytes of a packet shown as hex
+  SCAN_MAX      = 400;    // bytes of a packet looked through for OIDs / item IDs
+  CACHE_MAX     = 400;    // items of the bag kept for that
+
+var
+  SnLog: TStringList;
+  LogPath: string;
+  LogBusy, LogDirty: boolean;
+  SavedAt: cardinal;
+  // the bag (read by the packet hooks: numbers only)
+  CacheOID, CacheID, CachePart: array[0..399] of integer;
+  CacheOn: array[0..399] of boolean;
+  CacheN: integer;
+  // items on (the last look) and the new look
+  EqOID, EqID, EqPart: array[0..63] of integer;
+  EqName: array[0..63] of string;
+  EqN: integer;
+  NewOID, NewID, NewPart: array[0..63] of integer;
+  NewName: array[0..63] of string;
+  NewN: integer;
+  CliAt: cardinal;
+  SrvN: integer;
+
+// ===================== raw packet reading =====================
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+function ToHex(Data: Pointer; Size: integer): string;
+var i, n: integer;
+begin
+  result := '';
+  n := Size;
+  if n > HEX_MAX then n := HEX_MAX;
+  for i := 0 to n - 1 do
+    result := result + IntToHex(RdByte(Data, i), 2);
+  if Size > n then result := result + '...';
+end;
+
+// ===================== the log =====================
+
+procedure AddLine(S: string);
+var n: integer;
+begin
+  n := 0;
+  while LogBusy and (n < 200000) do Inc(n);
+  LogBusy := true;
+  SnLog.Add(FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
+  LogDirty := true;
+  LogBusy := false;
+end;
+
+procedure SaveLog();
+var n: integer;
+begin
+  SavedAt := GetTickCount;
+  if not LogDirty then exit;
+  n := 0;
+  while LogBusy and (n < 200000) do Inc(n);
+  LogBusy := true;
+  LogDirty := false;
+  try
+    SnLog.SaveToFile(LogPath);
+  except
+  end;
+  LogBusy := false;
+end;
+
+// every 4 bytes of the packet that are the OID of an item in the bag, the item ID of an equippable
+// one, or our own OID: ' @offset=...'
+function Matches(Data: Pointer; Size: integer): string;
+var off, k, V, n, Me: integer;
+begin
+  result := '';
+  n := Size;
+  if n > SCAN_MAX then n := SCAN_MAX;
+  Me := User.OID;
+  for off := 0 to n - 4 do begin
+    V := RdInt(Data, off);
+    if (V = 0) or (V = -1) then continue;
+    if V = Me then begin
+      result := result + ' @' + IntToStr(off) + '=MY_OID';
+      continue;
+    end;
+    for k := 0 to CacheN - 1 do begin
+      if CacheOID[k] = V then begin
+        result := result + ' @' + IntToStr(off) + '=OID(item ' + IntToStr(CacheID[k]) + ' slot $' +
+          IntToHex(CachePart[k], 4);
+        if CacheOn[k] then result := result + ' on)' else result := result + ' off)';
+        break;
+      end;
+      if (CachePart[k] <> 0) and (CacheID[k] = V) then begin
+        result := result + ' @' + IntToStr(off) + '=itemID ' + IntToStr(V) + '?';
+        break;
+      end;
+    end;
+  end;
+end;
+
+// ===================== packet hooks =====================
+
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var M: string;
+begin
+  if (ID1 = $0F) or (ID1 = $59) or (ID1 = $B1) then exit;   // movement, position, ping
+  M := Matches(Data, Size);
+  AddLine('CLI op=' + IntToHex(ID1, 2) + ' op2=' + IntToHex(ID2, 2) + ' size=' + IntToStr(Size) +
+    ' hex=' + ToHex(Data, Size) + M);
+  CliAt := GetTickCount;
+  SrvN := 0;
+  Engine.Msg('[Cli]', 'op=' + IntToHex(ID1, 2) + ' op2=' + IntToHex(ID2, 2) + ' size=' + IntToStr(Size) + M, 128);
+end;
+
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if CliAt = 0 then exit;
+  if GetTickCount - CliAt > SRV_WINDOW_MS then exit;
+  if SrvN >= SRV_MAX then exit;
+  Inc(SrvN);
+  AddLine('    SRV op=' + IntToHex(ID1, 2) + ' op2=' + IntToHex(ID2, 2) + ' size=' + IntToStr(Size) +
+    ' hex=' + ToHex(Data, Size) + Matches(Data, Size));
+end;
+
+// ===================== the bag =====================
+
+function BagName(OID: integer): string;
+var i: integer;
+  It: TL2Item;
+begin
+  result := '?';
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.OID = OID then begin
+      result := It.Name + ' +' + IntToStr(It.EnchantLevel);
+      exit;
+    end;
+  end;
+end;
+
+// the equippable items of the bag into the log
+procedure DumpBag();
+var i, OID, ID, Part, Cnt: integer;
+  It: TL2Item;
+  S: string;
+begin
+  Cnt := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    Part := It.BodyPart;
+    if Part = 0 then continue;
+    OID := It.OID;
+    ID := It.ID;
+    if It.Equipped then S := 'ON ' else S := 'off';
+    AddLine('BAG ' + S + ' OID=' + IntToStr(OID) + ' (hex ' + IntToHex(OID, 8) + ') ID=' + IntToStr(ID) +
+      ' slot=$' + IntToHex(Part, 4) + ' ' + It.Name + ' +' + IntToStr(It.EnchantLevel));
+    Inc(Cnt);
+  end;
+  AddLine('BAG ' + IntToStr(Cnt) + ' equippable items, ' + IntToStr(Inventory.User.Count) + ' stacks in all; my OID=' +
+    IntToStr(User.OID));
+end;
+
+// the bag into the cache (for the packet hooks) + the items put on / taken off since the last look
+procedure LookAtBag(First: boolean);
+var i, j, n, OID, ID, Part: integer;
+  IsOn, Found: boolean;
+  It: TL2Item;
+begin
+  n := 0;
+  NewN := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    OID := It.OID;
+    ID := It.ID;
+    Part := It.BodyPart;
+    IsOn := It.Equipped;
+    if n < CACHE_MAX then begin
+      CacheOID[n] := OID;
+      CacheID[n] := ID;
+      CachePart[n] := Part;
+      CacheOn[n] := IsOn;
+      Inc(n);
+    end;
+    if IsOn and (NewN < 64) then begin
+      NewOID[NewN] := OID;
+      NewID[NewN] := ID;
+      NewPart[NewN] := Part;
+      NewName[NewN] := '';
+      Inc(NewN);
+    end;
+  end;
+  CacheN := n;
+  // put on: on now, not on the last time (its name is read only then)
+  for i := 0 to NewN - 1 do begin
+    Found := false;
+    for j := 0 to EqN - 1 do
+      if EqOID[j] = NewOID[i] then begin
+        Found := true;
+        NewName[i] := EqName[j];
+        break;
+      end;
+    if not Found then begin
+      NewName[i] := BagName(NewOID[i]);
+      if not First then
+        AddLine('EQ  ON  ' + NewName[i] + ' (ID ' + IntToStr(NewID[i]) + ', OID ' + IntToStr(NewOID[i]) +
+          ', slot $' + IntToHex(NewPart[i], 4) + ')');
+    end;
+  end;
+  // taken off: on the last time, not now
+  for j := 0 to EqN - 1 do begin
+    Found := false;
+    for i := 0 to NewN - 1 do
+      if NewOID[i] = EqOID[j] then begin
+        Found := true;
+        break;
+      end;
+    if not Found then
+      AddLine('EQ  OFF ' + EqName[j] + ' (ID ' + IntToStr(EqID[j]) + ', OID ' + IntToStr(EqOID[j]) +
+        ', slot $' + IntToHex(EqPart[j], 4) + ')');
+  end;
+  for i := 0 to NewN - 1 do begin
+    EqOID[i] := NewOID[i];
+    EqID[i] := NewID[i];
+    EqPart[i] := NewPart[i];
+    EqName[i] := NewName[i];
+  end;
+  EqN := NewN;
+end;
+
+begin
+  SnLog := TStringList.Create;
+  LogPath := Script.Path + '..\Logs\equip_sniff_' + FormatDateTime('mmdd_hhnnss', Now) + '.log';
+  AddLine('equip sniffer started');
+  try
+    SnLog.SaveToFile(LogPath);
+  except
+    LogPath := Script.Path + 'equip_sniff_' + FormatDateTime('mmdd_hhnnss', Now) + '.log';   // no Library\Logs
+  end;
+  Engine.Msg('[Sniff]', 'Log: ' + LogPath, 128);
+
+  Engine.SendToServer('14');   // RequestItemList: a fresh bag
+  Delay(1500);
+  DumpBag();
+  LookAtBag(true);
+  SaveLog();
+
+  Engine.SendActID(2);         // packet hooks on (as packet_logger)
+  Engine.Msg('[Sniff]', 'ready: put the sets on with the custom UI, 3-5 s apart; wait 2 s before stopping', 128);
+  while Delay(300) do begin
+    LookAtBag(false);
+    if GetTickCount - SavedAt >= 1000 then SaveLog();
+  end;
+end.

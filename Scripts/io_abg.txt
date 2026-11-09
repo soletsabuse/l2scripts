@@ -7,7 +7,7 @@ uses SpotFarm in 'spot_farm.pas';
 
 begin
   // account: log in at start and after a disconnect (remove the line = no auto login)
-   SetLogin('JUQqwer', 'ASD123qwe');
+   SetLogin('XBAqwer', 'ASD123qwe');
 
   SetZone('abg_io.zmap');                                    // Library\Zones
   // bot interface ON while farming (the script fights, the interface deletes junk / drinks potions):

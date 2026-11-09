@@ -1,0 +1,1542 @@
+uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
+
+// Equip binds: a key puts items on and, if the bind has skills, casts them and puts back what was on:
+//   a set     Ctrl+1 -> the Majestic set on
+//   a combo   Alt+Q  -> a dagger on, a skill of it, the bow (and its arrows) back
+//   a skill   Alt+W  -> only a skill (or several, one after another)
+//   on self   (self=1, a combo) -> we are targeted for the skills (a buff that wants this weapon) and
+//             stay the target; what was on goes back
+//   safe cast (safe=1, a combo / a skill, on self too) -> once its last skill is being cast, the target is dropped as
+//             the X of the target window does (RequestTargetCanceld $48 unselect=1: the cast goes on)
+//   + attack  (attack=1, any bind) -> at the end the auto attack at the target (Engine.Attack), if there
+//             is one: a weapon + attack, a set + attack, a combo + attack (after what was on is back)
+// The binds are made in the page Library\Binds\binds.html (open it in Chrome / Edge). It writes
+// Library\Binds\<character>.binds; this script reads that file on the fly (a change counts within a
+// second, no restart). The script writes Library\Binds\<character>.game.json for the page: the items
+// that can be put on, the skills, and what it made of the binds file (how many binds, the errors).
+//
+// Putting on is done the way the custom gear UI of the server does it (sniffed with equip_sniffer):
+// one UseItem 0x19 [item OID][0] per item. Only puts on: an item on already is skipped (a UseItem on
+// it would take it off). The hand weapon goes first, the rest after it (a bow puts its arrows on by
+// itself). An item still not on in 1.5 s -> a fresh bag from the server and its UseItem once more.
+// A combo: its first skill not there / in reuse -> nothing is done. The skill is sent until it starts
+// (its reuse / the cast is seen), the cast is waited for, then what was on before goes back on.
+// "needs a target" (need_target=1): no target (or we / a dead one) -> nothing is done; the target lost
+// while the skill is being sent -> it is not sent any more, what was on goes back at once.
+// A move request of ours (a click on the ground / the move keys: MoveBackwardToLocation $0F) while a
+// skill of a bind is being sent / cast cancels it: no more skill (the server would run us to the target),
+// what was on goes back at once, no attack. Putting on is not cancelled by moving.
+// Hold target (hold_target=1, the page: general): the target knocked off / switched not by us -> it is
+// targeted again. A target picked by hand is the one held from then on: a click / an attack (Action $1F /
+// AttackRequest $01), or any other target switch right after a packet of ours (/nexttarget, /nexttarget2,
+// /assist ...: ACT_MS; not the frequent ones - moving, position, ping, items, skills). Esc
+// (RequestTargetCanceld $48) that drops the target holds none; a target dropped with no Esc comes back. A dead one / one not
+// seen for HOLD_FORGET_MS is not held; a skill on self holds none (we stay the target).
+// No queue: a bind key pressed while a bind runs cuts that one short and only the last key pressed is
+// done. What was on before a combo cut short (its own weapon is on now) still comes back: the next bind
+// puts it back too (all of it if it puts back itself, else what is not in the slots it puts on).
+// A key works only while the game window of THIS character is the active one. Plain letters fire
+// while typing in the game chat too - better a key with Ctrl / Alt / Shift.
+// What went on is written as a fake PARTY chat message (only you see it; on / off and the sender
+// name are set in the page).
+
+const
+  KEY_POLL_MS   = 30;       // the keys are looked at this often
+  MOD_GRACE_MS  = 300;      // a look: Ctrl / Shift / Alt let go this little before the key still count
+  REPEAT_MS     = 400;      // key events: a held key repeats - a new press only after this long without one
+  AGAIN_MS      = 300;      // the same key caught again this soon after its bind started / ended = the same press
+  CHECK_MS      = 1500;     // the items sent must be on within this
+  REFRESH_MS    = 1500;     // ... not all on: a fresh bag, wait this long for it
+  STEP_MS       = 20;       // the waits look this often
+  OID_MIN       = 10000000; // an item number this big is an OID, smaller - an item ID
+  MAX_BINDS     = 32;
+  CFG_CHECK_MS  = 1000;     // the binds file is read this often (changed -> the binds anew)
+  GAME_CHECK_MS = 2000;     // the bag / the skills are looked at this often (changed -> the .game.json anew)
+  READY_MS      = 400;      // a skill with less reuse left than this counts as ready (the server queues it)
+  FIRE_MS       = 2500;     // a skill sent must start within this (a run to the target in it)
+  RESEND_MS     = 150;      // ... until then it is sent again this often
+  CAST_MAX_MS   = 8000;     // the end of a cast is waited for at most this long
+  MOVE_GRACE_MS = 150;      // a move request this soon after the skill was first sent: sent before the key
+  PICK_MS       = 1000;     // hold target: a target picked by hand must be ours within this (else not a target)
+  HOLD_RETRY_MS = 300;      // ... the held one is targeted again at most this often
+  HOLD_FORGET_MS = 30000;   // ... not seen this long -> not held any more
+  HOLD_SAY_MS   = 3000;     // ... "back on it" said at most this often
+  ACT_MS        = 500;      // ... a switch to another target this soon after a packet of ours: picked by hand
+  CHAT_MAX      = 200;      // a longer chat text is split into several messages
+  BINDS_DIR     = '..\Binds\';   // from Library\Scripts: the page and the files
+
+function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
+function GetForegroundWindow: cardinal; stdcall; external 'user32.dll';
+
+var
+  // the binds. Fixed arrays: the key thread reads BKey / BindN (numbers only) while the file is read anew
+  BindN: integer;
+  BKey: array[0..31] of integer;                     // VK + 256 * (1 Ctrl, 2 Shift, 4 Alt)
+  BName, BKeyText, BItems, BSkills: array[0..31] of string;   // BItems / BSkills: '|' between
+  BBack, BCtrl, BShift, BNeedTgt, BAttack, BSelf, BSafe: array[0..31] of boolean;
+  BDelay: array[0..31] of integer;                   // ms between the end of the cast and putting back
+  BWas: array[0..31] of boolean;                     // a look: the key was down the last time
+  NextBind, NextSrc: integer;                        // the last bind key pressed (-1 none; by 1 a key event, 2 a look)
+  CurBind, LastBind: integer;                        // the bind running now (-1 none) / done last
+  CurAt, LastAt: cardinal;                           // ... it started / ended then
+  EvAt: array[0..31] of cardinal;                    // the last key event of the bind key
+  ModAt: array[0..2] of cardinal;                    // Ctrl / Shift / Alt last seen down
+  OddCode, OddBind, OddTold: integer;                // a key event with the code of a bind key that is not down
+  MoveWatch, MoveCut: boolean;                       // a skill being sent / cast: a move request of ours cancels it
+  HoldOn: boolean;                                   // hold target (the binds file: hold_target=1)
+  Held: integer;                                     // ... the target held (0 none)
+  PickOIDNow: integer;                               // ... a target picked by hand (0: Esc - none), not ours yet
+  PickAt: cardinal;                                  // ... picked then (0: nothing picked)
+  HoldTryAt, HoldSeenAt, HoldSaidAt: cardinal;
+  HoldBusy: boolean;                                 // ... targeted again, the server has not answered yet
+  HoldSay: string;                                   // ... "back on it" for the party chat (main thread)
+  ActAt: cardinal;                                   // ... a packet of ours (not a frequent one) was sent then
+  ActID1, ActID2, ActTold: integer;                  // ... its opcodes; "picked by packet" said this many times
+  CancelData, CancelTold: integer;                   // a target cancel of ours ($48): its 2 bytes + 1 (0 none new)
+  WatchAt: cardinal;                                 // ... watched since
+  // the binds file is read into these first
+  TOn, TBack, TCtrl, TShift, TNeedTgt, TAttack, TSelf, TSafe: array[0..31] of boolean;
+  TKey, TName, TItems, TSkills: array[0..31] of string;
+  TDelay: array[0..31] of integer;
+  ChatOn: boolean;
+  ChatName: string;
+  // the files
+  CharName, CfgPath, CfgFile, GamePath: string;
+  CfgText, CfgReadAt, CfgErrJson: string;
+  CfgSeen, CfgMissTold, GameWriteTold: boolean;
+  GameSigWas: integer;
+  // one press
+  PickOID: array[0..63] of integer;                  // items of the bind picked already (copies)
+  PickN: integer;
+  SendOID, SendPart: array[0..63] of integer;        // items to put on
+  SendName: array[0..63] of string;
+  SendN: integer;
+  KeepOID, KeepPart: array[0..63] of integer;        // the gear to come back to: what was on before a combo that
+  KeepN: integer;                                    // puts back (kept on when a bind is cut short)
+  HaveKeep: boolean;
+  SkIDs: array[0..15] of integer;                    // the skills of the bind
+  SkN: integer;
+
+// ===================== keys (as pvp_binds) =====================
+
+procedure SplitTo(S, Sep: string; L: TStringList);
+var p: integer;
+begin
+  L.Clear;
+  if S = '' then exit;
+  while true do begin
+    p := Pos(Sep, S);
+    if p = 0 then begin L.Add(S); break; end;
+    L.Add(Copy(S, 1, p - 1));
+    Delete(S, 1, p);
+  end;
+end;
+
+function KeyVK(S: string): integer;
+var n: integer;
+begin
+  result := 0;
+  S := UpperCase(Trim(S));
+  if S = '' then exit;
+  if (Length(S) = 1) and (((S[1] >= 'A') and (S[1] <= 'Z')) or ((S[1] >= '0') and (S[1] <= '9'))) then begin
+    result := Ord(S[1]);
+    exit;
+  end;
+  if (Length(S) >= 2) and (S[1] = 'F') then begin
+    n := StrToIntDef(Copy(S, 2, 2), 0);
+    if (n >= 1) and (n <= 24) then begin result := $6F + n; exit; end;
+  end;
+  if Copy(S, 1, 3) = 'NUM' then begin
+    n := StrToIntDef(Copy(S, 4, 1), -1);
+    if (n >= 0) and (Length(S) = 4) then begin result := $60 + n; exit; end;
+  end;
+  if S = 'SPACE' then result := $20
+  else if S = 'TAB' then result := $09
+  else if S = 'ENTER' then result := $0D
+  else if S = 'ESC' then result := $1B
+  else if S = 'BACKSPACE' then result := $08
+  else if S = 'INSERT' then result := $2D
+  else if S = 'DELETE' then result := $2E
+  else if S = 'HOME' then result := $24
+  else if S = 'END' then result := $23
+  else if S = 'PAGEUP' then result := $21
+  else if S = 'PAGEDOWN' then result := $22
+  else if S = 'UP' then result := $26
+  else if S = 'DOWN' then result := $28
+  else if S = 'LEFT' then result := $25
+  else if S = 'RIGHT' then result := $27
+  else if S = 'MOUSE3' then result := $04
+  else if S = 'MOUSE4' then result := $05
+  else if S = 'MOUSE5' then result := $06
+  else if S = '~' then result := $C0
+  else if S = 'MINUS' then result := $BD
+  else if S = 'EQUAL' then result := $BB
+  else if S = 'LBRACKET' then result := $DB
+  else if S = 'RBRACKET' then result := $DD
+  else if S = 'SEMICOLON' then result := $BA
+  else if S = 'QUOTE' then result := $DE
+  else if S = 'COMMA' then result := $BC
+  else if S = 'PERIOD' then result := $BE
+  else if S = 'SLASH' then result := $BF
+  else if S = 'BACKSLASH' then result := $DC
+  else if S = 'NUMMUL' then result := $6A
+  else if S = 'NUMADD' then result := $6B
+  else if S = 'NUMSUB' then result := $6D
+  else if S = 'NUMDOT' then result := $6E
+  else if S = 'NUMDIV' then result := $6F;
+end;
+
+// "Ctrl+Shift+Z" -> VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = cannot read it
+function ParseKey(S: string): integer;
+var L: TStringList;
+  i, Md, VK: integer;
+  P: string;
+begin
+  result := 0;
+  Md := 0;
+  VK := 0;
+  L := TStringList.Create;
+  SplitTo(Trim(S), '+', L);
+  for i := 0 to L.Count - 1 do begin
+    P := UpperCase(Trim(L[i]));
+    if P = 'CTRL' then Md := Md or 1
+    else if P = 'SHIFT' then Md := Md or 2
+    else if P = 'ALT' then Md := Md or 4
+    else VK := KeyVK(P);
+  end;
+  L.Free;
+  if VK <> 0 then result := VK + 256 * Md;
+end;
+
+function KeyDown(VK: integer): boolean;
+begin
+  result := (GetAsyncKeyState(VK) and $8000) <> 0;
+end;
+
+// modifier m: 0 Ctrl, 1 Shift, 2 Alt
+function ModVK(m: integer): integer;
+begin
+  if m = 0 then result := $11
+  else if m = 1 then result := $10
+  else result := $12;
+end;
+
+// the modifiers of a bind key (Md: 1 Ctrl, 2 Shift, 4 Alt): the needed ones down (Grace: or seen down
+// within MOD_GRACE_MS - let go a moment before the key), the others up
+function ModsOk(Md: integer; Grace: boolean): boolean;
+var m: integer;
+  DownNow, Recent: boolean;
+begin
+  result := false;
+  for m := 0 to 2 do begin
+    DownNow := KeyDown(ModVK(m));
+    if (Md and (1 shl m)) <> 0 then begin
+      Recent := Grace and (ModAt[m] <> 0) and (GetTickCount - ModAt[m] <= MOD_GRACE_MS);
+      if not (DownNow or Recent) then exit;
+    end else if DownNow then exit;
+  end;
+  result := true;
+end;
+
+// a bind key pressed (Src: 1 a game key event, 2 a look): it is done next, a bind running now is cut short
+// (the last key pressed wins, no queue). The same press caught twice (a look + a key event) is one.
+// Numbers only (both threads)
+procedure Trigger(s, Src: integer);
+begin
+  if (s = CurBind) and (GetTickCount - CurAt < AGAIN_MS) then exit;
+  if (CurBind < 0) and (s = LastBind) and (GetTickCount - LastAt < AGAIN_MS) then exit;
+  NextSrc := Src;
+  NextBind := s;
+end;
+
+// a look at the keys (main loop, every KEY_POLL_MS): a bind key down now and not the last time, or
+// tapped between two looks (the low bit: pressed since the last look) -> its bind
+procedure PollKeys();
+var s, m, VK, St: integer;
+  Focused, DownNow, Tapped: boolean;
+begin
+  for m := 0 to 2 do
+    if KeyDown(ModVK(m)) then ModAt[m] := GetTickCount;
+  Focused := GetForegroundWindow() = Engine.GameWindow;   // only in the game window of this character
+  for s := 0 to BindN - 1 do begin
+    VK := BKey[s] mod 256;
+    St := GetAsyncKeyState(VK);
+    DownNow := (St and $8000) <> 0;
+    Tapped := (St and 1) <> 0;
+    if Focused and (not BWas[s]) and (DownNow or Tapped) and ModsOk(BKey[s] div 256, true) then
+      Trigger(s, 2);
+    BWas[s] := DownNow;
+  end;
+end;
+
+// a live target that is not we
+function HasTarget(): boolean;
+var T: TL2Live;
+begin
+  result := false;
+  try
+    T := User.Target;
+    if T = nil then exit;
+    if T.OID = User.OID then exit;
+    if T.Dead then exit;
+    result := true;
+  except
+    result := false;
+  end;
+end;
+
+// OID of the target now, 0 = none
+function TargetOID(): integer;
+begin
+  result := 0;
+  try
+    if User.Target <> nil then result := User.Target.OID;
+  except
+    result := 0;
+  end;
+end;
+
+// ===================== hold target =====================
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+// a player / an NPC with this OID is seen (Dead: it is dead)
+function FindLive(OID: integer; var Dead: boolean): boolean;
+var i: integer;
+begin
+  result := false;
+  Dead := false;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      Dead := CharList(i).Dead;
+      result := true;
+      exit;
+    end;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
+    if NpcList(i).OID = OID then begin
+      Dead := NpcList(i).Dead;
+      result := true;
+      exit;
+    end;
+end;
+
+function LiveName(OID: integer): string;
+var i: integer;
+begin
+  result := IntToStr(OID);
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := CharList(i).Name;
+      exit;
+    end;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
+    if NpcList(i).OID = OID then begin
+      result := NpcList(i).Name;
+      exit;
+    end;
+end;
+
+// hold target, every look (main thread): a target picked by hand becomes the held one once it is ours;
+// the held one knocked off / switched -> targeted again (seen and alive)
+procedure HoldTick();
+var Cur: integer;
+  Dead: boolean;
+  Nm: string;
+begin
+  if not HoldOn then exit;
+  Cur := TargetOID();
+  if PickAt <> 0 then begin   // picked by hand: wait for the server, do not fight it
+    if Cur = PickOIDNow then begin
+      if Cur = User.OID then Held := 0 else Held := Cur;
+      PickAt := 0;
+      HoldBusy := false;
+      HoldSeenAt := GetTickCount;
+    end else if GetTickCount - PickAt > PICK_MS then PickAt := 0   // not a target (an item picked up ...)
+    else exit;
+  end;
+  if (Held = 0) or (Cur = Held) then begin
+    HoldBusy := false;
+    if Held <> 0 then HoldSeenAt := GetTickCount;
+    if (Held = 0) and (Cur <> 0) and (Cur <> User.OID) then begin   // no target held, one picked now: held
+      Held := Cur;
+      HoldSeenAt := GetTickCount;
+    end;
+    exit;
+  end;
+  if (Cur <> 0) and (ActAt <> 0) and (GetTickCount - ActAt <= ACT_MS) then begin
+    // switched to another one right after a packet of ours: picked by hand (/nexttarget ...)
+    if Cur = User.OID then Held := 0 else Held := Cur;
+    HoldSeenAt := GetTickCount;
+    if ActTold < 5 then begin
+      Inc(ActTold);
+      if ActID1 = $D0 then Nm := '$D0:' + IntToHex(ActID2, 2) else Nm := '$' + IntToHex(ActID1, 2);
+      Engine.Msg('[Equip]', 'Hold target: now ' + LiveName(Cur) + ' - picked by hand (packet ' + Nm + ')', 0);
+    end;
+    exit;
+  end;
+  if GetTickCount - HoldTryAt < HOLD_RETRY_MS then exit;
+  HoldTryAt := GetTickCount;
+  if not FindLive(Held, Dead) then begin   // not seen now (hidden / away): when it is seen again
+    HoldBusy := false;
+    if GetTickCount - HoldSeenAt > HOLD_FORGET_MS then Held := 0;
+    exit;
+  end;
+  HoldSeenAt := GetTickCount;
+  if Dead then begin
+    Held := 0;
+    HoldBusy := false;
+    exit;
+  end;
+  HoldBusy := true;
+  Engine.SetTarget(Held);
+  if GetTickCount - HoldSaidAt >= HOLD_SAY_MS then begin
+    HoldSaidAt := GetTickCount;
+    Nm := LiveName(Held);
+    Engine.Msg('[Equip]', 'Hold target: back on ' + Nm, 0);
+    HoldSay := Nm;   // the party chat: by the main loop (PartySay is below)
+  end;
+end;
+
+// the keys and the held target: every step of the waits
+procedure Idle();
+begin
+  PollKeys();
+  HoldTick();
+end;
+
+// a live target now - or the held one, targeted again within 400 ms
+function TargetSoon(): boolean;
+var Waited: integer;
+begin
+  result := HasTarget();
+  if result or (not HoldOn) or (Held = 0) then exit;
+  HoldTryAt := 0;
+  Waited := 0;
+  while (Waited < 400) and (not result) do begin
+    HoldTick();
+    Delay(STEP_MS);
+    Waited := Waited + STEP_MS;
+    result := HasTarget();
+  end;
+end;
+
+// a skill on self: we are the target and stay it (no target held)
+procedure TargetSelf();
+begin
+  Held := 0;
+  PickAt := 0;
+  HoldBusy := false;
+  if TargetOID() <> User.OID then Engine.SetTarget(User.OID);
+end;
+
+// a new bind key was pressed: the bind running now is cut short
+function Interrupted(): boolean;
+begin
+  result := NextBind >= 0;
+end;
+
+// waits Ms looking at the keys; less if a new bind key is pressed
+procedure Pause(Ms: integer);
+var Waited: integer;
+begin
+  Waited := 0;
+  while (Waited < Ms) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+end;
+
+// the key events of the game window (the bot's laKey, p1 = the key): a bind key -> its bind, if that key
+// is really down / was just tapped (an event once came with the code of F5 for a press of F3 - such a
+// one is only told by the main loop). A held key repeats: a new press only after REPEAT_MS without its
+// events. Numbers only here (no strings: two threads building strings at once crash PaxScript)
+procedure KeyEvents_Thread();
+var KeyCode, P2, s, Code, St: integer;
+begin
+  while true do begin
+    KeyCode := 0;
+    if Engine.WaitAction([laKey], KeyCode, P2, 1000) <> laKey then continue;
+    if GetForegroundWindow() <> Engine.GameWindow then continue;
+    for s := 0 to BindN - 1 do begin
+      Code := BKey[s];
+      if KeyCode <> Code mod 256 then continue;
+      St := GetAsyncKeyState(Code mod 256);
+      if (St and $8001) = 0 then begin   // not down, not tapped: not a press of this key
+        OddCode := KeyCode;
+        OddBind := s + 1;
+        continue;
+      end;
+      if GetTickCount - EvAt[s] > REPEAT_MS then
+        if ModsOk(Code div 256, false) then Trigger(s, 1);
+      EvAt[s] := GetTickCount;
+    end;
+  end;
+end;
+
+// the client's own packets (hooks on: Engine.SendActID(2)). Numbers only (the packet thread):
+//   $0F a move request (MoveBackwardToLocation, the mouse / the keys) while a skill of a bind is being
+//       sent / cast -> that bind is cancelled
+//   $1F Action / $01 AttackRequest: a target picked by hand -> held from now (hold target)
+//   $48 RequestTargetCanceld (Esc): if the target goes, none is held
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if ID1 = $0F then begin
+    if MoveWatch and (GetTickCount - WatchAt > MOVE_GRACE_MS) then MoveCut := true;
+    exit;
+  end;
+  if (ID1 = $1F) or (ID1 = $01) then begin
+    if Size >= 4 then begin
+      PickOIDNow := RdInt(Data, 0);
+      PickAt := GetTickCount;
+    end;
+    exit;
+  end;
+  if ID1 = $48 then begin
+    PickOIDNow := 0;
+    PickAt := GetTickCount;
+    if Size >= 2 then CancelData := RdByte(Data, 0) * 256 + RdByte(Data, 1) + 1;
+    exit;
+  end;
+  // any other packet of ours but the frequent ones (position, ping, items, skills, the skill reuse ask):
+  // a target switch right after it is ours (/nexttarget ...)
+  if (ID1 = $59) or (ID1 = $B1) or (ID1 = $19) or (ID1 = $14) or (ID1 = $39) or (ID1 = $A6) then exit;
+  ActID1 := ID1;
+  ActID2 := ID2;
+  ActAt := GetTickCount;
+end;
+
+// ===================== text =====================
+
+function JsonStr(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '"';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if (C = '"') or (C = '\') then result := result + '\' + C
+    else if Ord(S[i]) < 32 then result := result + ' '
+    else result := result + C;
+  end;
+  result := result + '"';
+end;
+
+// a fake party chat message from ChatName (only we see it); a long one split after a ', '
+procedure PartySay(Text: string);
+var i, p: integer;
+begin
+  if not ChatOn then exit;
+  while Length(Text) > CHAT_MAX do begin
+    p := 0;
+    for i := CHAT_MAX - 1 downto 20 do
+      if Copy(Text, i, 2) = ', ' then begin
+        p := i;
+        break;
+      end;
+    if p = 0 then begin
+      ChatSayFrom(ChatName, Copy(Text, 1, CHAT_MAX));
+      Delete(Text, 1, CHAT_MAX);
+    end else begin
+      ChatSayFrom(ChatName, Copy(Text, 1, p));
+      Delete(Text, 1, p + 1);
+    end;
+  end;
+  if Text <> '' then ChatSayFrom(ChatName, Text);
+end;
+
+// into the bot's chat and the party chat
+procedure SayAll(Text: string);
+begin
+  Engine.Msg('[Equip]', Text, 128);
+  PartySay(Text);
+end;
+
+// ===================== the bag =====================
+
+function HexLE32(Value: integer): string;
+begin
+  result := IntToHex(Value and $FF, 2) +
+            IntToHex((Value shr 8) and $FF, 2) +
+            IntToHex((Value shr 16) and $FF, 2) +
+            IntToHex((Value shr 24) and $FF, 2);
+end;
+
+// UseItem 0x19: item OID, 0
+procedure SendUse(OID: integer);
+begin
+  Engine.SendToServer('19' + HexLE32(OID) + '00000000');
+end;
+
+function Picked(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to PickN - 1 do
+    if PickOID[k] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// the item of the bag for one item line, not picked for this bind yet: the copy on already first,
+// else the highest enchant. Lines: '2395+6' item ID + enchant, '2395' any enchant, '1078300251' an OID.
+// false = none in the bag
+function PickItem(Spec: string; var OID: integer; var IsOn: boolean; var ItName: string; var Part: integer): boolean;
+var i, p, ID, Ench, E, BestE, IID, O: integer;
+  ByOID, OnNow, Better: boolean;
+  It: TL2Item;
+begin
+  result := false;
+  Spec := Trim(Spec);
+  p := Pos('+', Spec);
+  if p > 0 then begin
+    ID := StrToIntDef(Trim(Copy(Spec, 1, p - 1)), 0);
+    Ench := StrToIntDef(Trim(Copy(Spec, p + 1, 10)), -1);
+  end else begin
+    ID := StrToIntDef(Spec, 0);
+    Ench := -1;
+  end;
+  if ID <= 0 then exit;
+  ByOID := ID >= OID_MIN;
+  BestE := -1;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    if Picked(O) then continue;
+    E := It.EnchantLevel;
+    if ByOID then begin
+      if O <> ID then continue;
+    end else begin
+      IID := It.ID;
+      if IID <> ID then continue;
+      if (Ench >= 0) and (E <> Ench) then continue;
+    end;
+    OnNow := It.Equipped;
+    if not result then Better := true
+    else if OnNow <> IsOn then Better := OnNow
+    else Better := E > BestE;
+    if Better then begin
+      result := true;
+      OID := O;
+      IsOn := OnNow;
+      BestE := E;
+      Part := It.BodyPart;
+      ItName := It.Name;
+      if E > 0 then ItName := ItName + ' +' + IntToStr(E);
+    end;
+  end;
+end;
+
+function IsOnNow(OID: integer): boolean;
+var i: integer;
+  It: TL2Item;
+begin
+  result := false;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.OID = OID then begin
+      result := It.Equipped;
+      exit;
+    end;
+  end;
+end;
+
+function ItemName(OID: integer): string;
+var i, E: integer;
+  It: TL2Item;
+begin
+  result := 'item ' + IntToStr(OID);
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.OID = OID then begin
+      result := It.Name;
+      E := It.EnchantLevel;
+      if E > 0 then result := result + ' +' + IntToStr(E);
+      exit;
+    end;
+  end;
+end;
+
+// the right hand / both hands: a weapon
+function IsHand(Part: integer): boolean;
+begin
+  result := (Part = $0080) or (Part = $4000);
+end;
+
+// how many of the items to put on are not on yet (Hands: of the weapons only)
+function CountOff(Hands: boolean): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to SendN - 1 do begin
+    if Hands and (not IsHand(SendPart[k])) then continue;
+    if not IsOnNow(SendOID[k]) then Inc(result);
+  end;
+end;
+
+function WaitOn(Hands: boolean; Ms: integer): boolean;
+var Waited: integer;
+begin
+  Waited := 0;
+  while (CountOff(Hands) > 0) and (Waited < Ms) and (not User.Dead) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+  result := CountOff(Hands) = 0;
+end;
+
+// the names of the items to put on that are on now (OnOnes) / not on
+function SendNames(OnOnes: boolean): string;
+var k: integer;
+begin
+  result := '';
+  for k := 0 to SendN - 1 do
+    if IsOnNow(SendOID[k]) = OnOnes then begin
+      if result <> '' then result := result + ', ';
+      result := result + SendName[k];
+    end;
+end;
+
+// one pass: the weapons first, the rest (still off) after them; the weapon waited for in between
+procedure SendPass();
+var k, Hands: integer;
+begin
+  Hands := 0;
+  for k := 0 to SendN - 1 do
+    if IsHand(SendPart[k]) and (not IsOnNow(SendOID[k])) then begin
+      SendUse(SendOID[k]);
+      Inc(Hands);
+    end;
+  if Hands > 0 then begin
+    WaitOn(true, CHECK_MS);
+    Pause(60);   // the bag update of what the weapon put on / took off by itself (arrows, a shield)
+  end;
+  if Interrupted() then exit;
+  for k := 0 to SendN - 1 do
+    if (not IsHand(SendPart[k])) and (not IsOnNow(SendOID[k])) then SendUse(SendOID[k]);
+end;
+
+// puts the items Send* on, all at once as the custom UI does (a weapon first: a bow puts its arrows on
+// by itself, a UseItem on arrows that are on would take them off). Not all on in CHECK_MS -> a fresh
+// bag and one more pass for the ones still off. true = all on. A new bind key: no more waiting
+function WearSent(Title: string): boolean;
+var Again: string;
+begin
+  result := true;
+  if SendN = 0 then exit;
+  SendPass();
+  if WaitOn(false, CHECK_MS) then exit;
+  result := false;
+  if Interrupted() then exit;
+  Engine.SendToServer('14');   // RequestItemList: a fresh bag (a UseItem on an item that is on takes it off)
+  Pause(REFRESH_MS);
+  if Interrupted() then begin
+    result := CountOff(false) = 0;
+    exit;
+  end;
+  Again := SendNames(false);
+  if Again = '' then begin
+    result := true;
+    exit;
+  end;
+  Engine.Msg('[Equip]', Title + ': not on, once more: ' + Again, 128);
+  SendPass();
+  result := WaitOn(false, CHECK_MS);
+  if (not result) and (not Interrupted()) then
+    Engine.Msg('[Equip]', Title + ': still not on - the server does not let it (casting / the slot / the class?)', 128);
+end;
+
+// the slots an item takes with the ones it clashes with: the hands (a two-hander, a shield, arrows),
+// the two earrings / rings, the full armor with the chest and the legs
+function SlotGroup(Part: integer): integer;
+begin
+  if (Part = $0080) or (Part = $0100) or (Part = $4000) then result := $4180
+  else if (Part = $8000) or (Part = $0400) or (Part = $0800) then result := $8C00
+  else if (Part and $0006) <> 0 then result := $0006
+  else if (Part and $0030) <> 0 then result := $0030
+  else result := Part;
+end;
+
+// the gear to come back to: what is on now
+procedure KeepNow();
+var i: integer;
+  It: TL2Item;
+begin
+  KeepN := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    if KeepN >= 64 then break;
+    KeepOID[KeepN] := It.OID;
+    KeepPart[KeepN] := It.BodyPart;
+    Inc(KeepN);
+  end;
+  HaveKeep := true;
+end;
+
+// the gear to come back to goes back on: its items that are off now - but not those in the slot groups
+// of Claim (put on for good by this bind). '' / 'back: ...' / 'back NOT on: ...'. Cut short by a new
+// bind key -> it stays for that bind
+function RestoreKeep(Claim: integer; Title: string): string;
+var k: integer;
+begin
+  result := '';
+  if not HaveKeep then exit;
+  SendN := 0;
+  for k := 0 to KeepN - 1 do
+    if (SendN < 64) and ((SlotGroup(KeepPart[k]) and Claim) = 0) and (not IsOnNow(KeepOID[k])) then begin
+      SendOID[SendN] := KeepOID[k];
+      SendPart[SendN] := KeepPart[k];
+      SendName[SendN] := ItemName(KeepOID[k]);
+      Inc(SendN);
+    end;
+  if SendN > 0 then begin
+    if WearSent(Title + ' back') then result := 'back: ' + SendNames(true)
+    else if Interrupted() then begin
+      result := 'back cut short';
+      exit;
+    end else result := 'back NOT on: ' + SendNames(false);
+  end;
+  HaveKeep := false;
+end;
+
+// ===================== skills =====================
+
+function SkInfo(ID: integer; var Left: integer; var SkName: string): boolean;
+var Sk: TL2Skill;
+begin
+  Left := 0;
+  SkName := 'skill ' + IntToStr(ID);
+  result := SkillList.ByID(ID, Sk);
+  if not result then exit;
+  Left := Sk.EndTime;
+  SkName := Sk.Name;
+end;
+
+function SkLeft(ID: integer): integer;
+var Sk: TL2Skill;
+begin
+  result := 0;
+  if SkillList.ByID(ID, Sk) then result := Sk.EndTime;
+end;
+
+// our cast of skill ID: ms left of it (0 = not casting it / the bot does not show it)
+// (User.Cast is a TL2Cast: read straight, as force_sounds does)
+function CastLeft(ID: integer): integer;
+var CID, Left: integer;
+begin
+  result := 0;
+  try
+    Left := User.Cast.EndTime;
+    if Left <= 0 then exit;
+    CID := User.Cast.ID;
+    if CID = ID then result := Left;
+  except
+    result := 0;
+  end;
+end;
+
+// safe cast: the target dropped as the X of the target window does (RequestTargetCanceld, unselect = 1 -
+// Esc sends 0 and that stops the cast): the cast goes on, there is nothing to run after / hit after it.
+// Hold target: as a drop by hand, none held
+procedure SafeDrop();
+begin
+  PickOIDNow := 0;
+  PickAt := GetTickCount;
+  Engine.SendToServer('480100');
+end;
+
+// casts skill ID: DUseSkill, sent again every RESEND_MS until it starts (its reuse grows / our cast of
+// it is seen), then the cast is waited for to its end. 1 = done; 0 = it did not start within FIRE_MS;
+// -1 = NeedTgt and the target is gone (not sent any more); -2 = a new bind key (not sent / waited any more);
+// -3 = a move request of ours (cancelled)
+function FireSkillRun(ID: integer; UseCtrl, UseShift, NeedTgt, Safe: boolean): integer;
+var L0, Waited, Since: integer;
+begin
+  result := 0;
+  L0 := SkLeft(ID);
+  Waited := 0;
+  Since := RESEND_MS;
+  while (Waited < FIRE_MS) and (not User.Dead) do begin
+    if Interrupted() then begin
+      result := -2;
+      exit;
+    end;
+    if MoveCut then begin
+      result := -3;
+      exit;
+    end;
+    if NeedTgt and (not HasTarget()) and (not HoldBusy) then begin
+      result := -1;
+      exit;
+    end;
+    if Since >= RESEND_MS then begin
+      Engine.DUseSkill(ID, UseCtrl, UseShift);
+      Since := 0;
+    end;
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+    Since := Since + STEP_MS;
+    if (SkLeft(ID) > L0) or (CastLeft(ID) > 0) then begin
+      result := 1;
+      break;
+    end;
+  end;
+  if result <> 1 then exit;
+  if Safe then SafeDrop();   // being cast: the target goes, the cast stays
+  Waited := 0;
+  while (CastLeft(ID) > 0) and (Waited < CAST_MAX_MS) and (not User.Dead) and (not Interrupted()) do begin
+    if MoveCut then begin
+      result := -3;
+      exit;
+    end;
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+end;
+
+// FireSkillRun with our move requests watched meanwhile (one cancels it: -3)
+function FireSkill(ID: integer; UseCtrl, UseShift, NeedTgt, Safe: boolean): integer;
+begin
+  MoveCut := false;
+  WatchAt := GetTickCount;
+  MoveWatch := true;
+  result := FireSkillRun(ID, UseCtrl, UseShift, NeedTgt, Safe);
+  MoveWatch := false;
+end;
+
+// ===================== a bind =====================
+
+// the bind's attack option: the auto attack at the target (Ctrl: at one with no flag too). 'attack' /
+// 'no target, no attack'
+function StartAttack(b: integer): string;
+begin
+  if not TargetSoon() then begin
+    result := 'no target, no attack';
+    exit;
+  end;
+  Engine.Attack(300, BCtrl[b]);
+  result := 'attack';
+end;
+
+// a set (no skills): into the party chat what went on / was on already / did not go on / is not in the
+// bag (+ After: what came after - the gear of a bind cut short before back, the attack)
+procedure SetReport(b, Already: integer; Miss, OnList, OffList, After: string);
+var Main: string;
+begin
+  Main := '';
+  if (OnList = '') and (OffList = '') and (Already > 0) then Main := BName[b] + ': all on already'
+  else if OnList <> '' then Main := BName[b] + ' on: ' + OnList;
+  if After <> '' then begin
+    if Main = '' then Main := BName[b] + ': ' + After
+    else Main := Main + ' -> ' + After;
+    Engine.Msg('[Equip]', BName[b] + ': ' + After, 0);
+  end;
+  if Main <> '' then PartySay(Main);
+  if OffList <> '' then PartySay(BName[b] + ' NOT on: ' + OffList);
+  if Miss <> '' then PartySay(BName[b] + ' not in the bag:' + Miss);
+end;
+
+procedure AddStep(var Rep: string; Step: string);
+begin
+  if Step = '' then exit;
+  if Rep <> '' then Rep := Rep + ' -> ';
+  Rep := Rep + Step;
+end;
+
+// a bind cut short by a new bind key: one that puts on for good (Claim: its slot groups) takes those
+// slots out of the gear to come back to; said what it did so far
+procedure CutShort(b, Claim: integer; Rep: string);
+var k, n, nb: integer;
+begin
+  if HaveKeep and (Claim <> 0) then begin
+    n := 0;
+    for k := 0 to KeepN - 1 do
+      if (SlotGroup(KeepPart[k]) and Claim) = 0 then begin
+        KeepOID[n] := KeepOID[k];
+        KeepPart[n] := KeepPart[k];
+        Inc(n);
+      end;
+    KeepN := n;
+  end;
+  nb := NextBind;
+  if (nb >= 0) and (nb < BindN) then AddStep(Rep, 'cut short by ' + BName[nb])
+  else AddStep(Rep, 'cut short');
+  Engine.Msg('[Equip]', BName[b] + ': ' + Rep, 0);
+  PartySay(BName[b] + ': ' + Rep);
+end;
+
+// nothing done by this bind (no target / reuse / ...): only the gear of a bind cut short before goes back
+procedure NothingDone(b: integer; Why: string);
+var Back: string;
+begin
+  Back := RestoreKeep(0, BName[b]);
+  if Back <> '' then Back := ' -> ' + Back;
+  SayAll(BName[b] + ': ' + Why + Back);
+end;
+
+procedure RunBind(b, Src: integer);
+var L: TStringList;
+  i, k, OID, Part, Already, Left, Fired, Claim: integer;
+  IsOn, AllOn, Cut, Moved: boolean;
+  ItName, Miss, How, Rep, Names, SkNm, OnList, OffList, After: string;
+begin
+  if Src = 1 then How := ' (key: game)' else How := ' (key: poll)';
+  Moved := false;
+  if User.Dead then begin
+    SayAll(BName[b] + ': dead - nothing done');
+    exit;
+  end;
+  L := TStringList.Create;
+  // the skills
+  SplitTo(BSkills[b], '|', L);
+  SkN := 0;
+  for i := 0 to L.Count - 1 do begin
+    k := StrToIntDef(Trim(L[i]), 0);
+    if (k > 0) and (SkN < 16) then begin
+      SkIDs[SkN] := k;
+      Inc(SkN);
+    end;
+  end;
+  // no target for a bind that needs one / its first skill not there / in reuse -> nothing is done
+  if (SkN > 0) and BNeedTgt[b] and (not BSelf[b]) and (not TargetSoon()) then begin
+    L.Free;
+    NothingDone(b, 'no target - nothing done');
+    exit;
+  end;
+  if SkN > 0 then begin
+    if not SkInfo(SkIDs[0], Left, SkNm) then begin
+      L.Free;
+      NothingDone(b, 'no skill ' + IntToStr(SkIDs[0]) + ' on this character - nothing done');
+      exit;
+    end;
+    if Left > READY_MS then begin
+      L.Free;
+      NothingDone(b, SkNm + ' - reuse ' + IntToStr((Left + 999) div 1000) + ' s, nothing done');
+      exit;
+    end;
+  end;
+  // the items
+  SplitTo(BItems[b], '|', L);
+  PickN := 0;
+  SendN := 0;
+  Already := 0;
+  Claim := 0;
+  Miss := '';
+  Names := '';
+  for i := 0 to L.Count - 1 do begin
+    if Trim(L[i]) = '' then continue;
+    if PickItem(L[i], OID, IsOn, ItName, Part) then begin
+      if PickN < 64 then begin
+        PickOID[PickN] := OID;
+        Inc(PickN);
+      end;
+      Claim := Claim or SlotGroup(Part);
+      if Names <> '' then Names := Names + ', ';
+      Names := Names + ItName;
+      if IsOn then Inc(Already)
+      else if SendN < 64 then begin
+        SendOID[SendN] := OID;
+        SendName[SendN] := ItName;
+        SendPart[SendN] := Part;
+        Inc(SendN);
+      end;
+    end else
+      Miss := Miss + ' ' + Trim(L[i]);
+  end;
+  L.Free;
+  if Miss <> '' then Engine.Msg('[Equip]', BName[b] + ': not in the bag:' + Miss, 128);
+  if (SkN > 0) and (PickN = 0) and (Miss <> '') then begin   // a combo with none of its items
+    NothingDone(b, 'not in the bag:' + Miss + ' - nothing done');
+    exit;
+  end;
+  // the gear to come back to: kept from a bind cut short before, else what is on now (a combo that puts back)
+  if (not HaveKeep) and (SkN > 0) and BBack[b] then KeepNow();
+  if PickN > 0 then
+    Engine.Msg('[Equip]', BName[b] + ': putting on ' + IntToStr(SendN) + ', on already ' + IntToStr(Already) + How, 0);
+  AllOn := WearSent(BName[b]);
+  OnList := SendNames(true);
+  OffList := SendNames(false);
+
+  if SkN = 0 then begin   // a set / a weapon (+ attack)
+    if Interrupted() then begin
+      CutShort(b, Claim, Names);
+      exit;
+    end;
+    After := RestoreKeep(Claim, BName[b]);   // a bind cut short before: its gear back in the other slots
+    if Interrupted() then begin
+      CutShort(b, Claim, Names);
+      exit;
+    end;
+    if BAttack[b] then begin
+      if After <> '' then After := After + ' -> ';
+      After := After + StartAttack(b);
+    end;
+    SetReport(b, Already, Miss, OnList, OffList, After);
+    exit;
+  end;
+
+  // a combo: the skills, then back
+  Rep := Names;
+  Cut := Interrupted();
+  if not Cut then begin
+    if not AllOn then
+      AddStep(Rep, 'NOT on: ' + OffList + ' - no skill')
+    else begin
+      // on self: we are the target (and stay it after)
+      if BSelf[b] then TargetSelf();
+      for k := 0 to SkN - 1 do begin
+        if not SkInfo(SkIDs[k], Left, SkNm) then begin
+          AddStep(Rep, 'no skill ' + IntToStr(SkIDs[k]));
+          continue;
+        end;
+        if (k > 0) and (Left > READY_MS) then begin
+          AddStep(Rep, SkNm + ' (reuse)');
+          continue;
+        end;
+        Fired := FireSkill(SkIDs[k], BCtrl[b] and (not BSelf[b]), BShift[b], BNeedTgt[b] and (not BSelf[b]),
+          BSafe[b] and (k = SkN - 1));   // safe cast: after the last skill only (on self too)
+        if Fired = 1 then begin
+          if BSelf[b] then SkNm := SkNm + ' on self';
+          if BSafe[b] and (k = SkN - 1) then SkNm := SkNm + ' (safe cast: target dropped)';
+          AddStep(Rep, SkNm);
+        end else if Fired = -2 then begin
+          Cut := true;
+          break;
+        end else if Fired = -3 then begin
+          AddStep(Rep, SkNm + ' cancelled: you moved');
+          Moved := true;
+          break;
+        end else begin
+          if Fired < 0 then AddStep(Rep, SkNm + ': target lost')
+          else AddStep(Rep, SkNm + ' did not go (target / range?)');
+          break;
+        end;
+      end;
+    end;
+  end;
+  if not Cut then begin
+    if BBack[b] then begin
+      if (BDelay[b] > 0) and (not Moved) then Pause(BDelay[b]);
+      if not Interrupted() then AddStep(Rep, RestoreKeep(0, BName[b]));
+    end else
+      AddStep(Rep, RestoreKeep(Claim, BName[b]));   // no back: only the gear of a bind cut short before
+    Cut := Interrupted();
+  end;
+  if Cut then begin   // cut short: what was on before stays to come back with the next bind
+    if BBack[b] then CutShort(b, 0, Rep) else CutShort(b, Claim, Rep);
+    exit;
+  end;
+  if BAttack[b] and (not Moved) then AddStep(Rep, StartAttack(b));   // moved away: no attack
+  if Miss <> '' then Rep := Rep + ' (not in the bag:' + Miss + ')';
+  Engine.Msg('[Equip]', BName[b] + ': ' + Rep + How, 0);
+  PartySay(BName[b] + ': ' + Rep);
+end;
+
+// ===================== the binds file =====================
+
+procedure CfgErr(S: string);
+begin
+  Engine.Msg('[Equip]', S, 128);
+  if CfgErrJson <> '' then CfgErrJson := CfgErrJson + ', ';
+  CfgErrJson := CfgErrJson + JsonStr(S);
+end;
+
+// the binds file: read when it changed (by the page). true = the binds were read anew
+function LoadBinds(): boolean;
+var L: TStringList;
+  i, j, n, p, k, Code: integer;
+  S, Fld, Val, Txt: string;
+  Ok, HoldWas: boolean;
+begin
+  result := false;
+  L := TStringList.Create;
+  Ok := FileExists(CfgPath);   // no exception: the bot prints even a caught one
+  if Ok then
+    try
+      L.LoadFromFile(CfgPath);
+    except
+      Ok := false;
+    end;
+  if not Ok then begin
+    L.Free;
+    if (not CfgSeen) and (not CfgMissTold) then begin
+      CfgMissTold := true;
+      Engine.Msg('[Equip]', 'No binds yet: make them in Library\Binds\binds.html (it writes ' + CfgFile + ')', 128);
+    end;
+    exit;
+  end;
+  Txt := L.Text;
+  if CfgSeen and (Txt = CfgText) then begin
+    L.Free;
+    exit;
+  end;
+  CfgSeen := true;
+  CfgText := Txt;
+  result := true;
+  CfgErrJson := '';
+  ChatOn := true;
+  ChatName := 'Equip';
+  HoldWas := HoldOn;
+  HoldOn := false;
+  n := -1;   // the bind being read; -1: the general part above the first [bind]
+  for i := 0 to L.Count - 1 do begin
+    S := Trim(L[i]);
+    if S = '' then continue;
+    if (Copy(S, 1, 1) = ';') or (Copy(S, 1, 1) = '#') then continue;
+    if LowerCase(S) = '[bind]' then begin
+      if n + 1 >= MAX_BINDS then begin
+        CfgErr('More than ' + IntToStr(MAX_BINDS) + ' binds - the rest skipped');
+        break;
+      end;
+      Inc(n);
+      TOn[n] := true;
+      TKey[n] := '';
+      TName[n] := 'bind ' + IntToStr(n + 1);
+      TItems[n] := '';
+      TSkills[n] := '';
+      TBack[n] := true;
+      TCtrl[n] := false;
+      TShift[n] := false;
+      TNeedTgt[n] := false;
+      TAttack[n] := false;
+      TSelf[n] := false;
+      TSafe[n] := false;
+      TDelay[n] := 0;
+      continue;
+    end;
+    p := Pos('=', S);
+    if p = 0 then continue;
+    Fld := LowerCase(Trim(Copy(S, 1, p - 1)));
+    Val := Trim(Copy(S, p + 1, Length(S)));
+    if n < 0 then begin
+      if Fld = 'chat' then ChatOn := Val <> '0'
+      else if Fld = 'hold_target' then HoldOn := Val = '1'
+      else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val;
+      continue;
+    end;
+    if Fld = 'on' then TOn[n] := Val <> '0'
+    else if Fld = 'key' then TKey[n] := Val
+    else if (Fld = 'name') and (Val <> '') then TName[n] := Val
+    else if Fld = 'items' then TItems[n] := Val
+    else if Fld = 'skills' then TSkills[n] := Val
+    else if Fld = 'back' then TBack[n] := Val <> '0'
+    else if Fld = 'ctrl' then TCtrl[n] := Val = '1'
+    else if Fld = 'shift' then TShift[n] := Val = '1'
+    else if Fld = 'need_target' then TNeedTgt[n] := Val = '1'
+    else if Fld = 'attack' then TAttack[n] := Val = '1'
+    else if Fld = 'self' then TSelf[n] := Val = '1'
+    else if Fld = 'safe' then TSafe[n] := Val = '1'
+    else if Fld = 'delay' then TDelay[n] := StrToIntDef(Val, 0);
+  end;
+  L.Free;
+  if HoldOn and (not HoldWas) then begin   // hold target turned on: the target now is the held one
+    Held := TargetOID();
+    if Held = User.OID then Held := 0;
+    PickAt := 0;
+    HoldSeenAt := GetTickCount;
+  end;
+  if not HoldOn then Held := 0;
+  // the good ones in; the key thread sees none meanwhile
+  BindN := 0;
+  NextBind := -1;
+  k := 0;
+  for i := 0 to n do begin
+    if not TOn[i] then continue;
+    if (TItems[i] = '') and (TSkills[i] = '') then begin
+      CfgErr(TName[i] + ': no items, no skills - skipped');
+      continue;
+    end;
+    Code := ParseKey(TKey[i]);
+    if Code = 0 then begin
+      if TKey[i] = '' then CfgErr(TName[i] + ': no key - skipped')
+      else CfgErr(TName[i] + ': cannot read the key "' + TKey[i] + '" - skipped');
+      continue;
+    end;
+    Ok := true;
+    for j := 0 to k - 1 do
+      if BKey[j] = Code then begin
+        CfgErr(TName[i] + ': the key ' + TKey[i] + ' is taken by ' + BName[j] + ' - skipped');
+        Ok := false;
+        break;
+      end;
+    if not Ok then continue;
+    BKey[k] := Code;
+    BName[k] := TName[i];
+    BKeyText[k] := TKey[i];
+    BItems[k] := TItems[i];
+    BSkills[k] := TSkills[i];
+    BBack[k] := TBack[i];
+    BCtrl[k] := TCtrl[i];
+    BShift[k] := TShift[i];
+    BNeedTgt[k] := TNeedTgt[i];
+    BAttack[k] := TAttack[i];
+    BSelf[k] := TSelf[i];
+    BSafe[k] := TSafe[i];
+    BDelay[k] := TDelay[i];
+    BWas[k] := true;   // a key held right now is not a press
+    EvAt[k] := 0;
+    Inc(k);
+  end;
+  BindN := k;
+  CfgReadAt := FormatDateTime('hh:nn:ss', Now);
+end;
+
+// the binds read: into the bot's chat and the party chat
+procedure SayBinds(First: boolean);
+var s: integer;
+  Info: string;
+begin
+  Info := '';
+  for s := 0 to BindN - 1 do begin
+    if Info <> '' then Info := Info + ', ';
+    Info := Info + BKeyText[s] + ' ' + BName[s];
+  end;
+  if Info = '' then Info := 'none';
+  if First then Info := 'binds: ' + Info else Info := 'binds updated: ' + Info;
+  if HoldOn then Info := Info + '; hold target ON';
+  Engine.Msg('[Equip]', Info, 128);
+  PartySay(Info);
+end;
+
+// no binds file yet: the set of the old script (Ctrl+1 Majestic) as the first bind, if it is in the bag
+procedure MakeFirstCfg();
+var L: TStringList;
+  i: integer;
+  Has, Ok: boolean;
+begin
+  if FileExists(CfgPath) then exit;
+  L := TStringList.Create;
+  Has := false;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then
+    if Inventory.User.Items(i).ID = 2395 then Has := true;
+  if not Has then begin
+    L.Free;
+    exit;
+  end;
+  L.Clear;
+  L.Add('; Equip binds of ' + CharName + ': made in binds.html (Library\Binds), read by equip_binds.txt on the fly');
+  L.Add('chat=1');
+  L.Add('chat_name=Equip');
+  L.Add('');
+  L.Add('[bind]');
+  L.Add('on=1');
+  L.Add('key=Ctrl+1');
+  L.Add('name=Majestic');
+  L.Add('items=2395+6|2419+6|5775+6|5787+6');
+  L.Add('skills=');
+  L.Add('back=1');
+  L.Add('ctrl=0');
+  L.Add('shift=0');
+  L.Add('delay=0');
+  try
+    L.SaveToFile(CfgPath);
+    Engine.Msg('[Equip]', 'The Majestic set (Ctrl+1) of the old script -> ' + CfgFile, 0);
+  except
+  end;
+  L.Free;
+end;
+
+// ===================== for the page: the bag, the skills, the binds read =====================
+
+// a number that changes when the items that can be put on / the skills change
+function GameSig(): integer;
+var i, n, v: integer;
+  It: TL2Item;
+  Sk: TL2Skill;
+begin
+  n := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.BodyPart = 0 then continue;
+    v := (It.OID and $FFFFF) + It.EnchantLevel * 7919;
+    if It.Equipped then v := v + 104729;
+    n := (n * 31 + v) and $3FFFFFF;
+  end;
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Sk := SkillList.Items(i);
+    if Sk = nil then continue;
+    n := (n * 31 + Sk.ID * 13 + Sk.Level) and $3FFFFFF;
+  end;
+  result := n;
+end;
+
+procedure DumpGame(Force: boolean);
+var L: TStringList;
+  i, Sig, n, OID, ID, Part, E, Lv: integer;
+  It: TL2Item;
+  Sk: TL2Skill;
+  S, Nm: string;
+  IsOn, Ok: boolean;
+begin
+  Sig := GameSig();
+  if (not Force) and (Sig = GameSigWas) then exit;
+  GameSigWas := Sig;
+  L := TStringList.Create;
+  L.Add('{"char": ' + JsonStr(CharName) + ', "written": ' + JsonStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)) + ',');
+  L.Add(' "binds": {"file": ' + JsonStr(CfgFile) + ', "read": ' + JsonStr(CfgReadAt) + ', "count": ' +
+    IntToStr(BindN) + ', "errors": [' + CfgErrJson + ']},');
+  L.Add(' "items": [');
+  n := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    Part := It.BodyPart;
+    if Part = 0 then continue;
+    OID := It.OID;
+    ID := It.ID;
+    E := It.EnchantLevel;
+    IsOn := It.Equipped;
+    Nm := It.Name;
+    if n = 0 then S := '  ' else S := ' ,';
+    S := S + '{"oid": ' + IntToStr(OID) + ', "id": ' + IntToStr(ID) + ', "ench": ' + IntToStr(E) +
+      ', "part": ' + IntToStr(Part) + ', "on": ';
+    if IsOn then S := S + '1' else S := S + '0';
+    L.Add(S + ', "name": ' + JsonStr(Nm) + '}');
+    Inc(n);
+  end;
+  L.Add(' ],');
+  L.Add(' "skills": [');
+  n := 0;
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Sk := SkillList.Items(i);
+    if Sk = nil then continue;
+    if Sk.Passive then continue;
+    ID := Sk.ID;
+    Lv := Sk.Level;
+    Nm := Sk.Name;
+    if n = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"id": ' + IntToStr(ID) + ', "lvl": ' + IntToStr(Lv) + ', "name": ' + JsonStr(Nm) + '}');
+    Inc(n);
+  end;
+  L.Add(' ]}');
+  Ok := true;
+  try
+    L.SaveToFile(GamePath);
+  except
+    Ok := false;
+  end;
+  L.Free;
+  if (not Ok) and (not GameWriteTold) then begin
+    GameWriteTold := true;
+    Engine.Msg('[Equip]', 'Cannot write ' + GamePath + ' - is there the folder Library\Binds?', 128);
+  end;
+end;
+
+// the character name -> a file name (letters, digits, _ and - only)
+function FileTag(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if ((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or
+       (C = '_') or (C = '-') then result := result + C
+    else result := result + '_';
+  end;
+  if result = '' then result := 'char';
+end;
+
+var
+  s, Src: integer;
+  CfgAt, GameAt: cardinal;
+
+begin
+  ChatOn := true;
+  ChatName := 'Equip';
+  NextBind := -1;
+  CurBind := -1;
+  LastBind := -1;
+  HaveKeep := false;
+  HoldOn := false;
+  Held := 0;
+  PickAt := 0;
+  HoldSay := '';
+  while User.Name = '' do Delay(500);   // in the game
+  CharName := User.Name;
+  CfgFile := FileTag(CharName) + '.binds';
+  CfgPath := Script.Path + BINDS_DIR + CfgFile;
+  GamePath := Script.Path + BINDS_DIR + FileTag(CharName) + '.game.json';
+  CfgReadAt := '';
+  Engine.Msg('[Equip]', 'Binds of ' + CharName + ': ' + CfgPath + ' (made in Library\Binds\binds.html)', 0);
+
+  MakeFirstCfg();
+  LoadBinds();
+  SayBinds(true);
+  DumpGame(true);
+  CfgAt := GetTickCount;
+  GameAt := GetTickCount;
+
+  Engine.SendActID(2);   // packet hooks on: our move requests cancel a skill being sent (OnCliPacket)
+  Script.NewThread(@KeyEvents_Thread);
+
+  while Delay(KEY_POLL_MS) do begin
+    PollKeys();
+    HoldTick();
+    if CancelData > 0 then begin
+      if CancelTold < 3 then begin
+        Inc(CancelTold);
+        Engine.Msg('[Equip]', 'Your target cancel: packet $48 ' + IntToHex((CancelData - 1) div 256, 2) +
+          IntToHex((CancelData - 1) mod 256, 2) + ' (safe cast sends 0100)', 0);
+      end;
+      CancelData := 0;
+    end;
+    if HoldSay <> '' then begin
+      PartySay('hold target: back on ' + HoldSay);
+      HoldSay := '';
+    end;
+    if OddBind > 0 then begin
+      if (OddTold < 5) and (OddBind <= BindN) then begin
+        Inc(OddTold);
+        Engine.Msg('[Equip]', 'Key event $' + IntToHex(OddCode, 2) + ' = the key of ' + BName[OddBind - 1] +
+          ', but that key is not down - ignored', 0);
+      end;
+      OddBind := 0;
+    end;
+    // the last bind key pressed; one pressed while it runs cuts it short and goes next (no queue)
+    while NextBind >= 0 do begin
+      s := NextBind;
+      CurBind := s;            // first: the same press caught again now is not a new one
+      CurAt := GetTickCount;
+      Src := NextSrc;
+      NextBind := -1;
+      if s < BindN then RunBind(s, Src);
+      LastBind := s;
+      LastAt := GetTickCount;
+      CurBind := -1;
+    end;
+    if GetTickCount - CfgAt >= CFG_CHECK_MS then begin
+      CfgAt := GetTickCount;
+      if LoadBinds() then begin
+        SayBinds(false);
+        DumpGame(true);
+      end;
+    end;
+    if GetTickCount - GameAt >= GAME_CHECK_MS then begin
+      GameAt := GetTickCount;
+      DumpGame(false);
+    end;
+  end;
+end.
