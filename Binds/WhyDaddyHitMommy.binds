@@ -1,13 +1,43 @@
-; Equip binds of bearKING: made in binds.html (Library\Binds), read by equip_binds.txt on the fly
+; Equip binds of WhyDaddyHitMommy: made in binds.html (Library\Binds), read by equip_binds.txt on the fly
 chat=0
 chat_name=Equip
 hold_target=1
 
 [bind]
 on=1
+key=Equal
+name=MaxHP
+items=11509+5|6375+5|11507+5|11510+5|27060+0|11142+0|21580+8|28302+8|29987+0@r|11505+5|29666+0|29600+0
+skills=
+back=1
+ctrl=0
+shift=0
+need_target=1
+attack=0
+self=0
+safe=0
+delay=0
+
+[bind]
+on=1
+key=Minus
+name=Sliva
+items=7715+0|27060+0|31002+0|15012+0|5779+0|441+0|472+0|2459+0|-slot:talismans|-slot:shirt|-slot:belt|-slot:rring
+skills=
+back=1
+ctrl=0
+shift=0
+need_target=1
+attack=0
+self=0
+safe=0
+delay=0
+
+[bind]
+on=1
 key=F2
 name=Shield Stun
-items=10982+0|27060+0|11453+6|11456+6|11448+6|11457+6|889+3
+items=10982+0|27060+0|11453+6|11456+6|11448+6|11457+6|13744+3
 skills=92
 back=1
 ctrl=1

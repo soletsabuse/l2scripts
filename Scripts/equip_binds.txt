@@ -17,8 +17,23 @@ uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
 //
 // Putting on is done the way the custom gear UI of the server does it (sniffed with equip_sniffer):
 // one UseItem 0x19 [item OID][0] per item. Only puts on: an item on already is skipped (a UseItem on
-// it would take it off). The hand weapon goes first, the rest after it (a bow puts its arrows on by
-// itself). An item still not on in 1.5 s -> a fresh bag from the server and its UseItem once more.
+// it would take it off). The hand weapon (and a bracelet: the talisman slots) goes first, the rest after
+// it (a bow puts its arrows on by itself). An item still not on in 1.5 s -> a fresh bag from the server
+// and its UseItem once more.
+// Taking off: an item line '-<item>' (the page: "снять") - a UseItem on it if it is on, before the
+// putting on. A slot line '-slot:<name>' (the page: "снять слот"): whatever is on in that slot goes off
+// (not an item this bind puts on); names: weapon lhand head chest legs gloves feet cloak shirt belt
+// necklace earrings rings bracelet talismans hair agathion (SlotMask); one earring / ring slot: rear lear
+// rring lring.
+// Earrings / rings into a slot: an item line '<item>@r' / '<item>@l' (the page: "слот R / L"). Where each
+// one is on the server says in ExUserInfoEquipSlot (FE:0156, after every gear change; OnPacket): its
+// records 1 / 2 the right / left earring, 4 / 5 the right / left ring. A UseItem puts an earring into a
+// free slot, so: the one in the wanted slot off first, then it on; both free -> the server's first side
+// (Prim: learned from the packets, the left one at first) first. Not known yet (no gear change since the
+// script started) -> one of the pair goes off to learn it. What was on goes back to its own slot too. Talismans: a bind that puts talismans on takes off the other talismans on first (a talisman
+// put on when its slots are full takes the place of the first one, so a set of them would not all go on).
+// The bot gives no slot (0) for a belt / a talisman / a bracelet / an agathion / a hair accessory: gear
+// of that kind (a weapon / armor / jewelry type, or on now) gets its slot by its name (GearPart).
 // A combo: its first skill not there / in reuse -> nothing is done. The skill is sent until it starts
 // (its reuse / the cast is seen), the cast is waited for, then what was on before goes back on.
 // "needs a target" (need_target=1): no target (or we / a dead one) -> nothing is done; the target lost
@@ -64,6 +79,15 @@ const
   ACT_MS        = 500;      // ... a switch to another target this soon after a packet of ours: picked by hand
   CHAT_MAX      = 200;      // a longer chat text is split into several messages
   BINDS_DIR     = '..\Binds\';   // from Library\Scripts: the page and the files
+  // the slots past 16 bits (the bot gives 0 for them): as the server's BodyPart (the agathion: not)
+  PART_HAIR     = $10000;
+  PART_RBRACE   = $100000;    // the right bracelet: the talisman slots
+  PART_LBRACE   = $200000;
+  PART_TALISMAN = $400000;
+  PART_AGATHION = $1000000;   // the server's is past 32 bits
+  PART_BELT     = $10000000;
+  PART_BROOCH   = $20000000;
+  PART_JEWEL    = $40000000;
 
 function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
 function GetForegroundWindow: cardinal; stdcall; external 'user32.dll';
@@ -111,6 +135,25 @@ var
   SendOID, SendPart: array[0..63] of integer;        // items to put on
   SendName: array[0..63] of string;
   SendN: integer;
+  OffOID: array[0..63] of integer;                   // items to take off (on now)
+  OffName: array[0..63] of string;
+  OffN: integer;
+  OffSlots: array[0..15] of integer;                 // slots to take off (BodyPart bits)
+  OffSlotN: integer;
+  // earrings / rings (pair 0 / 1). Where they are: FE:0156 (the packet thread writes, numbers only)
+  MyOID: integer;
+  PosR, PosL: array[0..1] of integer;                // the OID in the right / left slot, 0 none
+  PosGot, PosN: integer;                             // the slots told (bits 1 shl record), packets so far
+  Prim: array[0..1] of integer;                      // both free: a UseItem fills this side (1 R, 2 L)
+  WantR, WantL, SideOff: array[0..1] of integer;     // a bind: into the right / left slot; slots off (1 R, 2 L)
+  PlanBoth: array[0..1] of boolean;                  // ... both put on into free slots: checked after
+  PlanR, PlanL, PlanP: array[0..1] of integer;      // ... (PlanP: the side taken as filled first then)
+  PlanOne: array[0..1] of boolean;                   // ... one put on, the other slot to stay free: checked after
+  PlanW, PlanS, PlanF: array[0..1] of integer;       // ... it, its side, the filler put on first (0 none)
+  PlanN: integer;                                    // PosN when they were sent
+  KeepSide: array[0..63] of integer;                 // the gear to come back to: the slot (1 R, 2 L, 0 any)
+  BackR, BackL: array[0..1] of integer;              // ... its earrings / rings for the right / left slot
+  DumpR, DumpL: array[0..1] of integer;              // the game file: where the earrings / rings are
   KeepOID, KeepPart: array[0..63] of integer;        // the gear to come back to: what was on before a combo that
   KeepN: integer;                                    // puts back (kept on when a bind is cut short)
   HaveKeep: boolean;
@@ -518,6 +561,54 @@ begin
   ActAt := GetTickCount;
 end;
 
+// the server's packets (the same hooks). FE:0156 ExUserInfoEquipSlot: [our OID][slots: word][mask: a bit
+// per slot, the high bit first] then per slot in the mask [length: word][OID][item ID][...]. Slots 1 / 2
+// the right / left earring, 4 / 5 the right / left ring. Both of a pair free before, one taken now:
+// that is the side the server fills first
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var n, s, off, ln, O, Got, V1, V2, V4, V5: integer;
+begin
+  if ID1 <> $FE then exit;
+  if ID2 <> $156 then exit;
+  if Size < 14 then exit;
+  if (MyOID <> 0) and (RdInt(Data, 0) <> MyOID) then exit;
+  n := RdByte(Data, 4) + RdByte(Data, 5) * 256;
+  if (n < 6) or (n > 512) then exit;
+  off := 6 + (n + 7) div 8;
+  Got := 0;
+  V1 := 0;
+  V2 := 0;
+  V4 := 0;
+  V5 := 0;
+  for s := 0 to 5 do begin
+    if (RdByte(Data, 6) and ($80 shr s)) = 0 then continue;
+    if off + 6 > Size then exit;
+    ln := RdByte(Data, off) + RdByte(Data, off + 1) * 256;
+    if ln < 6 then exit;
+    O := RdInt(Data, off + 2);
+    if s = 1 then V1 := O
+    else if s = 2 then V2 := O
+    else if s = 4 then V4 := O
+    else if s = 5 then V5 := O;
+    Got := Got or (1 shl s);
+    off := off + ln;
+  end;
+  if ((Got and $06) = $06) and ((PosGot and $06) = $06) and (PosR[0] = 0) and (PosL[0] = 0) then begin
+    if (V1 <> 0) and (V2 = 0) then Prim[0] := 1
+    else if (V1 = 0) and (V2 <> 0) then Prim[0] := 2;
+  end;
+  if ((Got and $30) = $30) and ((PosGot and $30) = $30) and (PosR[1] = 0) and (PosL[1] = 0) then begin
+    if (V4 <> 0) and (V5 = 0) then Prim[1] := 1
+    else if (V4 = 0) and (V5 <> 0) then Prim[1] := 2;
+  end;
+  if (Got and $02) <> 0 then PosR[0] := V1;
+  if (Got and $04) <> 0 then PosL[0] := V2;
+  if (Got and $10) <> 0 then PosR[1] := V4;
+  if (Got and $20) <> 0 then PosL[1] := V5;
+  PosGot := PosGot or Got;
+  Inc(PosN);
+end;
+
 // ===================== text =====================
 
 function JsonStr(S: string): string;
@@ -591,6 +682,28 @@ begin
     end;
 end;
 
+// the slot of an item of the bag (BodyPart), 0 - not gear. The bot gives 0 for the slots past 16 bits:
+// gear (a weapon / armor / jewelry type, or on now) with no slot gets one by its name
+function GearPart(It: TL2Item): integer;
+var T: integer;
+  Nm: string;
+begin
+  result := It.BodyPart;
+  if result <> 0 then exit;
+  T := It.ItemType;
+  if (T > 2) and (not It.Equipped) then exit;
+  Nm := LowerCase(It.Name);
+  if (Pos('talisman', Nm) > 0) or ((Pos('charm', Nm) > 0) and (Pos('charming', Nm) = 0)) then
+    result := PART_TALISMAN   // the talisman slots: 'Charm of Antimagic' on this server too
+  else if Pos('belt', Nm) > 0 then result := PART_BELT
+  else if Pos('agathion', Nm) > 0 then result := PART_AGATHION
+  else if Pos('bracelet', Nm) > 0 then result := PART_RBRACE
+  else if Pos('brooch', Nm) > 0 then result := PART_BROOCH
+  else if Pos('jewel', Nm) > 0 then result := PART_JEWEL
+  else if T = 2 then result := PART_AGATHION   // jewelry type ('Mount - ...'): a hair one is armor
+  else result := PART_HAIR;
+end;
+
 // the item of the bag for one item line, not picked for this bind yet: the copy on already first,
 // else the highest enchant. Lines: '2395+6' item ID + enchant, '2395' any enchant, '1078300251' an OID.
 // false = none in the bag
@@ -634,7 +747,7 @@ begin
       OID := O;
       IsOn := OnNow;
       BestE := E;
-      Part := It.BodyPart;
+      Part := GearPart(It);
       ItName := It.Name;
       if E > 0 then ItName := ItName + ' +' + IntToStr(E);
     end;
@@ -679,13 +792,20 @@ begin
   result := (Part = $0080) or (Part = $4000);
 end;
 
-// how many of the items to put on are not on yet (Hands: of the weapons only)
+// put on first, waited for: a weapon (it puts its arrows on / takes a shield off), a bracelet (the
+// talisman slots)
+function IsFirst(Part: integer): boolean;
+begin
+  result := IsHand(Part) or (Part = PART_RBRACE) or (Part = PART_LBRACE);
+end;
+
+// how many of the items to put on are not on yet (Hands: of the ones put on first only)
 function CountOff(Hands: boolean): integer;
 var k: integer;
 begin
   result := 0;
   for k := 0 to SendN - 1 do begin
-    if Hands and (not IsHand(SendPart[k])) then continue;
+    if Hands and (not IsFirst(SendPart[k])) then continue;
     if not IsOnNow(SendOID[k]) then Inc(result);
   end;
 end;
@@ -714,13 +834,13 @@ begin
     end;
 end;
 
-// one pass: the weapons first, the rest (still off) after them; the weapon waited for in between
+// one pass: the weapons (and the bracelets) first, the rest (still off) after them; those waited for in between
 procedure SendPass();
 var k, Hands: integer;
 begin
   Hands := 0;
   for k := 0 to SendN - 1 do
-    if IsHand(SendPart[k]) and (not IsOnNow(SendOID[k])) then begin
+    if IsFirst(SendPart[k]) and (not IsOnNow(SendOID[k])) then begin
       SendUse(SendOID[k]);
       Inc(Hands);
     end;
@@ -730,7 +850,7 @@ begin
   end;
   if Interrupted() then exit;
   for k := 0 to SendN - 1 do
-    if (not IsHand(SendPart[k])) and (not IsOnNow(SendOID[k])) then SendUse(SendOID[k]);
+    if (not IsFirst(SendPart[k])) and (not IsOnNow(SendOID[k])) then SendUse(SendOID[k]);
 end;
 
 // puts the items Send* on, all at once as the custom UI does (a weapon first: a bow puts its arrows on
@@ -764,19 +884,588 @@ begin
 end;
 
 // the slots an item takes with the ones it clashes with: the hands (a two-hander, a shield, arrows),
-// the two earrings / rings, the full armor with the chest and the legs
+// the two earrings / rings, the full armor with the chest and the legs, the hair ones
 function SlotGroup(Part: integer): integer;
 begin
   if (Part = $0080) or (Part = $0100) or (Part = $4000) then result := $4180
   else if (Part = $8000) or (Part = $0400) or (Part = $0800) then result := $8C00
   else if (Part and $0006) <> 0 then result := $0006
   else if (Part and $0030) <> 0 then result := $0030
+  else if (Part and $D0000) <> 0 then result := $D0000
   else result := Part;
 end;
 
-// the gear to come back to: what is on now
-procedure KeepNow();
+// the talismans on now that are not to stay (Keep: not in the gear to come back to, else: not picked
+// for this bind) join the items to take off
+procedure TalisOff(Keep: boolean);
+var i, k, O, E: integer;
+  It: TL2Item;
+  Stay: boolean;
+  Nm: string;
+begin
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    if GearPart(It) <> PART_TALISMAN then continue;
+    O := It.OID;
+    Stay := false;
+    if Keep then begin
+      for k := 0 to KeepN - 1 do
+        if KeepOID[k] = O then Stay := true;
+    end else
+      Stay := Picked(O);
+    for k := 0 to OffN - 1 do
+      if OffOID[k] = O then Stay := true;   // listed already
+    if Stay or (OffN >= 64) then continue;
+    Nm := It.Name;
+    E := It.EnchantLevel;
+    if E > 0 then Nm := Nm + ' +' + IntToStr(E);
+    OffOID[OffN] := O;
+    OffName[OffN] := Nm;
+    Inc(OffN);
+  end;
+end;
+
+// a slot line '-slot:<name>': the BodyPart bits of the slot, 0 - no such name
+function SlotMask(Txt: string): integer;
+var Nm: string;
+begin
+  Nm := LowerCase(Trim(Txt));
+  if Nm = 'weapon' then result := $4080
+  else if Nm = 'lhand' then result := $0100
+  else if Nm = 'head' then result := $0040
+  else if Nm = 'chest' then result := $8400
+  else if Nm = 'legs' then result := $0800
+  else if Nm = 'gloves' then result := $0200
+  else if Nm = 'feet' then result := $1000
+  else if Nm = 'cloak' then result := $2000
+  else if Nm = 'shirt' then result := $0001
+  else if Nm = 'belt' then result := PART_BELT
+  else if Nm = 'necklace' then result := $0008
+  else if Nm = 'earrings' then result := $0006
+  else if Nm = 'rings' then result := $0030
+  else if Nm = 'bracelet' then result := PART_RBRACE or PART_LBRACE
+  else if Nm = 'talismans' then result := PART_TALISMAN
+  else if Nm = 'hair' then result := $D0000
+  else if Nm = 'agathion' then result := PART_AGATHION
+  else result := 0;
+end;
+
+// the items on now in the slots Mask join the items to take off - not the ones this bind puts on.
+// The number of items on there (0: none)
+function SlotOff(Mask: integer): integer;
+var i, k, O, E: integer;
+  It: TL2Item;
+  Listed: boolean;
+  Nm: string;
+begin
+  result := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    if (GearPart(It) and Mask) = 0 then continue;
+    O := It.OID;
+    Listed := false;
+    for k := 0 to OffN - 1 do
+      if OffOID[k] = O then Listed := true;
+    if Listed then begin   // to take off already (an item line of it / a talisman)
+      Inc(result);
+      continue;
+    end;
+    if Picked(O) then continue;   // put on by this bind: stays
+    if OffN >= 64 then continue;
+    Nm := It.Name;
+    E := It.EnchantLevel;
+    if E > 0 then Nm := Nm + ' +' + IntToStr(E);
+    OffOID[OffN] := O;
+    OffName[OffN] := Nm;
+    Inc(OffN);
+    Inc(result);
+  end;
+end;
+
+// the items to take off that are on: a UseItem each (on an item that is on it takes it off). Not sent
+// again: a second one would put it back on if the first went through
+procedure SendOff();
+var k: integer;
+begin
+  for k := 0 to OffN - 1 do
+    if IsOnNow(OffOID[k]) then SendUse(OffOID[k]);
+end;
+
+// an item to put on (the list Send*)
+function InSend(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to SendN - 1 do
+    if SendOID[k] = OID then result := true;
+end;
+
+// the names of the items to take off that are on now (OnOnes) / off. Not All: not the ones to put on
+// again (an earring off to go into the other slot)
+function OffNames(OnOnes, All: boolean): string;
+var k: integer;
+begin
+  result := '';
+  for k := 0 to OffN - 1 do
+    if (IsOnNow(OffOID[k]) = OnOnes) and (All or (not InSend(OffOID[k]))) then begin
+      if result <> '' then result := result + ', ';
+      result := result + OffName[k];
+    end;
+end;
+
+// the items to take off: waited for (CHECK_MS at most). 'off: ...' / 'NOT off: ...' / ''
+function OffResult(): string;
+var Waited: integer;
+  S: string;
+begin
+  result := '';
+  if OffN = 0 then exit;
+  Waited := 0;
+  while (OffNames(true, false) <> '') and (Waited < CHECK_MS) and (not User.Dead) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+  S := OffNames(false, false);
+  if S <> '' then result := 'off: ' + S;
+  S := OffNames(true, false);
+  if S <> '' then begin
+    if result <> '' then result := result + ' -> ';
+    result := result + 'NOT off: ' + S;
+  end;
+end;
+
+// the items to take off that are on, to be put on again (an earring into the other slot): waited for
+// till they are off (the bag), else the putting on would skip them as on
+procedure WaitOffFirst();
+var k, Waited: integer;
+  Need: boolean;
+begin
+  Need := false;
+  for k := 0 to OffN - 1 do
+    if InSend(OffOID[k]) then Need := true;
+  if not Need then exit;
+  Waited := 0;
+  while (OffNames(true, true) <> '') and (Waited < CHECK_MS) and (not User.Dead) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+end;
+
+// ----- earrings / rings into a slot -----
+
+// the pair of a slot: 0 earrings, 1 rings, -1 none
+function PairOf(Part: integer): integer;
+begin
+  if (Part and $0006) <> 0 then result := 0
+  else if (Part and $0030) <> 0 then result := 1
+  else result := -1;
+end;
+
+function PairMask(Pr: integer): integer;
+begin
+  if Pr = 0 then result := $0006 else result := $0030;
+end;
+
+function PairTitle(Pr: integer): string;
+begin
+  if Pr = 0 then result := 'earrings' else result := 'rings';
+end;
+
+function SideName(Side: integer): string;
+begin
+  if Side = 1 then result := 'right' else result := 'left';
+end;
+
+// the earrings / rings on (the bag): how many, the first one
+function PairWorn(Pr: integer; var First: integer): integer;
 var i: integer;
+  It: TL2Item;
+begin
+  result := 0;
+  First := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    if (GearPart(It) and PairMask(Pr)) = 0 then continue;
+    Inc(result);
+    if First = 0 then First := It.OID;
+  end;
+end;
+
+// where the earrings / rings are (R / L: the OID, 0 free). true = known: the server told it and the bag
+// agrees (none on: known too)
+function PairNow(Pr: integer; var R, L: integer): boolean;
+var n, First, Got, c: integer;
+begin
+  R := 0;
+  L := 0;
+  n := PairWorn(Pr, First);
+  result := n = 0;
+  if result then exit;
+  if Pr = 0 then Got := $06 else Got := $30;
+  if (PosGot and Got) <> Got then exit;
+  R := PosR[Pr];
+  L := PosL[Pr];
+  if (R <> 0) and (not IsOnNow(R)) then R := 0;
+  if (L <> 0) and (not IsOnNow(L)) then L := 0;
+  c := 0;
+  if R <> 0 then Inc(c);
+  if L <> 0 then Inc(c);
+  result := c = n;
+end;
+
+// an earring / ring line by item ID into side Side: the copy in that slot now if it is that item (two
+// same earrings: not the other copy - that would swap them). OID: the copy PickItem chose
+function SideCopy(Spec: string; OID, Side, Part: integer): integer;
+var i, p, ID, Ench, Pr, R, L, S: integer;
+  It: TL2Item;
+begin
+  result := OID;
+  Pr := PairOf(Part);
+  if Pr < 0 then exit;
+  p := Pos('+', Spec);
+  if p > 0 then begin
+    ID := StrToIntDef(Trim(Copy(Spec, 1, p - 1)), 0);
+    Ench := StrToIntDef(Trim(Copy(Spec, p + 1, 10)), -1);
+  end else begin
+    ID := StrToIntDef(Trim(Spec), 0);
+    Ench := -1;
+  end;
+  if (ID <= 0) or (ID >= OID_MIN) then exit;
+  if not PairNow(Pr, R, L) then exit;
+  if Side = 1 then S := R else S := L;
+  if (S = 0) or (S = OID) or Picked(S) then exit;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.OID <> S then continue;
+    if (It.ID = ID) and ((Ench < 0) or (It.EnchantLevel = Ench)) then result := S;
+    exit;
+  end;
+end;
+
+// not known where they are: one of them off - the server tells where the other one is. true = known;
+// R / L as they were before
+function PairProbe(Pr: integer; var R, L: integer): boolean;
+var n, A, N0, Waited, R2, L2: integer;
+begin
+  result := false;
+  n := PairWorn(Pr, A);
+  if A = 0 then exit;
+  N0 := PosN;
+  SendUse(A);
+  Waited := 0;
+  while ((PosN = N0) or IsOnNow(A)) and (Waited < CHECK_MS) and (not User.Dead) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+  if IsOnNow(A) then exit;
+  if not PairNow(Pr, R2, L2) then exit;
+  if (R2 = 0) and (L2 <> 0) then begin
+    R := A;
+    L := L2;
+  end else if (L2 = 0) and (R2 <> 0) then begin
+    L := A;
+    R := R2;
+  end else begin   // it was the only one: taken as on the side filled first
+    R := 0;
+    L := 0;
+    if Prim[Pr] = 1 then R := A else L := A;
+  end;
+  result := true;
+end;
+
+procedure AddSend(OID, Part: integer);
+var k: integer;
+begin
+  for k := 0 to SendN - 1 do
+    if SendOID[k] = OID then exit;
+  if SendN >= 64 then exit;
+  SendOID[SendN] := OID;
+  SendPart[SendN] := Part;
+  SendName[SendN] := ItemName(OID);
+  Inc(SendN);
+end;
+
+procedure AddOff(OID: integer);
+var k: integer;
+begin
+  for k := 0 to OffN - 1 do
+    if OffOID[k] = OID then exit;
+  if OffN >= 64 then exit;
+  OffOID[OffN] := OID;
+  OffName[OffN] := ItemName(OID);
+  Inc(OffN);
+end;
+
+// the gear to come back to: the slot of its earrings / rings (R / L: where they were)
+procedure KeepSides(R, L: integer);
+var k: integer;
+begin
+  if not HaveKeep then exit;
+  for k := 0 to KeepN - 1 do
+    if (R <> 0) and (KeepOID[k] = R) then KeepSide[k] := 1
+    else if (L <> 0) and (KeepOID[k] = L) then KeepSide[k] := 2;
+end;
+
+procedure AddNote(var Note: string; S: string);
+begin
+  if S = '' then exit;
+  if Note <> '' then Note := Note + ', ';
+  Note := Note + S;
+end;
+
+// a spare earring / ring of the bag: not on, not Not1. 0 none
+function PairSpare(Pr, Not1: integer): integer;
+var i: integer;
+  It: TL2Item;
+begin
+  result := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if It.Equipped then continue;
+    if (GearPart(It) and PairMask(Pr)) = 0 then continue;
+    if It.OID = Not1 then continue;
+    result := It.OID;
+    exit;
+  end;
+end;
+
+// one earring / ring W into side S, the other slot to stay free (both free then). A UseItem fills the
+// side Prim first: for the other side a filler goes on first (one taken off now, else a spare of the bag)
+// and off after it (FixPairs). CR / CL: on before
+procedure PlanOneSide(Pr, W, S, CR, CL: integer; var Note: string);
+var F: integer;
+begin
+  F := 0;
+  if Prim[Pr] <> S then begin
+    if (CR <> 0) and (CR <> W) then F := CR
+    else if (CL <> 0) and (CL <> W) then F := CL
+    else F := PairSpare(Pr, W);
+    if F <> 0 then AddSend(F, PairMask(Pr))
+    else AddNote(Note, ItemName(W) + ' may go ' + SideName(Prim[Pr]) + ' (no spare to fill that slot)');
+  end;
+  AddSend(W, PairMask(Pr));
+  PlanOne[Pr] := true;
+  PlanW[Pr] := W;
+  PlanS[Pr] := S;
+  PlanF[Pr] := F;
+end;
+
+// an earring / ring pair as wanted: WR / WL into the right / left slot (0: as it is), Off bits (1 R, 2 L)
+// that slot off. Into the items to take off / to put on, in the order that puts each into its slot (a
+// UseItem fills a free slot; both free: the side Prim first). Probe: not known where they are -> one off
+// to learn it. Already: + the ones in place; Note: what could not be done
+procedure PlanPair(Pr, WR, WL, Off: integer; Probe: boolean; var Already: integer; var Note: string);
+var R, L, CR, CL, DR, DL, AR, AL, A, n: integer;
+  Known: boolean;
+begin
+  if (WR = 0) and (WL = 0) and (Off = 0) then exit;
+  Known := PairNow(Pr, R, L);
+  CR := R;
+  CL := L;
+  if (not Known) and Probe then begin
+    n := PairWorn(Pr, A);
+    Known := PairProbe(Pr, R, L);
+    if Known then PairNow(Pr, CR, CL)   // the one taken off is off now
+    else if (A <> 0) and (not IsOnNow(A)) then AddSend(A, PairMask(Pr));   // no answer: it goes back on
+  end;
+  if not Known then begin   // put on as the server likes, no slot taken off
+    if WR <> 0 then AddSend(WR, PairMask(Pr));
+    if WL <> 0 then AddSend(WL, PairMask(Pr));
+    AddNote(Note, PairTitle(Pr) + ': the slots are not known (no answer of the server)');
+    exit;
+  end;
+  KeepSides(R, L);
+  // the wanted state
+  DR := R;
+  DL := L;
+  if (Off and 1) <> 0 then DR := 0;
+  if (Off and 2) <> 0 then DL := 0;
+  if WR <> 0 then begin
+    DR := WR;
+    if (WL = 0) and (L = WR) then begin   // it moves from the left: the right one goes there
+      if (Off and 2) <> 0 then DL := 0 else DL := R;
+    end;
+  end;
+  if WL <> 0 then begin
+    DL := WL;
+    if (WR = 0) and (R = WL) then begin
+      if (Off and 1) <> 0 then DR := 0 else DR := L;
+    end;
+  end;
+  if (WR <> 0) and (CR = WR) then Inc(Already);
+  if (WL <> 0) and (CL = WL) then Inc(Already);
+  // off: the ones not in their slot
+  AR := CR;
+  AL := CL;
+  if (CR <> 0) and (CR <> DR) then begin
+    AddOff(CR);
+    AR := 0;
+  end;
+  if (CL <> 0) and (CL <> DL) then begin
+    AddOff(CL);
+    AL := 0;
+  end;
+  // on: into a free slot; both free - the side filled first first
+  if (DR <> 0) and (AR = 0) and (DL <> 0) and (AL = 0) then begin
+    if Prim[Pr] = 1 then begin
+      AddSend(DR, PairMask(Pr));
+      AddSend(DL, PairMask(Pr));
+    end else begin
+      AddSend(DL, PairMask(Pr));
+      AddSend(DR, PairMask(Pr));
+    end;
+    PlanBoth[Pr] := true;
+    PlanR[Pr] := DR;
+    PlanL[Pr] := DL;
+    PlanP[Pr] := Prim[Pr];
+  end else if (DR <> 0) and (AR = 0) and (AL = 0) then
+    PlanOneSide(Pr, DR, 1, CR, CL, Note)
+  else if (DL <> 0) and (AL = 0) and (AR = 0) then
+    PlanOneSide(Pr, DL, 2, CR, CL, Note)
+  else begin   // the other slot is taken: it goes into the free one
+    if (DR <> 0) and (AR = 0) then AddSend(DR, PairMask(Pr));
+    if (DL <> 0) and (AL = 0) then AddSend(DL, PairMask(Pr));
+  end;
+end;
+
+// the server's answer on where the earrings / rings of a pair are: true = it came (a packet since the
+// sending, the bag agrees, W on)
+function PairAnswer(Pr, W: integer; var R, L: integer): boolean;
+var Waited: integer;
+begin
+  result := false;
+  Waited := 0;
+  while (Waited < 800) and (not Interrupted()) do begin
+    if (PosN <> PlanN) and PairNow(Pr, R, L) and ((R = W) or (L = W)) then begin
+      result := true;
+      exit;
+    end;
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+end;
+
+// waits till an item is on / off (CHECK_MS at most)
+procedure WaitItem(OID: integer; IsOn: boolean);
+var Waited: integer;
+begin
+  Waited := 0;
+  while (IsOnNow(OID) <> IsOn) and (Waited < CHECK_MS) and (not User.Dead) and (not Interrupted()) do begin
+    Delay(STEP_MS);
+    Idle();
+    Waited := Waited + STEP_MS;
+  end;
+end;
+
+// an item out of the items to put on (a filler: off again, not said as put on)
+procedure DropSend(OID: integer);
+var k, n: integer;
+begin
+  n := 0;
+  for k := 0 to SendN - 1 do
+    if SendOID[k] <> OID then begin
+      SendOID[n] := SendOID[k];
+      SendPart[n] := SendPart[k];
+      SendName[n] := SendName[k];
+      Inc(n);
+    end;
+  SendN := n;
+end;
+
+// after the putting on: the earrings / rings put into free slots looked at (the server's answer). The
+// wrong side -> the server fills the other side first: learned (Prim), put on again. A filler goes off.
+// '' / what could not be done
+function FixPairs(): string;
+var Pr, R, L, W, S, F, WSide: integer;
+begin
+  result := '';
+  for Pr := 0 to 1 do begin
+    if PlanBoth[Pr] then begin
+      PlanBoth[Pr] := false;
+      if PairAnswer(Pr, PlanR[Pr], R, L) and (R = PlanL[Pr]) and (L = PlanR[Pr]) then begin   // swapped
+        Prim[Pr] := 3 - PlanP[Pr];   // the first one sent went to the other side
+        Engine.Msg('[Equip]', PairTitle(Pr) + ': the server fills the ' + SideName(Prim[Pr]) + ' slot first - put on again', 0);
+        SendUse(R);
+        SendUse(L);
+        WaitItem(R, false);
+        WaitItem(L, false);
+        if Prim[Pr] = 1 then begin
+          SendUse(PlanR[Pr]);
+          SendUse(PlanL[Pr]);
+        end else begin
+          SendUse(PlanL[Pr]);
+          SendUse(PlanR[Pr]);
+        end;
+        WaitItem(R, true);
+        WaitItem(L, true);
+      end;
+    end;
+    if not PlanOne[Pr] then continue;
+    PlanOne[Pr] := false;
+    W := PlanW[Pr];
+    S := PlanS[Pr];
+    F := PlanF[Pr];
+    if not PairAnswer(Pr, W, R, L) then begin   // no answer: the filler off at least
+      if F <> 0 then begin
+        if IsOnNow(F) then SendUse(F);
+        WaitItem(F, false);
+        DropSend(F);
+      end;
+      continue;
+    end;
+    if R = W then WSide := 1 else WSide := 2;
+    if WSide = S then begin   // in place: the filler off
+      if F <> 0 then begin
+        SendUse(F);
+        WaitItem(F, false);
+        DropSend(F);
+      end;
+      continue;
+    end;
+    // the wrong side: the server fills the other side first
+    if F <> 0 then Prim[Pr] := S else Prim[Pr] := WSide;
+    Engine.Msg('[Equip]', PairTitle(Pr) + ': the server fills the ' + SideName(Prim[Pr]) + ' slot first - put on again', 0);
+    if F <> 0 then begin   // the filler went into S: both off, it on alone (S is filled first)
+      SendUse(F);
+      WaitItem(F, false);
+      DropSend(F);
+      SendUse(W);
+      WaitItem(W, false);
+      SendUse(W);
+      WaitItem(W, true);
+    end else begin   // a filler into the side filled first, it into S, the filler off
+      F := PairSpare(Pr, W);
+      if F = 0 then begin
+        AddNote(result, ItemName(W) + ' went ' + SideName(WSide) + ' (no spare to fill that slot)');
+        continue;
+      end;
+      SendUse(W);
+      WaitItem(W, false);
+      SendUse(F);
+      WaitItem(F, true);
+      SendUse(W);
+      WaitItem(W, true);
+      SendUse(F);
+      WaitItem(F, false);
+    end;
+  end;
+end;
+
+// the gear to come back to: what is on now (earrings / rings: in which slot)
+procedure KeepNow();
+var i, Pr, R, L: integer;
   It: TL2Item;
 begin
   KeepN := 0;
@@ -786,31 +1475,63 @@ begin
     if not It.Equipped then continue;
     if KeepN >= 64 then break;
     KeepOID[KeepN] := It.OID;
-    KeepPart[KeepN] := It.BodyPart;
+    KeepPart[KeepN] := GearPart(It);
+    KeepSide[KeepN] := 0;
     Inc(KeepN);
   end;
   HaveKeep := true;
+  for Pr := 0 to 1 do
+    if PairNow(Pr, R, L) then KeepSides(R, L);
 end;
 
 // the gear to come back to goes back on: its items that are off now - but not those in the slot groups
 // of Claim (put on for good by this bind). '' / 'back: ...' / 'back NOT on: ...'. Cut short by a new
 // bind key -> it stays for that bind
 function RestoreKeep(Claim: integer; Title: string): string;
-var k: integer;
+var k, Pr, Dummy: integer;
+  Talis: boolean;
+  Note: string;
 begin
   result := '';
   if not HaveKeep then exit;
   SendN := 0;
-  for k := 0 to KeepN - 1 do
-    if (SendN < 64) and ((SlotGroup(KeepPart[k]) and Claim) = 0) and (not IsOnNow(KeepOID[k])) then begin
+  OffN := 0;
+  Talis := false;
+  for Pr := 0 to 1 do begin
+    BackR[Pr] := 0;
+    BackL[Pr] := 0;
+    PlanBoth[Pr] := false;
+    PlanOne[Pr] := false;
+  end;
+  for k := 0 to KeepN - 1 do begin
+    if (SlotGroup(KeepPart[k]) and Claim) <> 0 then continue;
+    Pr := PairOf(KeepPart[k]);
+    if (Pr >= 0) and (KeepSide[k] <> 0) then begin   // an earring / ring: back to its own slot
+      if KeepSide[k] = 1 then BackR[Pr] := KeepOID[k] else BackL[Pr] := KeepOID[k];
+      continue;
+    end;
+    if (SendN < 64) and (not IsOnNow(KeepOID[k])) then begin
       SendOID[SendN] := KeepOID[k];
       SendPart[SendN] := KeepPart[k];
       SendName[SendN] := ItemName(KeepOID[k]);
+      if KeepPart[k] = PART_TALISMAN then Talis := true;
       Inc(SendN);
     end;
+  end;
+  if Talis then TalisOff(true);   // talismans to put back: the other talismans off first (no slot would be free)
+  Dummy := 0;
+  Note := '';
+  for Pr := 0 to 1 do
+    if (BackR[Pr] <> 0) or (BackL[Pr] <> 0) then PlanPair(Pr, BackR[Pr], BackL[Pr], 0, false, Dummy, Note);
+  PlanN := PosN;
+  SendOff();
+  WaitOffFirst();
   if SendN > 0 then begin
-    if WearSent(Title + ' back') then result := 'back: ' + SendNames(true)
-    else if Interrupted() then begin
+    if WearSent(Title + ' back') then begin
+      Note := FixPairs();
+      result := 'back: ' + SendNames(true);
+      if Note <> '' then result := result + ' (' + Note + ')';
+    end else if Interrupted() then begin
       result := 'back cut short';
       exit;
     end else result := 'back NOT on: ' + SendNames(false);
@@ -939,29 +1660,30 @@ begin
   result := 'attack';
 end;
 
-// a set (no skills): into the party chat what went on / was on already / did not go on / is not in the
-// bag (+ After: what came after - the gear of a bind cut short before back, the attack)
-procedure SetReport(b, Already: integer; Miss, OnList, OffList, After: string);
-var Main: string;
-begin
-  Main := '';
-  if (OnList = '') and (OffList = '') and (Already > 0) then Main := BName[b] + ': all on already'
-  else if OnList <> '' then Main := BName[b] + ' on: ' + OnList;
-  if After <> '' then begin
-    if Main = '' then Main := BName[b] + ': ' + After
-    else Main := Main + ' -> ' + After;
-    Engine.Msg('[Equip]', BName[b] + ': ' + After, 0);
-  end;
-  if Main <> '' then PartySay(Main);
-  if OffList <> '' then PartySay(BName[b] + ' NOT on: ' + OffList);
-  if Miss <> '' then PartySay(BName[b] + ' not in the bag:' + Miss);
-end;
-
 procedure AddStep(var Rep: string; Step: string);
 begin
   if Step = '' then exit;
   if Rep <> '' then Rep := Rep + ' -> ';
   Rep := Rep + Step;
+end;
+
+// a set (no skills): into the party chat what went on / was on already / did not go on / is not in the
+// bag, Taken: what went off (+ After: what came after - the gear of a bind cut short before back, the attack)
+procedure SetReport(b, Already: integer; Miss, OnList, OffList, Taken, After: string);
+var Main: string;
+begin
+  Main := '';
+  if OnList <> '' then Main := 'on: ' + OnList;
+  AddStep(Main, Taken);
+  if (Main = '') and (OffList = '') and (Already > 0) then Main := 'as set already';
+  if After <> '' then begin
+    AddStep(Main, After);
+    Engine.Msg('[Equip]', BName[b] + ': ' + After, 0);
+  end;
+  if Copy(Main, 1, 4) = 'on: ' then PartySay(BName[b] + ' ' + Main)
+  else if Main <> '' then PartySay(BName[b] + ': ' + Main);
+  if OffList <> '' then PartySay(BName[b] + ' NOT on: ' + OffList);
+  if Miss <> '' then PartySay(BName[b] + ' not in the bag:' + Miss);
 end;
 
 // a bind cut short by a new bind key: one that puts on for good (Claim: its slot groups) takes those
@@ -975,6 +1697,7 @@ begin
       if (SlotGroup(KeepPart[k]) and Claim) = 0 then begin
         KeepOID[n] := KeepOID[k];
         KeepPart[n] := KeepPart[k];
+        KeepSide[n] := KeepSide[k];
         Inc(n);
       end;
     KeepN := n;
@@ -997,9 +1720,9 @@ end;
 
 procedure RunBind(b, Src: integer);
 var L: TStringList;
-  i, k, OID, Part, Already, Left, Fired, Claim: integer;
-  IsOn, AllOn, Cut, Moved: boolean;
-  ItName, Miss, How, Rep, Names, SkNm, OnList, OffList, After: string;
+  i, k, OID, Part, Already, Left, Fired, Claim, Side, Pr, At: integer;
+  IsOn, AllOn, Cut, Moved, TakeOff, PutTalis: boolean;
+  ItName, Miss, How, Rep, Names, SkNm, OnList, OffList, After, Spec, Taken, SlotNm, Note: string;
 begin
   if Src = 1 then How := ' (key: game)' else How := ' (key: poll)';
   Moved := false;
@@ -1040,20 +1763,83 @@ begin
   SplitTo(BItems[b], '|', L);
   PickN := 0;
   SendN := 0;
+  OffN := 0;
+  OffSlotN := 0;
   Already := 0;
   Claim := 0;
+  PutTalis := false;
   Miss := '';
   Names := '';
+  Note := '';
+  for Pr := 0 to 1 do begin
+    WantR[Pr] := 0;
+    WantL[Pr] := 0;
+    SideOff[Pr] := 0;
+    PlanBoth[Pr] := false;
+    PlanOne[Pr] := false;
+  end;
   for i := 0 to L.Count - 1 do begin
-    if Trim(L[i]) = '' then continue;
-    if PickItem(L[i], OID, IsOn, ItName, Part) then begin
+    Spec := Trim(L[i]);
+    if Spec = '' then continue;
+    TakeOff := Copy(Spec, 1, 1) = '-';   // '-<item>': take it off
+    if TakeOff then Spec := Trim(Copy(Spec, 2, Length(Spec)));
+    Side := 0;   // '<item>@r' / '@l': an earring / ring into the right / left slot
+    At := Pos('@', Spec);
+    if At > 0 then begin
+      SlotNm := LowerCase(Trim(Copy(Spec, At + 1, 10)));
+      if SlotNm = 'r' then Side := 1
+      else if SlotNm = 'l' then Side := 2;
+      Spec := Trim(Copy(Spec, 1, At - 1));
+    end;
+    if LowerCase(Copy(Spec, 1, 5)) = 'slot:' then begin   // '-slot:<name>': whatever is on there off
+      SlotNm := LowerCase(Trim(Copy(Spec, 6, Length(Spec))));
+      Pr := -1;
+      if (SlotNm = 'rear') or (SlotNm = 'lear') then Pr := 0
+      else if (SlotNm = 'rring') or (SlotNm = 'lring') then Pr := 1;
+      if Pr >= 0 then begin   // one earring / ring slot
+        if Copy(SlotNm, 1, 1) = 'r' then SideOff[Pr] := SideOff[Pr] or 1 else SideOff[Pr] := SideOff[Pr] or 2;
+        Claim := Claim or PairMask(Pr);
+        continue;
+      end;
+      k := SlotMask(SlotNm);
+      if k = 0 then Miss := Miss + ' ' + Trim(L[i])
+      else if OffSlotN < 16 then begin
+        OffSlots[OffSlotN] := k;
+        Inc(OffSlotN);
+        Claim := Claim or k;
+      end;
+      continue;
+    end;
+    if PickItem(Spec, OID, IsOn, ItName, Part) then begin
+      if (Side > 0) and (not TakeOff) then OID := SideCopy(Spec, OID, Side, Part);   // the copy in that slot
       if PickN < 64 then begin
         PickOID[PickN] := OID;
         Inc(PickN);
       end;
       Claim := Claim or SlotGroup(Part);
+      if TakeOff then begin
+        if not IsOn then Inc(Already)
+        else if OffN < 64 then begin
+          OffOID[OffN] := OID;
+          OffName[OffN] := ItName;
+          Inc(OffN);
+        end;
+        continue;
+      end;
+      if Part = PART_TALISMAN then PutTalis := true;
       if Names <> '' then Names := Names + ', ';
       Names := Names + ItName;
+      Pr := PairOf(Part);
+      if (Side > 0) and (Pr >= 0) then begin   // into a slot: planned below
+        if Side = 1 then begin
+          WantR[Pr] := OID;
+          Names := Names + ' (R)';
+        end else begin
+          WantL[Pr] := OID;
+          Names := Names + ' (L)';
+        end;
+        continue;
+      end;
       if IsOn then Inc(Already)
       else if SendN < 64 then begin
         SendOID[SendN] := OID;
@@ -1072,11 +1858,27 @@ begin
   end;
   // the gear to come back to: kept from a bind cut short before, else what is on now (a combo that puts back)
   if (not HaveKeep) and (SkN > 0) and BBack[b] then KeepNow();
-  if PickN > 0 then
-    Engine.Msg('[Equip]', BName[b] + ': putting on ' + IntToStr(SendN) + ', on already ' + IntToStr(Already) + How, 0);
+  if PutTalis then TalisOff(false);   // talismans to put on: the other talismans off first
+  for k := 0 to OffSlotN - 1 do
+    if SlotOff(OffSlots[k]) = 0 then Inc(Already);   // nothing on there: as set already
+  for Pr := 0 to 1 do   // earrings / rings into their slots (may take one off to learn where they are)
+    PlanPair(Pr, WantR[Pr], WantL[Pr], SideOff[Pr], true, Already, Note);
+  if (PickN > 0) or (OffN > 0) then
+    Engine.Msg('[Equip]', BName[b] + ': putting on ' + IntToStr(SendN) + ', taking off ' + IntToStr(OffN) +
+      ', as set already ' + IntToStr(Already) + How, 0);
+  PlanN := PosN;
+  SendOff();   // the server does them before the putting on (in the order sent)
+  WaitOffFirst();
   AllOn := WearSent(BName[b]);
+  AddNote(Note, FixPairs());
   OnList := SendNames(true);
   OffList := SendNames(false);
+  Taken := OffResult();
+  if Note <> '' then begin
+    Engine.Msg('[Equip]', BName[b] + ': ' + Note, 128);
+    if Taken <> '' then Taken := Taken + ' -> ';
+    Taken := Taken + Note;
+  end;
 
   if SkN = 0 then begin   // a set / a weapon (+ attack)
     if Interrupted() then begin
@@ -1092,12 +1894,13 @@ begin
       if After <> '' then After := After + ' -> ';
       After := After + StartAttack(b);
     end;
-    SetReport(b, Already, Miss, OnList, OffList, After);
+    SetReport(b, Already, Miss, OnList, OffList, Taken, After);
     exit;
   end;
 
   // a combo: the skills, then back
   Rep := Names;
+  AddStep(Rep, Taken);
   Cut := Interrupted();
   if not Cut then begin
     if not AllOn then
@@ -1369,11 +2172,12 @@ begin
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     It := Inventory.User.Items(i);
     if It = nil then continue;
-    if It.BodyPart = 0 then continue;
+    if GearPart(It) = 0 then continue;
     v := (It.OID and $FFFFF) + It.EnchantLevel * 7919;
     if It.Equipped then v := v + 104729;
     n := (n * 31 + v) and $3FFFFFF;
   end;
+  n := (n * 31 + (PosR[0] and $FFFF) + (PosL[0] and $FFFF) * 3 + (PosR[1] and $FFFF) * 7 + (PosL[1] and $FFFF) * 11) and $3FFFFFF;
   for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
     Sk := SkillList.Items(i);
     if Sk = nil then continue;
@@ -1384,7 +2188,7 @@ end;
 
 procedure DumpGame(Force: boolean);
 var L: TStringList;
-  i, Sig, n, OID, ID, Part, E, Lv: integer;
+  i, Sig, n, OID, ID, Part, E, Lv, T, Pr, PR2, PL2: integer;
   It: TL2Item;
   Sk: TL2Skill;
   S, Nm: string;
@@ -1399,19 +2203,34 @@ begin
     IntToStr(BindN) + ', "errors": [' + CfgErrJson + ']},');
   L.Add(' "items": [');
   n := 0;
+  for Pr := 0 to 1 do begin   // the earrings / rings: in which slot
+    DumpR[Pr] := 0;
+    DumpL[Pr] := 0;
+    if PairNow(Pr, PR2, PL2) then begin
+      DumpR[Pr] := PR2;
+      DumpL[Pr] := PL2;
+    end;
+  end;
   for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
     It := Inventory.User.Items(i);
     if It = nil then continue;
-    Part := It.BodyPart;
+    Part := GearPart(It);
     if Part = 0 then continue;
     OID := It.OID;
     ID := It.ID;
     E := It.EnchantLevel;
     IsOn := It.Equipped;
     Nm := It.Name;
+    T := It.ItemType;
     if n = 0 then S := '  ' else S := ' ,';
     S := S + '{"oid": ' + IntToStr(OID) + ', "id": ' + IntToStr(ID) + ', "ench": ' + IntToStr(E) +
-      ', "part": ' + IntToStr(Part) + ', "on": ';
+      ', "part": ' + IntToStr(Part) + ', "type": ' + IntToStr(T);
+    Pr := PairOf(Part);
+    if IsOn and (Pr >= 0) then begin
+      if (OID = DumpR[Pr]) and (OID <> 0) then S := S + ', "at": "R"'
+      else if (OID = DumpL[Pr]) and (OID <> 0) then S := S + ', "at": "L"';
+    end;
+    S := S + ', "on": ';
     if IsOn then S := S + '1' else S := S + '0';
     L.Add(S + ', "name": ' + JsonStr(Nm) + '}');
     Inc(n);
@@ -1476,6 +2295,14 @@ begin
   HoldSay := '';
   while User.Name = '' do Delay(500);   // in the game
   CharName := User.Name;
+  MyOID := User.OID;
+  for s := 0 to 1 do begin   // earrings / rings: not known where they are till the server tells (a gear change)
+    PosR[s] := 0;
+    PosL[s] := 0;
+    Prim[s] := 2;            // both free: the left slot first (as the L2J servers do), learned from the packets
+  end;
+  PosGot := 0;
+  PosN := 0;
   CfgFile := FileTag(CharName) + '.binds';
   CfgPath := Script.Path + BINDS_DIR + CfgFile;
   GamePath := Script.Path + BINDS_DIR + FileTag(CharName) + '.game.json';
@@ -1489,7 +2316,7 @@ begin
   CfgAt := GetTickCount;
   GameAt := GetTickCount;
 
-  Engine.SendActID(2);   // packet hooks on: our move requests cancel a skill being sent (OnCliPacket)
+  Engine.SendActID(2);   // packet hooks on: our move requests cancel a skill being sent (OnCliPacket), where the earrings / rings are (OnPacket)
   Script.NewThread(@KeyEvents_Thread);
 
   while Delay(KEY_POLL_MS) do begin

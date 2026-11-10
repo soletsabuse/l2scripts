@@ -94,6 +94,16 @@
   .chip .ench:hover { border-color: var(--line2); color: var(--text); }
   .chip .ench.any { color: var(--warn); }
   .chip .on { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+  .chip .mode { font-size: 10.5px; padding: 0 5px; border-radius: 5px; cursor: pointer; color: var(--muted); border: 1px solid var(--line2); }
+  .chip .mode:hover { color: var(--text); }
+  .chip .mode.off { color: var(--bad); border-color: #6a2e38; }
+  .chip.takeoff .nm { color: var(--muted); }
+  .chip .mode.fixed { cursor: default; }
+  .chip .side { font-size: 10.5px; padding: 0 5px; border-radius: 5px; cursor: pointer; color: var(--muted); border: 1px dashed var(--line2); }
+  .chip .side:hover { color: var(--text); }
+  .chip .side.set { color: var(--accent); border-style: solid; border-color: #2c4a6e; }
+  #popList .it .at { font-size: 10.5px; color: var(--accent); }
+  .chip .now { font-size: 11px; color: var(--dim); max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip .x { padding: 0 4px; border: 0; background: transparent; color: var(--dim); font-size: 15px; line-height: 1; }
   .chip .x:hover { color: var(--bad); background: transparent; }
   .chip.miss { border-color: #6a2e38; background: #221318; }
@@ -134,6 +144,7 @@
   #popList .it .n, #popList .it .id { color: var(--dim); font-size: 11.5px; }
   #popList .it .wear { font-size: 10.5px; color: var(--ok); }
   #popList .it .in { font-size: 10.5px; color: var(--accent); }
+  #popList .it .worn { color: var(--dim); font-size: 11.5px; max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #popList .none { color: var(--muted); padding: 10px 6px; }
   .popManual { display: flex; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; }
   .popManual input { flex: 1; min-width: 0; }
@@ -187,7 +198,11 @@
     <ul>
       <li>В боте запусти <b>Scripts\equip_binds.txt</b> на персонаже. Он кладёт сюда, в <b>Library\Binds</b>, сумку и скиллы персонажа (<i>&lt;имя&gt;.game.json</i>) и читает отсюда его бинды (<i>&lt;имя&gt;.binds</i>).</li>
       <li>Всё, что меняешь на странице, сохраняется само. Бот подхватывает изменения за секунду, без перезапуска, и пишет в пати-чат <i>binds updated</i>.</li>
-      <li><b>Шмот / оружие</b> надевает одну вещь (оружие) или сразу несколько (сет, бижа). Уже надетое пропускает, ничего не снимает. Сначала надевается оружие, потом остальное: лук сам надевает стрелы.</li>
+      <li><b>Шмот / оружие</b> надевает одну вещь (оружие) или сразу несколько (сет, бижа, рубашка, пояс, браслет, талисманы). Меняются только слоты вещей бинда, уже надетое пропускается. Сначала надевается оружие и браслет, потом остальное: лук сам надевает стрелы.</li>
+      <li><b>Надеть / снять</b>: клик по метке у вещи. Вещь «снять» бинд снимает, если она надета, до того как надевать остальное.</li>
+      <li><b>Серьги и кольца по слотам</b>: у серьги или кольца в бинде есть метка «любой слот». Клик переключает на «слот R», потом «слот L». Бинд снимет вещь из этого слота и наденет туда выбранную, вторая серьга или кольцо остаётся. Можно поменять серьги местами. «Снять слот» умеет снимать одну серьгу или одно кольцо (R или L). R и L — так слоты называет сервер. Что сейчас в каком слоте, видно в списке «+ снять слот» и в подсказке у метки. Где что надето, бот узнаёт из пакета сервера после любой смены шмота. Если ещё не знает, бинд сначала снимет одну серьгу, чтобы узнать. Какой слот сервер заполняет первым, бот тоже запоминает по ходу: если в первый раз вещь встала не туда, он переставит её сам.</li>
+      <li><b>Снять слот</b> (кнопка «+ снять слот»): бинд снимает всё, что надето в выбранном слоте (шлем, щит, рубашку, пояс, все талисманы, оба кольца…), какая бы вещь там ни была. Вещи, которые этот же бинд надевает, остаются.</li>
+      <li><b>Чармы / талисманы</b>: если бинд надевает чармы, остальные надетые чармы он сначала снимает. Иначе при занятых слотах сервер ставит каждый новый чарм в первый слот, и надевается только последний. Пояс, браслеты, чармы, агатионы и шапки бот отдаёт без слота, поэтому скрипт определяет слот по названию вещи: Charm / Talisman — чарм, Belt — пояс, Bracelet — браслет.</li>
       <li><b>Атаковать цель</b> (галочка у любого бинда, кнопка «+ Оружие + атака»): в конце бот начинает автоатаку по текущей цели, у комбо — уже после возврата оружия. Если цели нет, бинд просто надевает. С галочкой Ctrl бьёт и игрока без флага.</li>
       <li><b>Оружие → скилл → назад</b>: надевает вещи и кастует скилл, пока каст не начнётся (до 2,5 с, вместе с подбеганием к цели). Потом ждёт конца каста и надевает обратно то, что было надето до нажатия. Если скилл в откате, ничего не делает и пишет, сколько осталось.</li>
       <li><b>На себя</b> (кнопка «+ Оружие → скилл на себя → назад»): бот надевает пушку, выделяет тебя и кастует скилл, например бафф, которому нужна именно эта пушка. Потом возвращает прежнее оружие, таргет остаётся на тебе. Цель для этого не нужна.</li>
@@ -233,12 +248,32 @@ function toast(t) { const b = $('toast'); b.textContent = t; b.classList.add('sh
 
 // ===== the game: slots (BodyPart of the bot) =====
 const OID_MIN = 10000000;
+// the slots past 16 bits (belt, talisman, bracelet, agathion, hair) the bot does not give: equip_binds.txt
+// sets them by the item name (16777216: the agathion, not the server's number)
 const SLOT = { 1: 'рубашка', 2: 'серьга', 4: 'серьга', 6: 'серьга', 8: 'ожерелье', 16: 'кольцо', 32: 'кольцо', 48: 'кольцо', 64: 'голова',
   128: 'оружие', 256: 'щит / стрелы', 512: 'перчатки', 1024: 'грудь', 2048: 'ноги', 4096: 'сапоги', 8192: 'плащ', 16384: 'оружие 2р',
   32768: 'доспех', 65536: 'шапка', 131072: 'костюм', 262144: 'шапка', 524288: 'шапка', 1048576: 'браслет', 2097152: 'браслет',
-  4194304: 'талисман', 268435456: 'пояс' };
-const GROUPS = [['Оружие', [128, 16384]], ['Левая рука', [256]], ['Броня', [64, 1024, 2048, 32768, 512, 4096, 8192, 1]],
-  ['Бижутерия', [8, 2, 4, 6, 16, 32, 48]]];
+  4194304: 'чарм', 16777216: 'агатион', 268435456: 'пояс', 536870912: 'брошь', 1073741824: 'камень броши' };
+const GROUPS = [['Оружие', [128, 16384]], ['Левая рука', [256]], ['Броня', [64, 1024, 2048, 32768, 512, 4096, 8192]],
+  ['Рубашка, пояс, браслет, чармы', [1, 268435456, 1048576, 2097152, 4194304, 16777216, 536870912, 1073741824]],
+  ['Бижутерия', [8, 2, 4, 6, 16, 32, 48]], ['Шапки', [65536, 262144, 524288, 131072]]];
+// "снять слот": the line '-slot:<key>', whatever is on there goes off (the keys and bits as SlotMask of the script)
+const SLOTS_OFF = [['weapon', 'Оружие', 0x4080], ['lhand', 'Левая рука (щит, стрелы)', 0x100], ['head', 'Голова', 0x40],
+  ['chest', 'Верх / доспех', 0x8400], ['legs', 'Низ', 0x800], ['gloves', 'Перчатки', 0x200], ['feet', 'Сапоги', 0x1000],
+  ['cloak', 'Плащ', 0x2000], ['shirt', 'Рубашка', 0x1], ['belt', 'Пояс', 0x10000000], ['necklace', 'Ожерелье', 0x8],
+  ['earrings', 'Серьги (обе)', 0x6], ['rear', 'Серьга R', 0x6, 'R'], ['lear', 'Серьга L', 0x6, 'L'],
+  ['rings', 'Кольца (оба)', 0x30], ['rring', 'Кольцо R', 0x30, 'R'], ['lring', 'Кольцо L', 0x30, 'L'],
+  ['bracelet', 'Браслет', 0x300000], ['talismans', 'Чармы / талисманы', 0x400000],
+  ['hair', 'Шапка', 0xD0000], ['agathion', 'Агатион', 0x1000000]];
+const slotKey = spec => { const m = /^-?\s*slot:(\w+)$/i.exec(String(spec).trim()); return m ? m[1].toLowerCase() : null; };
+const wornIn = (mask, side) => game ? (game.items || []).filter(x => x.on && (x.part & mask) && (!side || x.at === side)) : [];
+// earrings / rings: the slot R / L (as the server names them; the bot writes "at" for the ones on)
+const pairOf = part => part & 6 ? 0 : part & 48 ? 1 : -1;
+const SIDE_TEXT = { r: 'слот R', l: 'слот L' };
+const sideTitle = part => { const m = part & 6 ? 6 : 48, r = wornIn(m, 'R'), l = wornIn(m, 'L');
+  return 'Сейчас в R: ' + (r.length ? wornText(r) : 'пусто') + '; в L: ' + (l.length ? wornText(l) : 'пусто') +
+    (game && (game.items || []).some(x => x.on && (x.part & m) && !x.at) ? ' (бот ещё не знает, где что: узнает после любой смены шмота)' : ''); };
+const wornText = xs => xs.map(x => x.name + (x.ench > 0 ? ' +' + x.ench : '')).join(', ');
 const groupOf = part => { const g = GROUPS.findIndex(([, ps]) => ps.includes(part)); return g < 0 ? GROUPS.length : g; };
 
 // ===== files: Library\Binds, kept in IndexedDB (a page cannot name a folder by its path) =====
@@ -544,37 +579,62 @@ function keyBtnLook(btn, b) {
 }
 
 // ----- items and skills of a bind, by the bag / skill list the bot wrote -----
+// an item line: '2395+6' item ID + enchant, '2395' any enchant, a big number an OID; '-' first: take it off
 function itemInfo(spec) {
-  const m = /^(\d+)(?:\+(\d+))?$/.exec(String(spec).trim());
+  const sk = slotKey(spec);
+  if (sk) {
+    const s = SLOTS_OFF.find(x => x[0] === sk);
+    if (!s) return { label: spec, miss: true, bad: true };
+    return { label: 'слот «' + s[1] + '»', off: true, slot: s, worn: wornIn(s[2], s[3]), e: null, byOid: true };
+  }
+  const m = /^(-)?\s*(\d+)(?:\+(\d+))?(?:@([rl]))?$/i.exec(String(spec).trim());
   if (!m) return { label: spec, miss: true, bad: true };
-  const id = +m[1], e = m[2] === undefined ? null : +m[2], byOid = id >= OID_MIN;
+  const off = !!m[1], id = +m[2], e = m[3] === undefined ? null : +m[3], byOid = id >= OID_MIN, side = m[4] ? m[4].toLowerCase() : null;
   const tail = e === null ? '' : ' +' + e;
-  if (!game) return { label: (byOid ? 'вещь ' : 'ID ') + id + tail, id, e, byOid, unknown: true };
+  if (!game) return { label: (byOid ? 'вещь ' : 'ID ') + id + tail, id, e, byOid, off, side, unknown: true };
   const items = game.items || [];
   const hits = byOid ? items.filter(x => x.oid === id) : items.filter(x => x.id === id && (e === null || x.ench === e));
   if (!hits.length) {
     const same = byOid ? null : items.find(x => x.id === id);
-    return { label: (same ? same.name : (byOid ? 'вещь ' : 'ID ') + id) + tail, id, e, byOid, miss: true, part: same && same.part };
+    return { label: (same ? same.name : (byOid ? 'вещь ' : 'ID ') + id) + tail, id, e, byOid, off, side, miss: true, part: same && same.part };
   }
   const best = hits.find(x => x.on) || hits.slice().sort((a, b) => b.ench - a.ench)[0];
-  return { label: best.name, id, e, byOid, part: best.part, on: hits.some(x => x.on), ench: best.ench };
+  return { label: best.name, id, e, byOid, off, side, part: best.part, on: hits.some(x => x.on), ench: best.ench };
 }
+// an item line anew: '-' take off, '+N' the enchant, '@r' / '@l' into that earring / ring slot
+const specOf = (i, off, e, side) => (off ? '-' : '') + i.id + (e === null ? '' : '+' + e) + (side && !off ? '@' + side : '');
+const specBase = s => String(s).trim().replace(/^-\s*/, '').replace(/@[rl]$/i, '');
+const things = n => n + (n % 10 === 1 && n % 100 !== 11 ? ' вещь' : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? ' вещи' : ' вещей');
 function skillInfo(id) {
   if (!game) return { label: 'скилл ' + id, unknown: true };
   const s = (game.skills || []).find(x => x.id === id);
   return s ? { label: s.name, lvl: s.lvl } : { label: 'скилл ' + id, miss: true };
 }
-const itemShort = spec => { const i = itemInfo(spec); return i.label + (i.e !== null && i.e > 0 ? ' +' + i.e : (i.e === null && !i.byOid && i.ench > 0 ? ' +' + i.ench : '')); };
+const itemShort = spec => { const i = itemInfo(spec); return i.label + (i.e !== null && i.e > 0 ? ' +' + i.e : (i.e === null && !i.byOid && i.ench > 0 ? ' +' + i.ench : '')) + (i.side ? ' (' + i.side.toUpperCase() + ')' : ''); };
 
 function itemChip(b, idx) {
   const spec = b.items[idx], i = itemInfo(spec);
-  const ench = i.byOid ? null : el('span', {
+  if (i.slot) return el('span', { class: 'chip takeoff', title: 'Бинд снимет всё, что надето в этом слоте (кроме вещей, которые сам надевает)' },
+    el('span', { class: 'mode off fixed', text: 'снять' }), el('span', { class: 'slot', text: 'слот' }),
+    el('span', { class: 'nm', text: i.slot[1] }),
+    game ? el('span', { class: 'now', text: i.worn.length ? 'сейчас: ' + wornText(i.worn) : 'сейчас пусто', title: wornText(i.worn) }) : null,
+    el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.items.splice(idx, 1); changed(false); } }));
+  const ench = i.byOid || i.bad ? null : el('span', {
     class: 'ench' + (i.e === null ? ' any' : ''), text: i.e === null ? 'любая' : '+' + i.e,
     title: i.e === null ? 'Любая заточка: надетая, иначе самая заточенная. Клик: только эта заточка' : 'Только эта заточка. Клик: любая',
-    onclick: () => { b.items[idx] = i.e === null ? i.id + '+' + (i.ench | 0) : String(i.id); changed(false); } });
-  return el('span', { class: 'chip' + (i.miss ? ' miss' : ''), title: (i.miss ? (i.bad ? 'Не разобрать: ' : 'Нет в сумке: ') : '') + spec },
+    onclick: () => { b.items[idx] = specOf(i, i.off, i.e === null ? (i.ench | 0) : null, i.side); changed(false); } });
+  const mode = i.bad ? null : el('span', {
+    class: 'mode' + (i.off ? ' off' : ''), text: i.off ? 'снять' : 'надеть',
+    title: i.off ? 'Бинд снимет эту вещь, если она надета. Клик: надевать' : 'Бинд наденет эту вещь. Клик: снимать',
+    onclick: () => { b.items[idx] = specOf(i, !i.off, i.e, i.side); changed(false); } });
+  const side = i.bad || i.off || pairOf(i.part | 0) < 0 ? null : el('span', {
+    class: 'side' + (i.side ? ' set' : ''), text: i.side ? SIDE_TEXT[i.side] : 'любой слот',
+    title: (i.side ? 'Наденет в слот ' + i.side.toUpperCase() + ', вещь из него снимет' : 'Слот выберет сервер') + '. Клик: любой → R → L. ' + sideTitle(i.part),
+    onclick: () => { b.items[idx] = specOf(i, false, i.e, i.side === 'r' ? 'l' : i.side === 'l' ? null : 'r'); changed(false); } });
+  return el('span', { class: 'chip' + (i.miss ? ' miss' : '') + (i.off ? ' takeoff' : ''), title: (i.miss ? (i.bad ? 'Не разобрать: ' : 'Нет в сумке: ') : '') + spec },
+    mode,
     i.part && SLOT[i.part] ? el('span', { class: 'slot', text: SLOT[i.part] }) : null,
-    el('span', { class: 'nm', text: i.label }), ench,
+    el('span', { class: 'nm', text: i.label }), ench, side,
     i.on ? el('span', { class: 'on', title: 'надето сейчас' }) : null,
     i.miss && !i.bad ? el('span', { class: 'no', text: 'нет в сумке' }) : null,
     el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.items.splice(idx, 1); changed(false); } }));
@@ -618,7 +678,10 @@ function warnsOf(b, i) {
 }
 function summaryOf(b) {
   const parts = [];
-  if (b.items.length) parts.push(b.items.length <= 3 ? 'надеть ' + b.items.map(itemShort).join(', ') : 'надеть ' + b.items.length + ' вещей');
+  const offs = b.items.filter(s => itemInfo(s).off), ons = b.items.filter(s => !itemInfo(s).off);
+  if (offs.length) parts.push('снять ' + (offs.length <= 3 ? offs.map(itemShort).join(', ') : things(offs.length)));
+  if (ons.some(s => itemInfo(s).part === 4194304)) parts.push('снять остальные чармы');
+  if (ons.length) parts.push('надеть ' + (ons.length <= 3 ? ons.map(itemShort).join(', ') : things(ons.length)));
   if (b.skills.length && b.needTgt && !b.self) parts.unshift('если есть цель');
   for (const id of b.skills) parts.push(skillInfo(id).label + (b.self ? ' на себя' : ''));
   if (b.skills.length && b.safe) parts.push('снять цель (сейф каст)');
@@ -650,7 +713,7 @@ function card(b, i) {
       el('button', { class: 'ghost icon', title: 'Удалить', onclick: () => { if (confirm('Удалить бинд «' + (b.name || keyShow(b.key) || 'без названия') + '»?')) { cfg.binds.splice(i, 1); changed(true); } } },
         svgIcon('trash'))),
     el('div', { class: 'body' },
-      el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Надеть' }), el('div', { class: 'chips items' })),
+      el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Вещи' }), el('div', { class: 'chips items' })),
       el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Скиллы' }), el('div', { class: 'chips skills' })),
       el('div', { class: 'row opts-row' }, el('span', { class: 'lbl', text: 'После' }),
         el('div', { class: 'opts' },
@@ -699,11 +762,12 @@ function refreshCards() {
     const kd = c.querySelector('.kind'); kd.className = 'kind ' + k; kd.textContent = kindText(b);
     const it = c.querySelector('.chips.items'); it.textContent = '';
     b.items.forEach((s, j) => it.append(itemChip(b, j)));
-    it.append(el('button', { class: 'add', text: b.items.length ? '+ ещё вещь' : (k === 'skill' ? '+ вещь (оружие)' : '+ вещь'), onclick: e => openPick(e.currentTarget, b, 'items') }));
+    it.append(el('button', { class: 'add additem', text: b.items.length ? '+ ещё вещь' : (k === 'skill' ? '+ вещь (оружие)' : '+ вещь'), onclick: e => openPick(e.currentTarget, b, 'items') }),
+      el('button', { class: 'add addslot', text: '+ снять слот', title: 'Снять всё, что надето в слоте: шлем, щит, рубашку, талисманы...', onclick: e => openPick(e.currentTarget, b, 'slots') }));
     const sk = c.querySelector('.chips.skills'); sk.textContent = '';
     b.skills.forEach((s, j) => sk.append(skillChip(b, j)));
     sk.append(el('button', { class: 'add', text: b.skills.length ? '+ ещё скилл' : '+ скилл', onclick: e => openPick(e.currentTarget, b, 'skills') }));
-    if (pick && pick.b === b) pick.anchor = (pick.kind === 'items' ? it : sk).lastElementChild;   // the picker stays under the new "+" button
+    if (pick && pick.b === b) pick.anchor = pick.kind === 'skills' ? sk.lastElementChild : it.querySelector(pick.kind === 'slots' ? '.addslot' : '.additem');   // the picker stays under the new "+" button
     for (const o of c.querySelectorAll('.opts .o-sk')) o.hidden = !b.skills.length;
     for (const o of c.querySelectorAll('.opts .o-tgt')) o.hidden = !b.skills.length || b.self;   // on self: no target needed
     c.querySelector('.opts .o-ctrl').hidden = !b.skills.length && !b.attack;
@@ -721,7 +785,7 @@ for (const btn of document.querySelectorAll('#adds button')) btn.onclick = () =>
   cfg.binds.push(b); changed(true);
   const c = $('list').lastElementChild;
   c.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  setTimeout(() => openPick(c.querySelector(k === 'skill' ? '.chips.skills .add' : '.chips.items .add'), b, k === 'skill' ? 'skills' : 'items'), 250);
+  setTimeout(() => openPick(c.querySelector(k === 'skill' ? '.chips.skills .add' : '.chips.items .additem'), b, k === 'skill' ? 'skills' : 'items'), 250);
 };
 
 // ===== the picker: items of the bag / skills of the character =====
@@ -733,6 +797,8 @@ function openPick(anchor, b, kind) {
   $('popSearch').value = '';
   $('popManual').value = '';
   $('popManual').placeholder = kind === 'items' ? 'ID вещи, ID+заточка (2395+6) или OID' : 'ID скилла';
+  document.querySelector('#pop .popManual').hidden = kind === 'slots';
+  $('popSearch').placeholder = kind === 'slots' ? 'поиск слота' : 'поиск';
   renderPick(); placePick();
   $('popSearch').focus();
 }
@@ -750,18 +816,29 @@ function renderPick() {
   const list = $('popList'), top = $('popTop'), q = $('popSearch').value.trim().toLowerCase();
   list.textContent = ''; top.textContent = '';
   const { b, kind } = pick;
+  if (kind === 'slots') {   // a click: the slot in / out of the bind
+    top.append(el('div', { class: 'none', style: 'padding:2px 6px', text: 'Бинд снимет всё, что надето в слоте. Клик ещё раз — убрать.' }));
+    for (const s of SLOTS_OFF.filter(x => !q || x[1].toLowerCase().includes(q))) {
+      const at = b.items.findIndex(x => slotKey(x) === s[0]), worn = wornIn(s[2], s[3]);
+      list.append(el('div', { class: 'it', onclick: () => { if (at >= 0) b.items.splice(at, 1); else b.items.push('-slot:' + s[0]); changed(false); renderPick(); } },
+        el('span', { class: 'nm', text: s[1] }),
+        game ? el('span', { class: 'worn', text: worn.length ? wornText(worn) : 'пусто', title: wornText(worn) }) : null,
+        at >= 0 ? el('span', { class: 'in', text: '✓' }) : null));
+    }
+    return;
+  }
   if (!game) { list.append(el('div', { class: 'none', text: 'Нет данных от бота: запусти equip_binds.txt этим персонажем. Пока можно вписать ID вручную.' })); return; }
   if (kind === 'items') {
     const worn = (game.items || []).filter(x => x.on);
     if (worn.length && !q) top.append(el('button', { class: 'add', style: 'width:100%;justify-content:center',
       text: 'Взять всё, что надето сейчас (' + worn.length + ')', title: 'Удобно для сета: оденься в игре как надо и нажми',
-      onclick: () => { for (const x of worn) b.items.push(x.id + '+' + x.ench); changed(false); toast('Добавлено ' + worn.length + ' вещей'); closePick(); } }));
+      onclick: () => { for (const x of worn) b.items.push(x.id + '+' + x.ench + (x.at && pairOf(x.part) >= 0 ? '@' + x.at.toLowerCase() : '')); changed(false); toast('Добавлено: ' + things(worn.length)); closePick(); } }));
     // one row per item ID + enchant (copies counted)
     const rows = new Map();
     for (const x of game.items || []) {
       const k = x.id + '+' + x.ench;
-      const r = rows.get(k) || { id: x.id, ench: x.ench, name: x.name, part: x.part, n: 0, on: 0 };
-      r.n++; if (x.on) r.on++; rows.set(k, r);
+      const r = rows.get(k) || { id: x.id, ench: x.ench, name: x.name, part: x.part, n: 0, on: 0, at: '' };
+      r.n++; if (x.on) r.on++; if (x.on && x.at) r.at = (r.at ? r.at + '+' : '') + x.at; rows.set(k, r);
     }
     let all = [...rows.values()];
     if (q) all = all.filter(r => r.name.toLowerCase().includes(q) || String(r.id) === q);
@@ -770,12 +847,13 @@ function renderPick() {
     for (const r of all) {
       const gi = groupOf(r.part);
       if (gi !== g) { g = gi; list.append(el('div', { class: 'grp', text: gi < GROUPS.length ? GROUPS[gi][0] : 'Прочее' })); }
-      const inBind = b.items.filter(s => s === r.id + '+' + r.ench || s === String(r.id)).length;
+      const inBind = b.items.map(specBase).filter(s => s === r.id + '+' + r.ench || s === String(r.id)).length;
       list.append(el('div', { class: 'it', onclick: () => { b.items.push(r.id + '+' + r.ench); changed(false); renderPick(); } },
         el('span', { class: 'nm', text: r.name, title: r.name + ' · ID ' + r.id + (SLOT[r.part] ? ' · ' + SLOT[r.part] : '') }),
         r.ench > 0 ? el('span', { class: 'e', text: '+' + r.ench }) : null,
         r.n > 1 ? el('span', { class: 'n', text: '×' + r.n }) : null,
         r.on ? el('span', { class: 'wear', text: 'надето' }) : null,
+        r.at ? el('span', { class: 'at', text: r.at, title: 'в слоте ' + r.at }) : null,
         inBind ? el('span', { class: 'in', text: inBind > 1 ? '✓×' + inBind : '✓' }) : null));
     }
     if (!all.length) list.append(el('div', { class: 'none', text: q ? 'Ничего не нашлось' : 'В сумке нет вещей, которые надеваются' }));
@@ -797,7 +875,7 @@ $('popSearch').onkeydown = e => { if (e.key === 'Enter') { const f = $('popList'
 function manualAdd() {
   const v = $('popManual').value.trim(); if (!v || !pick) return;
   if (pick.kind === 'items') {
-    if (!/^\d+(\+\d+)?$/.test(v)) { toast('Вещь: ID, ID+заточка (2395+6) или OID'); return; }
+    if (!/^-?\d+(\+\d+)?(@[rlRL])?$/.test(v)) { toast('Вещь: ID, ID+заточка (2395+6) или OID; минус впереди — снять, @r / @l в конце — слот серьги / кольца'); return; }
     pick.b.items.push(v);
   } else {
     const id = parseInt(v, 10); if (!(id > 0) || String(id) !== v) { toast('Скилл: его ID, число'); return; }
