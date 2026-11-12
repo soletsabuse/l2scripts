@@ -10,6 +10,10 @@ uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
 //             the X of the target window does (RequestTargetCanceld $48 unselect=1: the cast goes on)
 //   + attack  (attack=1, any bind) -> at the end the auto attack at the target (Engine.Attack), if there
 //             is one: a weapon + attack, a set + attack, a combo + attack (after what was on is back)
+//   on a cast (on_cast=<skill ID>|..., the page: "каст в меня") -> someone starts casting one of these
+//             skills on us: the bind is done by itself (a key is not needed); cast_back=1: the slots it
+//             changed go back as they were once the cast is over, cast_delay ms after its end;
+//             skip_buffs=<buff ID>|...: not done while one of these buffs is on us
 // The binds are made in the page Library\Binds\binds.html (open it in Chrome / Edge). It writes
 // Library\Binds\<character>.binds; this script reads that file on the fly (a change counts within a
 // second, no restart). The script writes Library\Binds\<character>.game.json for the page: the items
@@ -52,6 +56,20 @@ uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
 // puts it back too (all of it if it puts back itself, else what is not in the slots it puts on).
 // A key works only while the game window of THIS character is the active one. Plain letters fire
 // while typing in the game chat too - better a key with Ctrl / Alt / Shift.
+// Cast binds (on_cast): the server's MagicSkillUse ($48: [the cast bar type - GoD+ only, a small number]
+// [caster][target][skill][level][hit time]...) with us as the target, not by us, of one of these skills ->
+// the packet thread counts it for the bind, CastTick fires the bind as a key press (not over a cast bind
+// running: after it). cast_back=1: what is on is noted first (SnapNow); the slots the bind changed go back
+// as they were (AutoRestore: what was on goes on - earrings / rings into their own slots -, what was not
+// goes off) once every such cast on us is over (its hit time ran out / MagicSkillCanceld $49 came) and
+// cast_delay ms more. skip_buffs: one of these effects on us -> the cast does not fire it (said in the
+// bot's window). On us: in the bot's buff list (User.Buffs) or in the server's own lists - every effect
+// (AbnormalStatusUpdate $85: [count h] then GoD+ [id d][level h][sub level h][type d][time h, $7FFF: + d],
+// H5 [id d][level h][time d]; read by the packet thread, trusted only if the records fill the packet) and
+// the short buff (ShortBuffStatusUpdate $FA: [id d][level][time d at 8, s]; 0 none). The bot's list
+// misses some (the trigger row of the buffs). While its back waits, the same cast again does not fire it again. A bind pressed
+// meanwhile that puts gear on for good keeps its slots (they do not go back). Every cast on us goes to
+// the .game.json ("casts": skill, name, by whom) for the page to pick the skills from.
 // What went on is written as a fake PARTY chat message (only you see it; on / off and the sender
 // name are set in the page).
 
@@ -99,6 +117,10 @@ var
   BName, BKeyText, BItems, BSkills: array[0..31] of string;   // BItems / BSkills: '|' between
   BBack, BCtrl, BShift, BNeedTgt, BAttack, BSelf, BSafe: array[0..31] of boolean;
   BDelay: array[0..31] of integer;                   // ms between the end of the cast and putting back
+  BCast: array[0..31] of string;                     // cast binds: the skills cast on us that fire it ('|')
+  BCastBack: array[0..31] of boolean;                // ... the gear back after the cast
+  BCastDelay: array[0..31] of integer;               // ... ms after its end
+  BSkipBuff: array[0..31] of string;                 // ... not while one of these buffs is on us ('|')
   BWas: array[0..31] of boolean;                     // a look: the key was down the last time
   NextBind, NextSrc: integer;                        // the last bind key pressed (-1 none; by 1 a key event, 2 a look)
   CurBind, LastBind: integer;                        // the bind running now (-1 none) / done last
@@ -122,6 +144,10 @@ var
   TOn, TBack, TCtrl, TShift, TNeedTgt, TAttack, TSelf, TSafe: array[0..31] of boolean;
   TKey, TName, TItems, TSkills: array[0..31] of string;
   TDelay: array[0..31] of integer;
+  TCast: array[0..31] of string;
+  TCastBack: array[0..31] of boolean;
+  TCastDelay: array[0..31] of integer;
+  TSkipBuff: array[0..31] of string;
   ChatOn: boolean;
   ChatName: string;
   // the files
@@ -159,6 +185,45 @@ var
   HaveKeep: boolean;
   SkIDs: array[0..15] of integer;                    // the skills of the bind
   SkN: integer;
+  // cast binds: the skills that fire them (the packet thread reads these - numbers only; TrigN 0 while read anew)
+  TrigN: integer;
+  TrigSk, TrigOf, TrigBk, TrigDl: array[0..63] of integer;   // skill, bind, puts back (1), its pause (ms)
+  TrigCnt, TrigSeen: array[0..31] of integer;        // per bind: casts counted (packet thread) / done (main)
+  TrigBy, TrigSkOf: array[0..31] of integer;         // ... the last one: the caster, the skill
+  // the casts on us of those skills (the packet thread writes): caster, hit time (ms; cut by a cancel),
+  // the pause after it, puts back (1); started then
+  COID, CDur, CDl, CBk: array[0..7] of integer;
+  CAt: array[0..7] of cardinal;
+  // every cast on us, for the page: a ring the packet thread writes, the list the main thread makes of it
+  RingSk, RingLv, RingBy, RingHit: array[0..15] of integer;
+  RingN, RingSeen, CastTold: integer;
+  SeenID, SeenLv, SeenHit, SeenN: array[0..39] of integer;
+  SeenNm, SeenBy, SeenTm: array[0..39] of string;
+  SeenAt: array[0..39] of cardinal;
+  SeenCnt: integer;
+  CastsNew: boolean;
+  // the gear to come back to after the casts: what was on in the slot groups AClaim before the cast binds
+  AN, AClaim: integer;
+  AOID, APart, ASide: array[0..63] of integer;
+  AKnown: array[0..1] of boolean;                    // ... its earrings / rings: in which slot (known)
+  AName: string;                                     // ... the binds that changed them
+  AutoRan: array[0..31] of boolean;                  // a cast bind is on, its back waits (its slots: AutoClaimOf)
+  AutoClaimOf: array[0..31] of integer;
+  SnapOID, SnapPart, SnapSide: array[0..63] of integer;   // what is on before a cast bind
+  SnapN: integer;
+  SnapKnown: array[0..1] of boolean;
+  RunClaim, RunSrc, CurSrc: integer;                 // RunBind: the slot groups it changes; how it was fired (3 a cast)
+  CastFired: integer;                                // the bind CastTick fired (main thread; -1 none): NextSrc is
+                                                     // not trusted for it (the key thread may write it meanwhile)
+  RunCause, RunTitle: string;                        // ... a cast bind: '<skill> from <caster>'; its name for the chat
+  // the effects on us as the server lists them (AbnormalStatusUpdate $85, the packet thread writes - numbers
+  // only): two halves of 128 (one is written while the other is read), FxCur the one to read
+  FxID, FxLv: array[0..255] of integer;
+  FxCnt: array[0..1] of integer;
+  FxCur, FxLay, FxBad, FxBadSize, FxTold: integer;   // FxLay: 0 none read yet, 1 GoD+, 2 H5; not read: how often, its size
+  ShortID, ShortDur: integer;                        // ShortBuffStatusUpdate $FA: the short buff (0 none), its time (s)
+  ShortAt: cardinal;
+  SkipTold: integer;                                 // "none of the skip buffs on you" said this often
 
 // ===================== keys (as pvp_binds) =====================
 
@@ -302,6 +367,7 @@ begin
     if KeyDown(ModVK(m)) then ModAt[m] := GetTickCount;
   Focused := GetForegroundWindow() = Engine.GameWindow;   // only in the game window of this character
   for s := 0 to BindN - 1 do begin
+    if BKey[s] = 0 then continue;   // a cast bind with no key
     VK := BKey[s] mod 256;
     St := GetAsyncKeyState(VK);
     DownNow := (St and $8000) <> 0;
@@ -452,11 +518,128 @@ begin
   end;
 end;
 
-// the keys and the held target: every step of the waits
+// a skill's name for the reports: as seen cast on us, ours, else 'skill <ID>'
+function TrigName(Sk: integer): string;
+var j: integer;
+  Skl: TL2Skill;
+begin
+  for j := 0 to SeenCnt - 1 do
+    if (SeenID[j] = Sk) and (SeenNm[j] <> '') then begin
+      result := SeenNm[j];
+      exit;
+    end;
+  if SkillList.ByID(Sk, Skl) then result := Skl.Name
+  else result := 'skill ' + IntToStr(Sk);
+end;
+
+// the short buff of the server ($FA) on now: its ID, 0 none
+function ShortNow(): integer;
+begin
+  result := 0;
+  if (ShortID > 0) and (ShortDur > 0) and (GetTickCount - ShortAt < ShortDur * 1000) then result := ShortID;
+end;
+
+// the effect ID on us: in the bot's buff list, the server's list ($85), the short buff ($FA). Nm: its name
+function EffectOn(ID: integer; var Nm: string): boolean;
+var i, h: integer;
+  Skl: TL2Skill;
+begin
+  result := false;
+  Nm := '';
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then
+    if (not result) and (User.Buffs.Items(i).ID = ID) then begin
+      result := true;
+      Nm := User.Buffs.Items(i).Name;
+    end;
+  if not result then begin
+    h := FxCur;
+    for i := 0 to FxCnt[h] - 1 do
+      if FxID[h * 128 + i] = ID then result := true;
+  end;
+  if (not result) and (ShortNow() = ID) then result := true;
+  if result and (Nm = '') then begin
+    if SkillList.ByID(ID, Skl) then Nm := Skl.Name
+    else Nm := 'effect ' + IntToStr(ID);
+  end;
+end;
+
+// the first effect on us of a list ('|' between IDs): its name. '' none of them
+function BuffOn(List: string): string;
+var p, ID: integer;
+  S, Nm: string;
+begin
+  result := '';
+  S := List;
+  while (S <> '') and (result = '') do begin
+    p := Pos('|', S);
+    if p = 0 then p := Length(S) + 1;
+    ID := StrToIntDef(Trim(Copy(S, 1, p - 1)), 0);
+    Delete(S, 1, p);
+    if ID <= 0 then continue;
+    if EffectOn(ID, Nm) then result := Nm + ' (' + IntToStr(ID) + ')';
+  end;
+end;
+
+// the effects on us by their IDs, for the bot's window: the bot's list / the server's / the short buff
+function EffectsText(): string;
+var i, h: integer;
+  S: string;
+begin
+  S := '';
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then
+    S := S + ' ' + IntToStr(User.Buffs.Items(i).ID);
+  result := 'bot list:' + S;
+  if FxLay = 0 then result := result + '; server list: not read yet'
+  else begin
+    S := '';
+    h := FxCur;
+    for i := 0 to FxCnt[h] - 1 do
+      S := S + ' ' + IntToStr(FxID[h * 128 + i]);
+    result := result + '; server list:' + S;
+  end;
+  if ShortNow() <> 0 then result := result + '; short buff ' + IntToStr(ShortNow());
+end;
+
+// a cast on us of a skill of a cast bind (the packet thread counted it): the bind is done next, as a key
+// press - not over a cast bind running (after it), not over a key pressed, not again while it is on and
+// its back waits (the same cast again), not while a buff of its skip list is on us
+procedure CastTick();
+var b: integer;
+  Nm: string;
+begin
+  if (CurBind >= 0) and (CurSrc = 3) then exit;
+  if NextBind >= 0 then exit;
+  for b := 0 to BindN - 1 do begin
+    if TrigCnt[b] = TrigSeen[b] then continue;
+    TrigSeen[b] := TrigCnt[b];
+    if User.Dead then continue;
+    if AutoRan[b] and (AClaim <> 0) and ((AutoClaimOf[b] and (not AClaim)) = 0) then continue;
+    if BSkipBuff[b] <> '' then begin
+      Nm := BuffOn(BSkipBuff[b]);
+      if Nm <> '' then begin
+        Engine.Msg('[Equip]', BName[b] + ': ' + TrigName(TrigSkOf[b]) + ' from ' + LiveName(TrigBy[b]) +
+          ' - not done: you have ' + Nm, 0);
+        continue;
+      end;
+      if SkipTold < 3 then begin   // what is on us (the IDs), to see why
+        Inc(SkipTold);
+        Engine.Msg('[Equip]', BName[b] + ': none of its skip buffs (' + BSkipBuff[b] + ') on you - ' + EffectsText(), 0);
+      end;
+    end;
+    CastFired := b;
+    Trigger(b, 3);
+    if NextBind = b then exit;
+    CastFired := -1;
+    if NextBind >= 0 then exit;
+  end;
+end;
+
+// the keys, the held target, the casts on us: every step of the waits
 procedure Idle();
 begin
   PollKeys();
   HoldTick();
+  CastTick();
 end;
 
 // a live target now - or the held one, targeted again within 400 ms
@@ -515,6 +698,7 @@ begin
     if GetForegroundWindow() <> Engine.GameWindow then continue;
     for s := 0 to BindN - 1 do begin
       Code := BKey[s];
+      if Code = 0 then continue;
       if KeyCode <> Code mod 256 then continue;
       St := GetAsyncKeyState(Code mod 256);
       if (St and $8001) = 0 then begin   // not down, not tapped: not a press of this key
@@ -561,6 +745,123 @@ begin
   ActAt := GetTickCount;
 end;
 
+// MagicSkillCanceld $49 [caster]: his cast is over now. Numbers only (the packet thread)
+procedure CastGone(By: integer);
+var k: integer;
+begin
+  for k := 0 to 7 do
+    if (COID[k] = By) and (GetTickCount - CAt[k] < CDur[k]) then CDur[k] := GetTickCount - CAt[k];
+end;
+
+// MagicSkillUse $48: [the cast bar type: GoD+ only, a small number][caster][target][skill][level][hit time]
+// ... On us, not by us: into the ring for the page; a skill of a cast bind -> counted for that bind, the
+// cast noted till its end (+ the pause) if a bind puts back after it. Numbers only (the packet thread)
+procedure CastSeen(Data: Pointer; Size: Word);
+var o, By, Tg, Sk, Lv, Hit, i, k, b, Bk, Dl, Best: integer;
+begin
+  o := 0;
+  if Size >= 24 then begin
+    k := RdInt(Data, 0);
+    if (k >= 0) and (k < 256) then o := 4;
+  end;
+  if Size < o + 20 then exit;
+  By := RdInt(Data, o);
+  Tg := RdInt(Data, o + 4);
+  Sk := RdInt(Data, o + 8);
+  Lv := RdInt(Data, o + 12);
+  Hit := RdInt(Data, o + 16);
+  if (MyOID = 0) or (Tg <> MyOID) or (By = MyOID) or (By = 0) then exit;
+  if (Sk <= 0) or (Sk > 1000000) then exit;
+  if (Hit < 0) or (Hit > 60000) then Hit := 0;
+  i := RingN mod 16;
+  RingSk[i] := Sk;
+  RingLv[i] := Lv;
+  RingBy[i] := By;
+  RingHit[i] := Hit;
+  Inc(RingN);
+  Bk := -1;
+  Dl := 0;
+  for i := 0 to TrigN - 1 do
+    if TrigSk[i] = Sk then begin
+      b := TrigOf[i];
+      TrigBy[b] := By;
+      TrigSkOf[b] := Sk;
+      Inc(TrigCnt[b]);
+      if TrigBk[i] > Bk then Bk := TrigBk[i];
+      if TrigDl[i] > Dl then Dl := TrigDl[i];
+    end;
+  if Bk < 0 then exit;
+  // its place: the caster's own, else one over, else the oldest
+  Best := -1;
+  for k := 0 to 7 do
+    if COID[k] = By then Best := k;
+  if Best < 0 then
+    for k := 0 to 7 do
+      if (Best < 0) and (GetTickCount - CAt[k] >= CDur[k] + CDl[k]) then Best := k;
+  if Best < 0 then begin
+    Best := 0;
+    for k := 1 to 7 do
+      if CAt[k] < CAt[Best] then Best := k;
+  end;
+  CBk[Best] := 0;   // not counted while written
+  COID[Best] := By;
+  CAt[Best] := GetTickCount;
+  CDur[Best] := Hit;
+  CDl[Best] := Dl;
+  CBk[Best] := Bk;
+end;
+
+// AbnormalStatusUpdate $85 (our effects, the whole list each time): [count h] then per effect GoD+ [id d]
+// [level h][sub level h][abnormal type d][time h; $7FFF: + d] / H5 [id d][level h][time d]. Read only if
+// the records fill the packet (the size may count the opcode). Numbers only (the packet thread)
+procedure FxSeen(Data: Pointer; Size: Word);
+var n, i, off, t, h, Bad: integer;
+begin
+  if Size < 2 then exit;
+  n := RdByte(Data, 0) + RdByte(Data, 1) * 256;
+  if n > 120 then begin
+    Inc(FxBad);
+    FxBadSize := Size;
+    exit;
+  end;
+  off := 2;
+  Bad := 0;
+  for i := 0 to n - 1 do begin
+    if off + 14 > Size then Bad := 1;
+    if Bad = 1 then break;
+    t := RdByte(Data, off + 12) + RdByte(Data, off + 13) * 256;
+    off := off + 14;
+    if t = $7FFF then off := off + 4;
+  end;
+  h := 1 - FxCur;
+  if (Bad = 0) and ((off = Size) or (off + 1 = Size)) then begin   // GoD+
+    off := 2;
+    for i := 0 to n - 1 do begin
+      FxID[h * 128 + i] := RdInt(Data, off);
+      FxLv[h * 128 + i] := RdByte(Data, off + 4) + RdByte(Data, off + 5) * 256;
+      t := RdByte(Data, off + 12) + RdByte(Data, off + 13) * 256;
+      off := off + 14;
+      if t = $7FFF then off := off + 4;
+    end;
+    FxCnt[h] := n;
+    FxCur := h;
+    FxLay := 1;
+    exit;
+  end;
+  if (2 + n * 10 = Size) or (3 + n * 10 = Size) then begin   // H5
+    for i := 0 to n - 1 do begin
+      FxID[h * 128 + i] := RdInt(Data, 2 + i * 10);
+      FxLv[h * 128 + i] := RdByte(Data, 6 + i * 10) + RdByte(Data, 7 + i * 10) * 256;
+    end;
+    FxCnt[h] := n;
+    FxCur := h;
+    FxLay := 2;
+    exit;
+  end;
+  Inc(FxBad);
+  FxBadSize := Size;
+end;
+
 // the server's packets (the same hooks). FE:0156 ExUserInfoEquipSlot: [our OID][slots: word][mask: a bit
 // per slot, the high bit first] then per slot in the mask [length: word][OID][item ID][...]. Slots 1 / 2
 // the right / left earring, 4 / 5 the right / left ring. Both of a pair free before, one taken now:
@@ -568,6 +869,28 @@ end;
 procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
 var n, s, off, ln, O, Got, V1, V2, V4, V5: integer;
 begin
+  if ID1 = $48 then begin   // MagicSkillUse: a cast on us (cast binds)
+    CastSeen(Data, Size);
+    exit;
+  end;
+  if ID1 = $49 then begin   // MagicSkillCanceld: a cast stopped
+    if Size >= 4 then CastGone(RdInt(Data, 0));
+    exit;
+  end;
+  if ID1 = $85 then begin   // AbnormalStatusUpdate: our effects (cast binds: skip buffs)
+    FxSeen(Data, Size);
+    exit;
+  end;
+  if ID1 = $FA then begin   // ShortBuffStatusUpdate: the short buff
+    if Size >= 12 then begin
+      ShortDur := 0;
+      ShortID := RdInt(Data, 0);
+      ShortAt := GetTickCount;
+      ShortDur := RdInt(Data, 8);
+      if (ShortDur < 0) or (ShortDur > 86400) then ShortDur := 0;
+    end;
+    exit;
+  end;
   if ID1 <> $FE then exit;
   if ID2 <> $156 then exit;
   if Size < 14 then exit;
@@ -1680,10 +2003,14 @@ begin
     AddStep(Main, After);
     Engine.Msg('[Equip]', BName[b] + ': ' + After, 0);
   end;
-  if Copy(Main, 1, 4) = 'on: ' then PartySay(BName[b] + ' ' + Main)
-  else if Main <> '' then PartySay(BName[b] + ': ' + Main);
-  if OffList <> '' then PartySay(BName[b] + ' NOT on: ' + OffList);
-  if Miss <> '' then PartySay(BName[b] + ' not in the bag:' + Miss);
+  if (RunSrc = 3) and (Main = 'as set already') and (OffList = '') and (Miss = '') then begin   // a cast bind, all on: quiet
+    Engine.Msg('[Equip]', RunTitle + ': as set already', 0);
+    exit;
+  end;
+  if Copy(Main, 1, 4) = 'on: ' then PartySay(RunTitle + ' ' + Main)
+  else if Main <> '' then PartySay(RunTitle + ': ' + Main);
+  if OffList <> '' then PartySay(RunTitle + ' NOT on: ' + OffList);
+  if Miss <> '' then PartySay(RunTitle + ' not in the bag:' + Miss);
 end;
 
 // a bind cut short by a new bind key: one that puts on for good (Claim: its slot groups) takes those
@@ -1724,7 +2051,13 @@ var L: TStringList;
   IsOn, AllOn, Cut, Moved, TakeOff, PutTalis: boolean;
   ItName, Miss, How, Rep, Names, SkNm, OnList, OffList, After, Spec, Taken, SlotNm, Note: string;
 begin
-  if Src = 1 then How := ' (key: game)' else How := ' (key: poll)';
+  if Src = 1 then How := ' (key: game)'
+  else if Src = 3 then How := ' (a cast on you)'
+  else How := ' (key: poll)';
+  RunClaim := 0;
+  RunSrc := Src;
+  RunTitle := BName[b];
+  if (Src = 3) and (RunCause <> '') then RunTitle := BName[b] + ' [' + RunCause + ']';
   Moved := false;
   if User.Dead then begin
     SayAll(BName[b] + ': dead - nothing done');
@@ -1851,6 +2184,7 @@ begin
       Miss := Miss + ' ' + Trim(L[i]);
   end;
   L.Free;
+  RunClaim := Claim;
   if Miss <> '' then Engine.Msg('[Equip]', BName[b] + ': not in the bag:' + Miss, 128);
   if (SkN > 0) and (PickN = 0) and (Miss <> '') then begin   // a combo with none of its items
     NothingDone(b, 'not in the bag:' + Miss + ' - nothing done');
@@ -1953,7 +2287,278 @@ begin
   if BAttack[b] and (not Moved) then AddStep(Rep, StartAttack(b));   // moved away: no attack
   if Miss <> '' then Rep := Rep + ' (not in the bag:' + Miss + ')';
   Engine.Msg('[Equip]', BName[b] + ': ' + Rep + How, 0);
-  PartySay(BName[b] + ': ' + Rep);
+  PartySay(RunTitle + ': ' + Rep);
+end;
+
+// ===================== cast binds: a cast on us fires the bind, the gear goes back after it =====================
+
+// a skill cast on us by By: its name as the caster casts it (the bot's base), else ours. '' not known
+function CastSkName(By, Sk: integer): string;
+var i: integer;
+  Skl: TL2Skill;
+begin
+  result := '';
+  try
+    for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+      if CharList(i).OID = By then begin
+        if CharList(i).Cast.ID = Sk then result := CharList(i).Cast.Name;
+        break;
+      end;
+    if result = '' then
+      for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
+        if NpcList(i).OID = By then begin
+          if NpcList(i).Cast.ID = Sk then result := NpcList(i).Cast.Name;
+          break;
+        end;
+  except
+    result := '';
+  end;
+  if (result = '') and SkillList.ByID(Sk, Skl) then result := Skl.Name;
+end;
+
+// the casts on us (the ring of the packet thread) into the list for the page: the skill, its name, by whom.
+// The first ones also into the bot's window (the IDs; a check that the packet is read right)
+procedure CastLog();
+var i, j, k, Sk: integer;
+begin
+  if RingN - RingSeen > 16 then RingSeen := RingN - 16;
+  while RingSeen < RingN do begin
+    i := RingSeen mod 16;
+    Sk := RingSk[i];
+    j := -1;
+    for k := 0 to SeenCnt - 1 do
+      if SeenID[k] = Sk then j := k;
+    if j < 0 then begin
+      if SeenCnt < 40 then begin
+        j := SeenCnt;
+        Inc(SeenCnt);
+      end else begin   // full: the one seen longest ago goes
+        j := 0;
+        for k := 1 to SeenCnt - 1 do
+          if SeenAt[k] < SeenAt[j] then j := k;
+      end;
+      SeenID[j] := Sk;
+      SeenNm[j] := '';
+      SeenN[j] := 0;
+    end;
+    SeenLv[j] := RingLv[i];
+    SeenHit[j] := RingHit[i];
+    Inc(SeenN[j]);
+    SeenAt[j] := GetTickCount;
+    SeenTm[j] := FormatDateTime('hh:nn:ss', Now);
+    SeenBy[j] := LiveName(RingBy[i]);
+    if SeenNm[j] = '' then SeenNm[j] := CastSkName(RingBy[i], Sk);
+    if CastTold < 3 then begin
+      Inc(CastTold);
+      Engine.Msg('[Equip]', 'A cast on you: ' + SeenBy[j] + ' - ' + TrigName(Sk) + ' (ID ' + IntToStr(Sk) + ', level ' +
+        IntToStr(SeenLv[j]) + ', ' + IntToStr(SeenHit[j]) + ' ms); the page lists such casts for the binds', 0);
+    end;
+    Inc(RingSeen);
+    CastsNew := true;
+  end;
+end;
+
+// every cast on us that a cast bind puts back after: over, and its pause
+function CastsOver(): boolean;
+var k: integer;
+begin
+  result := true;
+  for k := 0 to 7 do
+    if (CBk[k] = 1) and (GetTickCount - CAt[k] < CDur[k] + CDl[k]) then result := false;
+end;
+
+// slot bits -> the whole slot groups they touch (as SlotGroup)
+function WholeGroups(C: integer): integer;
+begin
+  result := C;
+  if (C and $4180) <> 0 then result := result or $4180;
+  if (C and $8C00) <> 0 then result := result or $8C00;
+  if (C and $D0000) <> 0 then result := result or $D0000;
+  if (C and $300000) <> 0 then result := result or $300000;
+end;
+
+// a bind put gear on for good in the slot groups C: they do not go back after the casts
+procedure LoseClaim(C: integer);
+begin
+  if (AClaim = 0) or (C = 0) then exit;
+  AClaim := AClaim and (not WholeGroups(C));
+  if AClaim = 0 then begin
+    AN := 0;
+    AName := '';
+  end;
+end;
+
+// what is on now (earrings / rings: in which slot, if known)
+procedure SnapNow();
+var i, k, Pr, R, L: integer;
+  It: TL2Item;
+begin
+  SnapN := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    if SnapN >= 64 then break;
+    SnapOID[SnapN] := It.OID;
+    SnapPart[SnapN] := GearPart(It);
+    SnapSide[SnapN] := 0;
+    Inc(SnapN);
+  end;
+  for Pr := 0 to 1 do begin
+    SnapKnown[Pr] := PairNow(Pr, R, L);
+    if SnapKnown[Pr] then
+      for k := 0 to SnapN - 1 do
+        if (R <> 0) and (SnapOID[k] = R) then SnapSide[k] := 1
+        else if (L <> 0) and (SnapOID[k] = L) then SnapSide[k] := 2;
+  end;
+end;
+
+// a cast bind: what is on noted, the bind done; back: what was on in the slots it changed is kept to come
+// back after the casts (slots kept already from a cast bind before stay as they were before it)
+procedure AutoRun(b: integer);
+var k, j, NewG, Pr: integer;
+  Dup: boolean;
+begin
+  RunCause := TrigName(TrigSkOf[b]) + ' from ' + LiveName(TrigBy[b]);
+  SnapNow();
+  RunBind(b, 3);
+  RunCause := '';
+  if not BCastBack[b] then begin   // put on for good
+    LoseClaim(RunClaim);
+    exit;
+  end;
+  if RunClaim = 0 then exit;
+  NewG := WholeGroups(RunClaim) and (not AClaim);
+  for k := 0 to SnapN - 1 do begin
+    if (SlotGroup(SnapPart[k]) and NewG) = 0 then continue;
+    Dup := false;
+    for j := 0 to AN - 1 do
+      if AOID[j] = SnapOID[k] then Dup := true;
+    if Dup or (AN >= 64) then continue;
+    AOID[AN] := SnapOID[k];
+    APart[AN] := SnapPart[k];
+    ASide[AN] := SnapSide[k];
+    Inc(AN);
+  end;
+  for Pr := 0 to 1 do
+    if (PairMask(Pr) and NewG) <> 0 then AKnown[Pr] := SnapKnown[Pr];
+  AClaim := AClaim or WholeGroups(RunClaim);
+  if Pos(BName[b], AName) = 0 then begin
+    if AName <> '' then AName := AName + ', ';
+    AName := AName + BName[b];
+  end;
+  AutoRan[b] := true;
+  AutoClaimOf[b] := WholeGroups(RunClaim);
+end;
+
+// the slots an item takes when it goes on (a two-hander: both hands, the full armor: the chest and the legs)
+function SlotCover(Part: integer): integer;
+begin
+  if Part = $4000 then result := $4180
+  else if Part = $8000 then result := $8C00
+  else if Part = $80000 then result := $D0000
+  else result := Part;
+end;
+
+// several of a kind (talismans, agathions, brooch jewels, earrings, rings): one put on does not take
+// another off
+function IsMulti(Part: integer): boolean;
+begin
+  result := (Part = PART_TALISMAN) or (Part = PART_AGATHION) or (Part = PART_JEWEL) or (PairOf(Part) >= 0);
+end;
+
+// after the casts: the slots the cast binds changed as they were before (A*) - what was on goes on
+// (earrings / rings into their own slots, if known), what was not goes off (one that an item of before
+// takes the place of stays: that item puts it off). '' nothing done, else what was done
+function AutoRestore(): string;
+var i, k, Pr, O, P, Dummy, Off: integer;
+  It: TL2Item;
+  Cov, Done: boolean;
+  Note, S: string;
+begin
+  result := '';
+  SendN := 0;
+  OffN := 0;
+  PickN := 0;
+  for Pr := 0 to 1 do begin
+    BackR[Pr] := 0;
+    BackL[Pr] := 0;
+    PlanBoth[Pr] := false;
+    PlanOne[Pr] := false;
+  end;
+  for k := 0 to AN - 1 do begin
+    if (SlotGroup(APart[k]) and AClaim) = 0 then continue;
+    if PickN < 64 then begin
+      PickOID[PickN] := AOID[k];
+      Inc(PickN);
+    end;
+    Pr := PairOf(APart[k]);
+    if (Pr >= 0) and AKnown[Pr] then begin   // into its own slot: below
+      if ASide[k] = 1 then BackR[Pr] := AOID[k]
+      else if ASide[k] = 2 then BackL[Pr] := AOID[k];
+      continue;
+    end;
+    if not IsOnNow(AOID[k]) then AddSend(AOID[k], APart[k]);
+  end;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    if not It.Equipped then continue;
+    P := GearPart(It);
+    if (SlotGroup(P) and AClaim) = 0 then continue;
+    O := It.OID;
+    if Picked(O) then continue;
+    Pr := PairOf(P);
+    if (Pr >= 0) and AKnown[Pr] then continue;
+    Cov := false;
+    if not IsMulti(P) then
+      for k := 0 to AN - 1 do
+        if ((SlotGroup(APart[k]) and AClaim) <> 0) and ((SlotCover(APart[k]) and SlotCover(P)) <> 0) then Cov := true;
+    if not Cov then AddOff(O);
+  end;
+  Dummy := 0;
+  Note := '';
+  for Pr := 0 to 1 do
+    if ((PairMask(Pr) and AClaim) <> 0) and AKnown[Pr] then begin
+      Off := 0;
+      if BackR[Pr] = 0 then Off := Off or 1;
+      if BackL[Pr] = 0 then Off := Off or 2;
+      PlanPair(Pr, BackR[Pr], BackL[Pr], Off, true, Dummy, Note);
+    end;
+  if (SendN = 0) and (OffN = 0) then begin
+    result := Note;
+    exit;
+  end;
+  PlanN := PosN;
+  SendOff();
+  WaitOffFirst();
+  S := '';
+  if SendN > 0 then begin
+    Done := WearSent(AName + ' back');
+    AddNote(Note, FixPairs());
+    if SendNames(true) <> '' then S := 'on: ' + SendNames(true);
+    if (SendNames(false) <> '') and (not Interrupted()) then AddStep(S, 'NOT on: ' + SendNames(false));
+  end;
+  AddStep(S, OffResult());
+  AddStep(S, Note);
+  result := S;
+end;
+
+// the casts on us are over: the gear back. Cut short by a key / a cast -> the rest after that
+procedure AutoBack();
+var R: string;
+  b: integer;
+begin
+  for b := 0 to 31 do AutoRan[b] := false;   // a cast now: its bind is done again
+  R := AutoRestore();
+  if Interrupted() then exit;
+  AClaim := 0;
+  AN := 0;
+  if R <> '' then begin
+    Engine.Msg('[Equip]', AName + ' back (the cast is over): ' + R, 0);
+    PartySay(AName + ' back: ' + R);
+  end;
+  AName := '';
 end;
 
 // ===================== the binds file =====================
@@ -1968,7 +2573,7 @@ end;
 // the binds file: read when it changed (by the page). true = the binds were read anew
 function LoadBinds(): boolean;
 var L: TStringList;
-  i, j, n, p, k, Code: integer;
+  i, j, n, p, k, Code, Tn: integer;
   S, Fld, Val, Txt: string;
   Ok, HoldWas: boolean;
 begin
@@ -2026,6 +2631,10 @@ begin
       TSelf[n] := false;
       TSafe[n] := false;
       TDelay[n] := 0;
+      TCast[n] := '';
+      TCastBack[n] := true;
+      TCastDelay[n] := 0;
+      TSkipBuff[n] := '';
       continue;
     end;
     p := Pos('=', S);
@@ -2050,9 +2659,12 @@ begin
     else if Fld = 'attack' then TAttack[n] := Val = '1'
     else if Fld = 'self' then TSelf[n] := Val = '1'
     else if Fld = 'safe' then TSafe[n] := Val = '1'
-    else if Fld = 'delay' then TDelay[n] := StrToIntDef(Val, 0);
+    else if Fld = 'delay' then TDelay[n] := StrToIntDef(Val, 0)
+    else if Fld = 'on_cast' then TCast[n] := Val
+    else if Fld = 'cast_back' then TCastBack[n] := Val <> '0'
+    else if Fld = 'cast_delay' then TCastDelay[n] := StrToIntDef(Val, 0)
+    else if Fld = 'skip_buffs' then TSkipBuff[n] := Val;
   end;
-  L.Free;
   if HoldOn and (not HoldWas) then begin   // hold target turned on: the target now is the held one
     Held := TargetOID();
     if Held = User.OID then Held := 0;
@@ -2060,10 +2672,13 @@ begin
     HoldSeenAt := GetTickCount;
   end;
   if not HoldOn then Held := 0;
-  // the good ones in; the key thread sees none meanwhile
+  // the good ones in; the key thread / the packet thread see none meanwhile
   BindN := 0;
+  TrigN := 0;
   NextBind := -1;
+  CastFired := -1;
   k := 0;
+  Tn := 0;
   for i := 0 to n do begin
     if not TOn[i] then continue;
     if (TItems[i] = '') and (TSkills[i] = '') then begin
@@ -2071,14 +2686,15 @@ begin
       continue;
     end;
     Code := ParseKey(TKey[i]);
-    if Code = 0 then begin
+    if (Code = 0) and (TCast[i] = '') then begin
       if TKey[i] = '' then CfgErr(TName[i] + ': no key - skipped')
       else CfgErr(TName[i] + ': cannot read the key "' + TKey[i] + '" - skipped');
       continue;
     end;
+    if (Code = 0) and (TKey[i] <> '') then CfgErr(TName[i] + ': cannot read the key "' + TKey[i] + '" - on casts only');
     Ok := true;
     for j := 0 to k - 1 do
-      if BKey[j] = Code then begin
+      if (Code <> 0) and (BKey[j] = Code) then begin
         CfgErr(TName[i] + ': the key ' + TKey[i] + ' is taken by ' + BName[j] + ' - skipped');
         Ok := false;
         break;
@@ -2097,11 +2713,34 @@ begin
     BSelf[k] := TSelf[i];
     BSafe[k] := TSafe[i];
     BDelay[k] := TDelay[i];
+    BCast[k] := TCast[i];
+    BCastBack[k] := TCastBack[i];
+    BCastDelay[k] := TCastDelay[i];
+    BSkipBuff[k] := TSkipBuff[i];
+    if BCastDelay[k] < 0 then BCastDelay[k] := 0;
+    if BCastDelay[k] > 30000 then BCastDelay[k] := 30000;
+    SplitTo(TCast[i], '|', L);   // the skills that fire it
+    for j := 0 to L.Count - 1 do begin
+      p := StrToIntDef(Trim(L[j]), 0);
+      if (p > 0) and (Tn < 64) then begin
+        TrigSk[Tn] := p;
+        TrigOf[Tn] := k;
+        if TCastBack[i] then TrigBk[Tn] := 1 else TrigBk[Tn] := 0;
+        TrigDl[Tn] := BCastDelay[k];
+        Inc(Tn);
+      end;
+    end;
     BWas[k] := true;   // a key held right now is not a press
     EvAt[k] := 0;
     Inc(k);
   end;
   BindN := k;
+  for j := 0 to 31 do begin   // the binds anew: no cast counted before fires one, no back waits by its number
+    TrigSeen[j] := TrigCnt[j];
+    AutoRan[j] := false;
+  end;
+  TrigN := Tn;
+  L.Free;
   CfgReadAt := FormatDateTime('hh:nn:ss', Now);
 end;
 
@@ -2113,7 +2752,9 @@ begin
   Info := '';
   for s := 0 to BindN - 1 do begin
     if Info <> '' then Info := Info + ', ';
-    Info := Info + BKeyText[s] + ' ' + BName[s];
+    if BKey[s] = 0 then Info := Info + 'on a cast: ' + BName[s]
+    else Info := Info + BKeyText[s] + ' ' + BName[s];
+    if (BKey[s] <> 0) and (BCast[s] <> '') then Info := Info + ' (+ on a cast)';
   end;
   if Info = '' then Info := 'none';
   if First then Info := 'binds: ' + Info else Info := 'binds updated: ' + Info;
@@ -2183,6 +2824,12 @@ begin
     if Sk = nil then continue;
     n := (n * 31 + Sk.ID * 13 + Sk.Level) and $3FFFFFF;
   end;
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then
+    n := (n * 31 + (User.Buffs.Items(i).ID and $FFFFF) * 3 + 1) and $3FFFFFF;
+  v := FxCur;
+  for i := 0 to FxCnt[v] - 1 do
+    n := (n * 31 + (FxID[v * 128 + i] and $FFFFF) * 5 + 2) and $3FFFFFF;
+  n := (n * 31 + (ShortNow() and $FFFFF)) and $3FFFFFF;
   result := n;
 end;
 
@@ -2191,7 +2838,7 @@ var L: TStringList;
   i, Sig, n, OID, ID, Part, E, Lv, T, Pr, PR2, PL2: integer;
   It: TL2Item;
   Sk: TL2Skill;
-  S, Nm: string;
+  S, Nm, Got: string;
   IsOn, Ok: boolean;
 begin
   Sig := GameSig();
@@ -2249,6 +2896,47 @@ begin
     L.Add(S + '{"id": ' + IntToStr(ID) + ', "lvl": ' + IntToStr(Lv) + ', "name": ' + JsonStr(Nm) + '}');
     Inc(n);
   end;
+  L.Add(' ],');
+  L.Add(' "casts": [');   // the skills cast on us since the start (for the cast binds)
+  for i := 0 to SeenCnt - 1 do begin
+    if i = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"id": ' + IntToStr(SeenID[i]) + ', "lvl": ' + IntToStr(SeenLv[i]) + ', "name": ' + JsonStr(SeenNm[i]) +
+      ', "by": ' + JsonStr(SeenBy[i]) + ', "n": ' + IntToStr(SeenN[i]) + ', "hit": ' + IntToStr(SeenHit[i]) +
+      ', "at": ' + JsonStr(SeenTm[i]) + '}');
+  end;
+  L.Add(' ],');
+  L.Add(' "buffs": [');   // ours now (the cast binds: not while one of them is on); src: where it was seen
+  n := 0;
+  Got := ',';
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
+    ID := User.Buffs.Items(i).ID;
+    Lv := User.Buffs.Items(i).Level;
+    Nm := User.Buffs.Items(i).Name;
+    if Pos(',' + IntToStr(ID) + ',', Got) > 0 then continue;
+    Got := Got + IntToStr(ID) + ',';
+    if n = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"id": ' + IntToStr(ID) + ', "lvl": ' + IntToStr(Lv) + ', "name": ' + JsonStr(Nm) + ', "src": "bot"}');
+    Inc(n);
+  end;
+  Pr := FxCur;
+  for i := 0 to FxCnt[Pr] - 1 do begin   // the server's list: the ones the bot's misses
+    ID := FxID[Pr * 128 + i];
+    Lv := FxLv[Pr * 128 + i];
+    if Pos(',' + IntToStr(ID) + ',', Got) > 0 then continue;
+    Got := Got + IntToStr(ID) + ',';
+    Nm := '';
+    if SkillList.ByID(ID, Sk) then Nm := Sk.Name;
+    if n = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"id": ' + IntToStr(ID) + ', "lvl": ' + IntToStr(Lv) + ', "name": ' + JsonStr(Nm) + ', "src": "server"}');
+    Inc(n);
+  end;
+  ID := ShortNow();
+  if (ID <> 0) and (Pos(',' + IntToStr(ID) + ',', Got) = 0) then begin
+    Nm := '';
+    if SkillList.ByID(ID, Sk) then Nm := Sk.Name;
+    if n = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"id": ' + IntToStr(ID) + ', "lvl": 0, "name": ' + JsonStr(Nm) + ', "src": "short"}');
+  end;
   L.Add(' ]}');
   Ok := true;
   try
@@ -2303,6 +2991,43 @@ begin
   end;
   PosGot := 0;
   PosN := 0;
+  for s := 0 to 7 do begin   // the casts on us: none yet
+    COID[s] := 0;
+    CAt[s] := 0;
+    CDur[s] := 0;
+    CDl[s] := 0;
+    CBk[s] := 0;
+  end;
+  for s := 0 to 31 do begin
+    TrigCnt[s] := 0;
+    TrigSeen[s] := 0;
+    TrigBy[s] := 0;
+    TrigSkOf[s] := 0;
+    AutoRan[s] := false;
+    AutoClaimOf[s] := 0;
+  end;
+  TrigN := 0;
+  RingN := 0;
+  RingSeen := 0;
+  CastTold := 0;
+  SeenCnt := 0;
+  CastsNew := false;
+  AN := 0;
+  AClaim := 0;
+  AName := '';
+  RunCause := '';
+  RunTitle := '';
+  RunSrc := 0;
+  CurSrc := 0;
+  CastFired := -1;
+  for s := 0 to 1 do FxCnt[s] := 0;
+  FxCur := 0;
+  FxLay := 0;
+  FxBad := 0;
+  FxTold := 0;
+  ShortID := 0;
+  ShortDur := 0;
+  SkipTold := 0;
   CfgFile := FileTag(CharName) + '.binds';
   CfgPath := Script.Path + BINDS_DIR + CfgFile;
   GamePath := Script.Path + BINDS_DIR + FileTag(CharName) + '.game.json';
@@ -2316,12 +3041,19 @@ begin
   CfgAt := GetTickCount;
   GameAt := GetTickCount;
 
-  Engine.SendActID(2);   // packet hooks on: our move requests cancel a skill being sent (OnCliPacket), where the earrings / rings are (OnPacket)
+  Engine.SendActID(2);   // packet hooks on: our move requests cancel a skill being sent (OnCliPacket), where the earrings / rings are, the casts on us (OnPacket)
   Script.NewThread(@KeyEvents_Thread);
 
   while Delay(KEY_POLL_MS) do begin
     PollKeys();
     HoldTick();
+    CastLog();
+    CastTick();
+    if (FxBad > 0) and (FxTold = 0) then begin
+      FxTold := 1;
+      Engine.Msg('[Equip]', 'The effects packet $85 is not read (size ' + IntToStr(FxBadSize) +
+        ') - the skip buffs are looked for in the bot buff list only', 128);
+    end;
     if CancelData > 0 then begin
       if CancelTold < 3 then begin
         Inc(CancelTold);
@@ -2348,12 +3080,26 @@ begin
       CurBind := s;            // first: the same press caught again now is not a new one
       CurAt := GetTickCount;
       Src := NextSrc;
+      if s = CastFired then Src := 3   // a cast on us fired it
+      else if Src = 3 then Src := 2;
+      CastFired := -1;
+      CurSrc := Src;
       NextBind := -1;
-      if s < BindN then RunBind(s, Src);
+      if s < BindN then begin
+        if Src = 3 then AutoRun(s)   // a cast on us
+        else begin
+          RunBind(s, Src);
+          if (SkN = 0) or (not BBack[s]) then LoseClaim(RunClaim);   // put on for good: not back after a cast
+        end;
+      end;
       LastBind := s;
       LastAt := GetTickCount;
       CurBind := -1;
+      CurSrc := 0;
+      CastTick();              // another cast bind fired meanwhile
     end;
+    // the casts on us are over (+ the pause): what the cast binds changed goes back
+    if (AClaim <> 0) and (NextBind < 0) and (not User.Dead) and CastsOver() then AutoBack();
     if GetTickCount - CfgAt >= CFG_CHECK_MS then begin
       CfgAt := GetTickCount;
       if LoadBinds() then begin
@@ -2363,7 +3109,8 @@ begin
     end;
     if GetTickCount - GameAt >= GAME_CHECK_MS then begin
       GameAt := GetTickCount;
-      DumpGame(false);
+      DumpGame(CastsNew);   // a new cast on us: for the page
+      CastsNew := false;
     end;
   end;
 end.

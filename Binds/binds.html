@@ -109,6 +109,11 @@
   .chip.miss { border-color: #6a2e38; background: #221318; }
   .chip.miss .nm { color: #ffb3bc; }
   .chip.sk { border-color: #2c3f5c; }
+  .chip.cast { border-color: #5c2c3f; }
+  .chip.buff { border-color: #24503f; }
+  .kind.auto { background: #3a1d2a; color: #ff9fb4; }
+  .keybtn.opt { color: var(--muted); border-color: var(--line2); background: var(--panel2); font-family: inherit; }
+  #popList .it .by { color: var(--dim); font-size: 11.5px; max-width: 36%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip .no { font-size: 11px; color: var(--muted); }
   .chip .arr { color: var(--dim); }
   button.add { padding: 3px 9px; color: var(--accent); border-style: dashed; background: transparent; }
@@ -192,6 +197,7 @@
     <button data-add="combo"><b>+</b> Оружие → скилл → назад</button>
     <button data-add="self" title="Надеть пушку, скастовать скилл на себя (бафф), вернуть прежнее оружие"><b>+</b> Оружие → скилл на себя → назад</button>
     <button data-add="skill"><b>+</b> Только скилл</button>
+    <button data-add="cast" title="Когда в тебя начинают кастовать выбранный скилл, бот сам надевает вещи бинда, а после каста возвращает, что было"><b>+</b> Переодеться на каст в меня</button>
   </div>
   <details class="help card">
     <summary>Как это работает</summary>
@@ -203,6 +209,7 @@
       <li><b>Серьги и кольца по слотам</b>: у серьги или кольца в бинде есть метка «любой слот». Клик переключает на «слот R», потом «слот L». Бинд снимет вещь из этого слота и наденет туда выбранную, вторая серьга или кольцо остаётся. Можно поменять серьги местами. «Снять слот» умеет снимать одну серьгу или одно кольцо (R или L). R и L — так слоты называет сервер. Что сейчас в каком слоте, видно в списке «+ снять слот» и в подсказке у метки. Где что надето, бот узнаёт из пакета сервера после любой смены шмота. Если ещё не знает, бинд сначала снимет одну серьгу, чтобы узнать. Какой слот сервер заполняет первым, бот тоже запоминает по ходу: если в первый раз вещь встала не туда, он переставит её сам.</li>
       <li><b>Снять слот</b> (кнопка «+ снять слот»): бинд снимает всё, что надето в выбранном слоте (шлем, щит, рубашку, пояс, все талисманы, оба кольца…), какая бы вещь там ни была. Вещи, которые этот же бинд надевает, остаются.</li>
       <li><b>Чармы / талисманы</b>: если бинд надевает чармы, остальные надетые чармы он сначала снимает. Иначе при занятых слотах сервер ставит каждый новый чарм в первый слот, и надевается только последний. Пояс, браслеты, чармы, агатионы и шапки бот отдаёт без слота, поэтому скрипт определяет слот по названию вещи: Charm / Talisman — чарм, Belt — пояс, Bracelet — браслет.</li>
+      <li><b>Переодеться на каст в меня</b> (кнопка внизу или «+ скилл врага» в строке «Каст в меня» у любого бинда). Выбери скиллы врага. Как только кто-то начинает кастовать один из них в тебя, бот сам выполняет бинд: надевает и снимает его вещи, клавиша не нужна (но её можно назначить). С галочкой «вернуть, что было надето» бот запоминает, что было в этих слотах, и возвращает всё как было, когда каст закончился или его сбили. Пауза — сколько ждать после конца каста. Повторный каст во время ожидания бинд заново не запускает, а возврат ждёт и его. Если за это время ты сам надел другой шмот биндом, эти слоты бот не трогает. В списке скиллов — то, что кастовали в тебя, пока работает скрипт: дай врагу кастануть или впиши ID вручную. Мгновенный скилл без каста бот видит, только когда тот уже прилетел. <b>Не при бафе</b>: если на тебе есть один из выбранных бафов (например, резист к этому скиллу), правило не срабатывает, в окне бота будет строка «not done: you have …». Бот ищет баф и в своём списке бафов, и в списке эффектов, который присылает сервер: там же триггерные и короткие бафы, которых нет в списке бота. Выбрать можно из того, что на тебе сейчас, или вписать ID. Если правило всё равно сработало, в окне бота будет строка «none of its skip buffs … on you» со всеми ID, которые бот видит на тебе.</li>
       <li><b>Атаковать цель</b> (галочка у любого бинда, кнопка «+ Оружие + атака»): в конце бот начинает автоатаку по текущей цели, у комбо — уже после возврата оружия. Если цели нет, бинд просто надевает. С галочкой Ctrl бьёт и игрока без флага.</li>
       <li><b>Оружие → скилл → назад</b>: надевает вещи и кастует скилл, пока каст не начнётся (до 2,5 с, вместе с подбеганием к цели). Потом ждёт конца каста и надевает обратно то, что было надето до нажатия. Если скилл в откате, ничего не делает и пишет, сколько осталось.</li>
       <li><b>На себя</b> (кнопка «+ Оружие → скилл на себя → назад»): бот надевает пушку, выделяет тебя и кастует скилл, например бафф, которому нужна именно эта пушка. Потом возвращает прежнее оружие, таргет остаётся на тебе. Цель для этого не нужна.</li>
@@ -371,7 +378,7 @@ async function readGame(force) {
   const f = await fileOf(cur + '.game.json');
   if (!f) { const had = !!game; game = null; gameMod = 0; return had; }
   if (!force && f.lastModified === gameMod) return false;
-  try { game = JSON.parse(decode(await f.arrayBuffer())); gameMod = f.lastModified; return true; }
+  try { game = JSON.parse(decode(await f.arrayBuffer())); gameMod = f.lastModified; keepCastNames(); return true; }
   catch (e) { return false; }   // the bot is writing it right now: the next look
 }
 async function readCfg() {
@@ -381,7 +388,8 @@ async function readCfg() {
 }
 
 // ===== the binds file: the general lines, then one [bind] block per bind (as equip_binds.txt reads it) =====
-function newBind(o) { return Object.assign({ on: true, key: '', name: '', items: [], skills: [], back: true, ctrl: false, shift: false, needTgt: true, attack: false, self: false, safe: false, delay: 0 }, o); }
+function newBind(o) { return Object.assign({ on: true, key: '', name: '', items: [], skills: [], back: true, ctrl: false, shift: false, needTgt: true, attack: false, self: false, safe: false, delay: 0,
+  cast: [], castBack: true, castDelay: 0, skipBuffs: [] }, o); }
 function parseCfg(text) {
   const c = { chat: true, chatName: 'Equip', hold: false, binds: [] };
   let b = null;
@@ -405,6 +413,10 @@ function parseCfg(text) {
     else if (k === 'self') b.self = v === '1';
     else if (k === 'safe') b.safe = v === '1';
     else if (k === 'delay') b.delay = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'on_cast') b.cast = v.split('|').map(s => parseInt(s, 10)).filter(n => n > 0);
+    else if (k === 'cast_back') b.castBack = v !== '0';
+    else if (k === 'cast_delay') b.castDelay = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'skip_buffs') b.skipBuffs = v.split('|').map(s => parseInt(s, 10)).filter(n => n > 0);
   }
   return c;
 }
@@ -414,7 +426,8 @@ function cfgText() {
     'chat=' + (cfg.chat ? 1 : 0), 'chat_name=' + (clean(cfg.chatName) || 'Equip'), 'hold_target=' + (cfg.hold ? 1 : 0), ''];
   cfg.binds.forEach((b, i) => L.push('[bind]', 'on=' + (b.on ? 1 : 0), 'key=' + b.key, 'name=' + (clean(b.name) || 'bind ' + (i + 1)),
     'items=' + b.items.join('|'), 'skills=' + b.skills.join('|'), 'back=' + (b.back ? 1 : 0), 'ctrl=' + (b.ctrl ? 1 : 0),
-    'shift=' + (b.shift ? 1 : 0), 'need_target=' + (b.needTgt ? 1 : 0), 'attack=' + (b.attack ? 1 : 0), 'self=' + (b.self ? 1 : 0), 'safe=' + (b.safe ? 1 : 0), 'delay=' + (b.delay | 0), ''));
+    'shift=' + (b.shift ? 1 : 0), 'need_target=' + (b.needTgt ? 1 : 0), 'attack=' + (b.attack ? 1 : 0), 'self=' + (b.self ? 1 : 0), 'safe=' + (b.safe ? 1 : 0), 'delay=' + (b.delay | 0),
+    'on_cast=' + b.cast.join('|'), 'cast_back=' + (b.castBack ? 1 : 0), 'cast_delay=' + (b.castDelay | 0), 'skip_buffs=' + b.skipBuffs.join('|'), ''));
   return L.join('\r\n');
 }
 
@@ -575,6 +588,7 @@ window.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) 
 window.addEventListener('auxclick', e => { if (e.button === 1 && cap) e.preventDefault(); }, true);
 function keyBtnLook(btn, b) {
   if (b.key) { btn.className = 'keybtn'; btn.textContent = keyShow(b.key); btn.title = 'Клик: назначить другую клавишу'; }
+  else if (b.cast.length) { btn.className = 'keybtn opt'; btn.textContent = 'без клавиши'; btn.title = 'Бинд срабатывает на каст в тебя. Клик: назначить ещё и клавишу'; }
   else { btn.className = 'keybtn none'; btn.textContent = 'назначить клавишу'; btn.title = 'Клик, потом нажми сочетание: Ctrl+1, Alt+Q, F5, колесо / боковые кнопки мыши'; }
 }
 
@@ -610,6 +624,38 @@ function skillInfo(id) {
   const s = (game.skills || []).find(x => x.id === id);
   return s ? { label: s.name, lvl: s.lvl } : { label: 'скилл ' + id, miss: true };
 }
+// skills cast on you (the bot lists them since its start): their names - from the bot, the character's
+// skills, or seen before (kept in this browser)
+let castNames = {};
+try { castNames = JSON.parse(localStorage.getItem('equipbinds.castnames') || '{}') || {}; } catch (e) { castNames = {}; }
+let buffNames = {};
+try { buffNames = JSON.parse(localStorage.getItem('equipbinds.buffnames') || '{}') || {}; } catch (e) { buffNames = {}; }
+function keepNames(list, names, key) {
+  if (!Array.isArray(list)) return;
+  let n = 0;
+  for (const c of list) if (c.name && names[c.id] !== c.name) { names[c.id] = c.name; n++; }
+  if (n) try { localStorage.setItem(key, JSON.stringify(names)); } catch (e) {}
+}
+function keepCastNames() {
+  if (!game) return;
+  keepNames(game.casts, castNames, 'equipbinds.castnames');
+  keepNames(game.buffs, buffNames, 'equipbinds.buffnames');
+}
+// where the bot saw an effect on you: its buff list / only the server's list (the trigger row ...) / the short buff
+const BUFF_SRC = { server: ['не в списке бота', 'Есть в списке эффектов от сервера, но не в списке бафов бота (триггерные и подобные)'],
+  short: ['короткий баф', 'Короткий баф сервера (отдельный слот)'] };
+function buffInfo(id) {
+  const now = game && (game.buffs || []).find(x => x.id === id), s = game && (game.skills || []).find(x => x.id === id);
+  const c = game && (game.casts || []).find(x => x.id === id);
+  const name = (now && now.name) || buffNames[id] || (s && s.name) || (c && c.name) || castNames[id];
+  return { label: name || 'эффект ' + id, on: !!now };
+}
+function castInfo(id) {
+  const c = game && (game.casts || []).find(x => x.id === id), s = game && (game.skills || []).find(x => x.id === id);
+  const name = (c && c.name) || (s && s.name) || castNames[id];
+  return { label: name || 'скилл ' + id, seen: c || null };
+}
+const castTime = ms => ms > 0 ? (ms / 1000).toFixed(1).replace('.', ',') + ' с' : 'мгновенный';
 const itemShort = spec => { const i = itemInfo(spec); return i.label + (i.e !== null && i.e > 0 ? ' +' + i.e : (i.e === null && !i.byOid && i.ench > 0 ? ' +' + i.ench : '')) + (i.side ? ' (' + i.side.toUpperCase() + ')' : ''); };
 
 function itemChip(b, idx) {
@@ -648,13 +694,29 @@ function skillChip(b, idx) {
     s.miss ? el('span', { class: 'no', text: 'нет у персонажа' }) : null,
     el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.skills.splice(idx, 1); changed(false); } }));
 }
+function buffChip(b, idx) {
+  const id = b.skipBuffs[idx], f = buffInfo(id);
+  return el('span', { class: 'chip buff', title: 'ID ' + id + (f.on ? ' · на тебе сейчас' : '') },
+    idx > 0 ? el('span', { class: 'arr', text: 'или' }) : null,
+    el('span', { class: 'nm', text: f.label }),
+    f.on ? el('span', { class: 'on', title: 'на тебе сейчас: правило сейчас не сработает' }) : null,
+    el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.skipBuffs.splice(idx, 1); changed(false); } }));
+}
+function castChip(b, idx) {
+  const id = b.cast[idx], c = castInfo(id);
+  return el('span', { class: 'chip cast', title: 'ID ' + id + (c.seen ? ' · последний раз: ' + c.seen.by + ' в ' + c.seen.at : '') },
+    idx > 0 ? el('span', { class: 'arr', text: 'или' }) : null,
+    el('span', { class: 'nm', text: c.label }),
+    c.seen ? el('span', { class: 'no', text: castTime(c.seen.hit) }) : null,
+    el('button', { class: 'x', title: 'Убрать', text: '×', onclick: () => { b.cast.splice(idx, 1); changed(false); } }));
+}
 const kindOf = b => b.skills.length ? (b.items.length ? 'combo' : 'skill') : (b.items.length ? 'set' : '');
 const KIND_TEXT = { set: 'шмот', combo: 'комбо', skill: 'скилл', '': 'пустой' };
-const kindText = b => KIND_TEXT[kindOf(b)] + (b.attack && kindOf(b) ? ' + атака' : '');
+const kindText = b => KIND_TEXT[kindOf(b)] + (b.attack && kindOf(b) ? ' + атака' : '') + (b.cast.length ? ' · на каст' : '');
 
 function warnsOf(b, i) {
   const W = [];
-  if (!b.key) W.push(['Назначь клавишу', 1]);
+  if (!b.key) { if (!b.cast.length) W.push(['Назначь клавишу (или скилл врага в «Каст в меня»)', 1]); }
   else {
     const n = keyNorm(b.key);
     const other = cfg.binds.findIndex((x, j) => j !== i && x.on && keyNorm(x.key) === n);
@@ -673,22 +735,28 @@ function warnsOf(b, i) {
     if (miss.length) W.push(['Нет в сумке: ' + miss.map(itemShort).join(', ') + (b.skills.length ? '' : ' — остальное наденет'), 1]);
     const ms = b.skills.filter(id => skillInfo(id).miss);
     if (ms.length) W.push(['Нет у персонажа: ' + ms.map(id => 'скилл ' + id).join(', '), 1]);
+    const inst = b.cast.filter(id => { const c = castInfo(id).seen; return c && !(c.hit > 0); });
+    if (inst.length) W.push(['Без каста (мгновенный): ' + inst.map(id => castInfo(id).label).join(', ') + ' — бот переоденется, когда скилл уже прилетел']);
   }
   return W;
 }
-function summaryOf(b) {
+// what the bind does: by its key / on a cast in you (cast)
+function summaryOf(b, cast) {
   const parts = [];
   const offs = b.items.filter(s => itemInfo(s).off), ons = b.items.filter(s => !itemInfo(s).off);
   if (offs.length) parts.push('снять ' + (offs.length <= 3 ? offs.map(itemShort).join(', ') : things(offs.length)));
   if (ons.some(s => itemInfo(s).part === 4194304)) parts.push('снять остальные чармы');
   if (ons.length) parts.push('надеть ' + (ons.length <= 3 ? ons.map(itemShort).join(', ') : things(ons.length)));
   if (b.skills.length && b.needTgt && !b.self) parts.unshift('если есть цель');
+  if (cast && b.skipBuffs.length) parts.unshift('если на тебе нет ' + b.skipBuffs.map(id => buffInfo(id).label).join(' / '));
   for (const id of b.skills) parts.push(skillInfo(id).label + (b.self ? ' на себя' : ''));
   if (b.skills.length && b.safe) parts.push('снять цель (сейф каст)');
   if (b.skills.length && b.back) parts.push('вернуть, что было надето' + (b.delay > 0 ? ' (через ' + b.delay + ' мс)' : ''));
   if (b.attack) parts.push('атаковать цель' + (b.ctrl ? ' (Ctrl)' : ''));
+  if (cast && b.castBack && (b.items.length || b.skills.length)) parts.push('после каста' + (b.castDelay > 0 ? ' + ' + b.castDelay + ' мс' : '') + ' вернуть, что было в этих слотах');
   if (!parts.length) return null;
-  const s = el('div', { class: 'summary' }, el('b', { text: b.key ? keyShow(b.key) : 'без клавиши' }));
+  const head = cast ? 'Каст в тебя: ' + b.cast.map(id => castInfo(id).label).join(' / ') : (b.key ? keyShow(b.key) : 'без клавиши');
+  const s = el('div', { class: 'summary' }, el('b', { text: head }));
   for (const p of parts) s.append(el('span', { class: 'flow', text: '→' }), p);
   return s;
 }
@@ -732,7 +800,18 @@ function card(b, i) {
           el('label', { class: 'o-ctrl', title: 'Как с зажатым Ctrl: скилл / атака по игроку без флага' },
             el('input', { type: 'checkbox', checked: b.ctrl, onchange: e => { b.ctrl = e.target.checked; changed(false); } }), 'Ctrl (без флага)'),
           el('label', { class: 'o-sk', title: 'Каст как с зажатым Shift: не подбегать к цели' },
-            el('input', { type: 'checkbox', checked: b.shift, onchange: e => { b.shift = e.target.checked; changed(false); } }), 'Shift (не подбегать)')))),
+            el('input', { type: 'checkbox', checked: b.shift, onchange: e => { b.shift = e.target.checked; changed(false); } }), 'Shift (не подбегать)'))),
+      el('div', { class: 'row', title: 'Когда в тебя начинают кастовать один из этих скиллов, бот сам выполняет бинд' },
+        el('span', { class: 'lbl', text: 'Каст в меня' }), el('div', { class: 'chips casts' })),
+      el('div', { class: 'row skip-row', title: 'Если на тебе один из этих бафов, правило не срабатывает' },
+        el('span', { class: 'lbl', text: 'Не при бафе' }), el('div', { class: 'chips skipbuffs' })),
+      el('div', { class: 'row cast-row' }, el('span', { class: 'lbl', text: 'После каста' }),
+        el('div', { class: 'opts' },
+          el('label', { title: 'Когда каст закончится (или его собьют), вернуть в слотах бинда то, что было надето до него' },
+            el('input', { type: 'checkbox', checked: b.castBack, onchange: e => { b.castBack = e.target.checked; changed(false); } }), 'вернуть, что было надето'),
+          el('label', { class: 'o-cb', title: 'Сколько ждать после конца каста, прежде чем переодеваться обратно. 0 — сразу' }, 'через',
+            el('input', { type: 'number', min: 0, max: 30000, step: 100, value: b.castDelay, oninput: e => { b.castDelay = Math.max(0, Math.min(30000, parseInt(e.target.value, 10) || 0)); changed(false); } }),
+            'мс после конца каста')))),
     el('div', { class: 'warns' }));
   c.querySelector('.body').append(el('div', { class: 'summary-slot' }));
   c._b = b; c._i = i;
@@ -759,7 +838,7 @@ function refreshCards() {
   for (const c of $('list').querySelectorAll('.bind')) {
     const b = c._b, i = c._i, k = kindOf(b);
     c.classList.toggle('off', !b.on);
-    const kd = c.querySelector('.kind'); kd.className = 'kind ' + k; kd.textContent = kindText(b);
+    const kd = c.querySelector('.kind'); kd.className = 'kind ' + k + (b.cast.length ? ' auto' : ''); kd.textContent = kindText(b);
     const it = c.querySelector('.chips.items'); it.textContent = '';
     b.items.forEach((s, j) => it.append(itemChip(b, j)));
     it.append(el('button', { class: 'add additem', text: b.items.length ? '+ ещё вещь' : (k === 'skill' ? '+ вещь (оружие)' : '+ вещь'), onclick: e => openPick(e.currentTarget, b, 'items') }),
@@ -767,12 +846,22 @@ function refreshCards() {
     const sk = c.querySelector('.chips.skills'); sk.textContent = '';
     b.skills.forEach((s, j) => sk.append(skillChip(b, j)));
     sk.append(el('button', { class: 'add', text: b.skills.length ? '+ ещё скилл' : '+ скилл', onclick: e => openPick(e.currentTarget, b, 'skills') }));
-    if (pick && pick.b === b) pick.anchor = pick.kind === 'skills' ? sk.lastElementChild : it.querySelector(pick.kind === 'slots' ? '.addslot' : '.additem');   // the picker stays under the new "+" button
+    const cs = c.querySelector('.chips.casts'); cs.textContent = '';
+    b.cast.forEach((s, j) => cs.append(castChip(b, j)));
+    cs.append(el('button', { class: 'add', text: b.cast.length ? '+ ещё скилл' : '+ скилл врага', title: 'Когда в тебя начнут кастовать этот скилл, бот сам выполнит бинд', onclick: e => openPick(e.currentTarget, b, 'casts') }));
+    c.querySelector('.cast-row').hidden = !b.cast.length;
+    const sb = c.querySelector('.chips.skipbuffs'); sb.textContent = '';
+    b.skipBuffs.forEach((s, j) => sb.append(buffChip(b, j)));
+    sb.append(el('button', { class: 'add', text: b.skipBuffs.length ? '+ ещё баф' : '+ баф', title: 'Не переодеваться, если на тебе этот баф', onclick: e => openPick(e.currentTarget, b, 'buffs') }));
+    c.querySelector('.skip-row').hidden = !b.cast.length;
+    c.querySelector('.cast-row .o-cb').hidden = !b.castBack;
+    if (pick && pick.b === b) pick.anchor = pick.kind === 'skills' ? sk.lastElementChild : pick.kind === 'casts' ? cs.lastElementChild : pick.kind === 'buffs' ? sb.lastElementChild :
+      it.querySelector(pick.kind === 'slots' ? '.addslot' : '.additem');   // the picker stays under the new "+" button
     for (const o of c.querySelectorAll('.opts .o-sk')) o.hidden = !b.skills.length;
     for (const o of c.querySelectorAll('.opts .o-tgt')) o.hidden = !b.skills.length || b.self;   // on self: no target needed
     c.querySelector('.opts .o-ctrl').hidden = !b.skills.length && !b.attack;
     const kb = c.querySelector('.head .keybtn'); if (kb && !(cap && cap.btn === kb)) keyBtnLook(kb, b);
-    c.querySelector('.summary-slot').replaceChildren(summaryOf(b) || '');
+    c.querySelector('.summary-slot').replaceChildren(...[b.key || !b.cast.length ? summaryOf(b, false) : null, b.cast.length ? summaryOf(b, true) : null].filter(Boolean));
     c.querySelector('.warns').replaceChildren(...warnsOf(b, i).map(([t, bad]) => el('div', { class: bad ? 'bad' : '', text: '⚠ ' + t })));
     c.querySelector('.warns').style.padding = c.querySelector('.warns').childElementCount ? '0 12px 10px' : '0';
   }
@@ -780,12 +869,13 @@ function refreshCards() {
 
 for (const btn of document.querySelectorAll('#adds button')) btn.onclick = () => {
   const k = btn.dataset.add, n = cfg.binds.length + 1;
-  const b = newBind({ name: (k === 'set' ? 'Gear ' : k === 'attack' ? 'Weapon ' : k === 'combo' ? 'Combo ' : k === 'self' ? 'Self ' : 'Skill ') + n,   // Latin: the bot's window shows no Cyrillic
-    attack: k === 'attack', self: k === 'self', needTgt: k !== 'self' });
+  const b = newBind({ name: (k === 'set' ? 'Gear ' : k === 'attack' ? 'Weapon ' : k === 'combo' ? 'Combo ' : k === 'self' ? 'Self ' : k === 'cast' ? 'OnCast ' : 'Skill ') + n,   // Latin: the bot's window shows no Cyrillic
+    attack: k === 'attack', self: k === 'self', needTgt: k !== 'self' && k !== 'cast' });
   cfg.binds.push(b); changed(true);
   const c = $('list').lastElementChild;
   c.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  setTimeout(() => openPick(c.querySelector(k === 'skill' ? '.chips.skills .add' : '.chips.items .additem'), b, k === 'skill' ? 'skills' : 'items'), 250);
+  setTimeout(() => openPick(c.querySelector(k === 'skill' ? '.chips.skills .add' : k === 'cast' ? '.chips.casts .add' : '.chips.items .additem'), b,
+    k === 'skill' ? 'skills' : k === 'cast' ? 'casts' : 'items'), 250);
 };
 
 // ===== the picker: items of the bag / skills of the character =====
@@ -796,7 +886,7 @@ function openPick(anchor, b, kind) {
   const p = $('pop'); p.hidden = false;
   $('popSearch').value = '';
   $('popManual').value = '';
-  $('popManual').placeholder = kind === 'items' ? 'ID вещи, ID+заточка (2395+6) или OID' : 'ID скилла';
+  $('popManual').placeholder = kind === 'items' ? 'ID вещи, ID+заточка (2395+6) или OID' : kind === 'casts' ? 'ID скилла врага' : kind === 'buffs' ? 'ID бафа' : 'ID скилла';
   document.querySelector('#pop .popManual').hidden = kind === 'slots';
   $('popSearch').placeholder = kind === 'slots' ? 'поиск слота' : 'поиск';
   renderPick(); placePick();
@@ -828,6 +918,38 @@ function renderPick() {
     return;
   }
   if (!game) { list.append(el('div', { class: 'none', text: 'Нет данных от бота: запусти equip_binds.txt этим персонажем. Пока можно вписать ID вручную.' })); return; }
+  if (kind === 'buffs') {   // a click: the buff in / out of the bind
+    top.append(el('div', { class: 'none', style: 'padding:2px 6px', text: 'Бафы, которые на тебе сейчас. Нужного нет — наложи его (список обновится сам) или впиши ID ниже.' }));
+    let all = (game.buffs || []).slice();
+    if (q) all = all.filter(f => String(f.name || buffNames[f.id] || '').toLowerCase().includes(q) || String(f.id) === q);
+    all.sort((a, c) => (a.src === 'bot' ? 0 : 1) - (c.src === 'bot' ? 0 : 1) || String(a.name).localeCompare(String(c.name)));
+    for (const f of all) {
+      const inBind = b.skipBuffs.includes(f.id);
+      list.append(el('div', { class: 'it', onclick: () => { const at = b.skipBuffs.indexOf(f.id); if (at >= 0) b.skipBuffs.splice(at, 1); else b.skipBuffs.push(f.id); changed(false); renderPick(); } },
+        el('span', { class: 'nm', text: f.name || buffNames[f.id] || castNames[f.id] || 'эффект ' + f.id }), f.lvl ? el('span', { class: 'n', text: 'ур. ' + f.lvl }) : null,
+        BUFF_SRC[f.src] ? el('span', { class: 'by', text: BUFF_SRC[f.src][0], title: BUFF_SRC[f.src][1] }) : null,
+        el('span', { class: 'id', text: '#' + f.id }), inBind ? el('span', { class: 'in', text: '✓' }) : null));
+    }
+    if (!all.length) list.append(el('div', { class: 'none', text: q ? 'Ничего не нашлось' : (Array.isArray(game.buffs) ? 'На тебе сейчас нет бафов' : 'Бот не прислал бафы: перезапусти equip_binds.txt') + '. Можно вписать ID ниже.' }));
+    return;
+  }
+  if (kind === 'casts') {   // a click: the skill in / out of the bind
+    top.append(el('div', { class: 'none', style: 'padding:2px 6px', text: 'Скиллы, которые кастовали в тебя, пока работает скрипт (свежие сверху). Нужного нет — дай врагу кастануть или впиши ID ниже.' }));
+    let all = (game.casts || []).slice();
+    if (q) all = all.filter(c => String(c.name || castNames[c.id] || '').toLowerCase().includes(q) || String(c.id) === q || String(c.by || '').toLowerCase().includes(q));
+    all.sort((a, c) => String(c.at || '').localeCompare(String(a.at || '')));
+    for (const c of all) {
+      const inBind = b.cast.includes(c.id);
+      list.append(el('div', { class: 'it', onclick: () => { const at = b.cast.indexOf(c.id); if (at >= 0) b.cast.splice(at, 1); else b.cast.push(c.id); changed(false); renderPick(); } },
+        el('span', { class: 'nm', text: c.name || castNames[c.id] || 'скилл ' + c.id, title: 'ID ' + c.id + ', ур. ' + c.lvl + ' · кастовали ' + c.n + ' раз, последний: ' + c.by + ' в ' + c.at }),
+        el('span', { class: 'n', text: castTime(c.hit) }),
+        el('span', { class: 'by', text: c.by + (c.n > 1 ? ' ×' + c.n : '') }),
+        el('span', { class: 'id', text: '#' + c.id }),
+        inBind ? el('span', { class: 'in', text: '✓' }) : null));
+    }
+    if (!all.length) list.append(el('div', { class: 'none', text: q ? 'Ничего не нашлось' : 'Пока никто не кастовал в тебя (с запуска скрипта). Впиши ID скилла ниже.' }));
+    return;
+  }
   if (kind === 'items') {
     const worn = (game.items || []).filter(x => x.on);
     if (worn.length && !q) top.append(el('button', { class: 'add', style: 'width:100%;justify-content:center',
@@ -879,7 +1001,9 @@ function manualAdd() {
     pick.b.items.push(v);
   } else {
     const id = parseInt(v, 10); if (!(id > 0) || String(id) !== v) { toast('Скилл: его ID, число'); return; }
-    pick.b.skills.push(id);
+    if (pick.kind === 'casts') { if (!pick.b.cast.includes(id)) pick.b.cast.push(id); }
+    else if (pick.kind === 'buffs') { if (!pick.b.skipBuffs.includes(id)) pick.b.skipBuffs.push(id); }
+    else pick.b.skills.push(id);
   }
   $('popManual').value = ''; changed(false); if (pick.kind === 'skills') closePick(); else renderPick();
 }
