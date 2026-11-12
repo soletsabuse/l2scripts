@@ -1,0 +1,39 @@
+uses SysUtils, Classes, Consumables in 'Core\consumables_import.pas',
+  RiftCore in 'Core\rift_core.pas';
+
+var
+  RiftSettings: TRiftConfig;
+
+procedure ConfigureRiftSettings;
+begin
+  RiftSettings.FarmRiftLevel := 70;
+  RiftSettings.MaxMobHP := 300000;
+  SetLength(RiftSettings.GoodRooms, 2);
+  RiftSettings.GoodRooms[0] := 4;
+  RiftSettings.GoodRooms[1] := 6;
+  RiftSettings.FarmBadRoomsWhileWaiting := False;
+  RiftSettings.BuffBook := 's';
+  RiftSettings.MapDirectory := Script.Path + '..\Zones';
+  SetLength(RiftSettings.SupplyList, 2);
+  RiftSettings.SupplyList[0] := Consumable('Mana Drug', 150, 300);
+  RiftSettings.SupplyList[1] := Consumable('BSSB', 1500, 3000);
+end;
+
+procedure OnAction(Action: TL2Action; P1, P2: Pointer);
+begin
+  RiftCoreOnAction(Action, P1, P2);
+end;
+
+procedure OnFree;
+begin
+  RiftCoreOnFree;
+end;
+
+begin
+  Engine.Msg('[Init]', 'LoadConfig: ' + Script.Path + '..\Configurations\rift_bp.xml', 128);
+  Engine.LoadConfig(Script.Path + '..\Configurations\rift_bp.xml');
+  Delay(1000);
+  Engine.FaceControl(0, True);
+  ConfigureRiftSettings;
+  RiftCore.RiftRun(RiftSettings);
+end.
