@@ -1,0 +1,23 @@
+; Equip binds of Shkchkchahh: made in binds.html (Library\Binds), read by equip_binds.txt on the fly
+chat=1
+chat_name=Equip
+hold_target=0
+
+[bind]
+on=1
+key=
+name=Combo 1
+items=
+skills=
+back=1
+ctrl=0
+shift=0
+need_target=1
+attack=0
+self=0
+safe=0
+delay=0
+on_cast=
+cast_back=1
+cast_delay=0
+skip_buffs=
