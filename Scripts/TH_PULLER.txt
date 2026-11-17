@@ -1,0 +1,12 @@
+uses SysUtils;
+uses BodyPuller in 'body_puller.pas';
+
+// Treasure Hunter puller for a party: body pulls packs (no hits), Dash on the way, picks up the loot of the list.
+// Everything is in the nav map (Library\Nav), open it in Library\Nav\nav_view.html:
+//   Room tool - the rooms to pull; Safe tool - where the party stands; Settings > Puller - pack size, dash, loot.
+// Start it standing on the spot. A line after SetNavGrid overrides the map: SetPackSize(10); SetLoot('wig');
+
+begin
+  SetNavGrid('SPOT.navgrid');
+  RunPuller();
+end.

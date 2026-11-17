@@ -18,6 +18,22 @@ unit SpotFarmPackNav;
 //     SetFarmMode(FARM_AUTO);              // optional: FARM_PACK (default) / FARM_SINGLE (one by one
 //                                          //   where they stand, patrol) / FARM_AUTO (pack when dense) /
 //                                          //   FARM_ROOMS (on by itself when the nav map has rooms)
+//     SetBowKite(120, 500, 0);             // optional: an archer - after every shot (once its arrow landed) a
+//                                          //   step of 120 away from the mobs on us, then the next shot; targets
+//                                          //   farther than 500 -> run closer first (K kite / kite_step /
+//                                          //   kite_range / kite_wait). One mob after another: FARM_SINGLE
+//     SetKiteNear(250);                    // optional: the step only while a mob on us is closer than 250
+//                                          //   (K kite_near; default: the range minus the step)
+//     SetDebugLog(true, true);             // optional: the debug log Library\Logs\dbg_<nick>_<time>_N.log - the pull,
+//                                          //   the fight, what is in sight; 2nd = every run moment too (K debug_file / debug_run)
+//     SetPvpAnswer(300, 800);              // optional: a player (not party / clan) hits us -> our auto attack at him after
+//                                          //   a random 300..800 ms, no Ctrl: only a flagged one is hit (K pvp / pvp_delay)
+//     SetLiveMap(true);                    // optional: Library\Nav\<nick>.navlive every 0.3 s - where we are, where we
+//                                          //   run, the target, the mobs; nav_view.html, button Live, draws it (K live)
+//     SetNavStrict(true);                  // optional: runs on green only, red is never crossed (K nav_strict); on by
+//                                          //   itself when the map has the blue sight cells (mobs there are shot only)
+//     SetIdlePatrol(false);                // optional: no mobs near -> stand where we are and wait for them, no run over
+//                                          //   the farm spots / patrol points / the map (K patrol 0; default: on)
 //     SetRoomPlayers(60);                  // rooms: another player there 60 s -> leave (0 at once, -1 never)
 //                                          //   (taken first when one fits the pack, then SetAutoCorner)
 //     SetFarmPoints('CRUMA_1.navpts');     // optional: corners / safe point / patrol from nav_view.html
@@ -95,6 +111,7 @@ unit SpotFarmPackNav;
 //                                          //   between the rooms), never in a fight. 2nd param = the buff ID
 //                                          //   on us when it is not the skill's (0 = the same)
 //     AddSelfBuff(1068, 0);                // optional, any number: buff gone -> cast this skill on self
+//     AddSelfBuffOnMe(1323, 0);            // the same for a skill cast at a target (1323): we target ourselves first
 //                                          //   (2nd param = buff ID to watch, 0 = same as the skill)
 //     SetSecondTeleport(30233, ['teleport_request', 'teleport_...']);  // optional: after the Aden
 //                                          //   teleport run to this NPC and send these bypasses one after another
@@ -147,6 +164,10 @@ const
   MANA_DRUG                 = 726;
   MANA_POTION               = 728;
   HEALING_POTION            = 1539;
+  CP_POTION                 = 5592;
+  ARROW_S                   = 1345;   // Shining Arrow (S grade)
+  SOUL_ORE                  = 1785;
+  ENERGY_STONE              = 5589;
 
 // ===================== Skill kinds for AddCasterSkill / AddPetSkill =====================
   SKILL_NUKE    = 1;   // damage: every IntervalMs (its reuse)
@@ -171,6 +192,7 @@ procedure SetAoeFarm(PackSize, SpoilSkill, SweepSkill: integer; AoeSkillIDs, Mob
 procedure SetSpoilFarm(SpoilSkill, SweepSkill: integer; SkillIDs, MobIDs: array of integer; Range: integer);
 procedure SetSecondTeleport(NpcID: integer; Bypasses: array of string);
 procedure AddSelfBuff(SkillID, BuffID: integer);
+procedure AddSelfBuffOnMe(SkillID, BuffID: integer);
 procedure SetPackFarm(PackSize, MassSpoilSkill, MassSweepSkill: integer; MobIDs: array of integer);
 procedure AddCorner(X, Y, Z: integer);
 procedure SetPackDagger(DaggerID, FatMaxHP: integer);
@@ -196,6 +218,13 @@ procedure SetFarmMode(Mode: integer);
 procedure SetRoomPlayers(Seconds: integer);
 procedure SetDebug(Level: integer);
 procedure SetRangedHunt(Ms: integer);
+procedure SetBowKite(Step, Range, WaitMs: integer);
+procedure SetKiteNear(Dist: integer);
+procedure SetDebugLog(Fight, Runs: boolean);
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
+procedure SetLiveMap(Enable: boolean);
+procedure SetNavStrict(Enable: boolean);
+procedure SetIdlePatrol(Enable: boolean);   // false = no mobs near -> wait where we are (all farms)
 procedure SetSpotsOnly(Enable: boolean);
 procedure SetPickup(Enable: boolean);    // false = the drop is left lying (all farms)
 procedure SetSkipChampions(Enable: boolean);
@@ -369,6 +398,28 @@ const
   MG_NODMG_MS       = 4000;     // mage: the target takes no damage this long since our first skill at it
                                 //   (wall, out of sight) -> we step up to it ...
   MG_CLOSE_RANGE    = 150;      // ... this close; no damage even there 3 times as long -> skipped
+  KT_STEP_DEFAULT   = 120;      // bow kite (K kite): the step away after every shot (K kite_step)
+  KT_RANGE_DEFAULT  = 500;      // ... targets within this are shot, farther -> run closer first (K kite_range)
+  KT_FLY_FIRST_MS   = 1500;     // ... the arrow lands (the target loses HP) within this after the shot - until measured
+  KT_FLY_SPARE_MS   = 250;      // ... measured: no HP drop this long after the usual landing time = a miss, step anyway
+  KT_RESEND_MS      = 300;      // ... no shot seen yet: the attack order again this often
+  KT_PUSH_RANGE     = 600;      // ... mobs on us this close push the step away from them (the nearer the harder)
+  KT_LEASH          = 300;      // ... farther than this from where the fight began: a step back towards it counts more
+  KT_STEP_REACH     = 30;       // ... the step is done when we stand this close to its point
+  KT_TICK_MS        = 20;       // ... the fight tick: the shot / the landing are caught within this
+  KT_SWITCH_MS      = 300;      // ... the target out of sight (a wall of the map between) this long: another one in sight
+  KT_HIDDEN_WAIT_MS = 1500;     // ... none in sight this long: run round the wall to it (a mob on us mostly comes out itself)
+  PV_SCAN_MS        = 200;      // PvP answer (K pvp): the players are looked at this often
+  PV_FORGET_MS      = 8000;     // ... he has not hit us this long -> back to the mobs
+  PV_DELAY_MIN      = 300;      // ... the reaction before the answer, ms (K pvp_delay min max)
+  PV_DELAY_MAX      = 800;
+  PV_NO_SHOT_MS     = 5000;     // ... no attack of ours at him this long (not flagged: no Ctrl) -> he is left alone
+  PV_SKIP_MS        = 60000;    // ... for this long
+  PV_CAST_MS        = 2000;     // ... our HP down this soon after his cast at us (no mob on us) = his skill hit us
+  PV_MELEE_RANGE    = 600;      // ... melee: answered up to this far (a bow: within the kite range and in sight)
+  PK_LIVE_MS        = 300;      // live view (K live): Library\Nav\<nick>.navlive written this often
+  PK_LIVE_RANGE     = 2500;     // ... the mobs / players this close
+  PK_LIVE_SIGHT     = 1500;     // ... "in sight" counted for the mobs this close
   MG_HP_BELOW_DEFAULT = 70;     // mage: HP_BELOW with no value (0) -> our HP below this %
   MB_BEFORE_DEFAULT = 60;       // own buffs (K mage_buff): recast when less than this many seconds are left
   MB_SEND_MS        = 2500;     // ... sent this long, never in reuse and the buff not on -> it does not go
@@ -492,6 +543,7 @@ var
   SecondBypasses: array of string;
   SelfBuffSkill: array of integer;   // AddSelfBuff: skill to cast on self ...
   SelfBuffID: array of integer;      // ... when this buff is gone
+  SelfBuffOnMe: array of boolean;    // ... cast at a target (1323): we target ourselves first
   PackEnabled: boolean;           // SetPackFarm called: the script farms packs, the interface stays OFF
   PkPackSize, PkMassSpoil, PkMassSweep: integer;
   PkMobIDs: array of integer;     // mobs to pull; empty = any mob in the zone
@@ -507,6 +559,7 @@ var
   PkAutoCorner: integer;          // SetAutoCorner: search a corner spot this far (0 = AddCorner only)
   PkSpotsOnly: boolean;           // SetSpotsOnly: the pack goes only to the farm spots of the map
   NoPickup: boolean;              // SetPickup(false) / pickup 0: the drop is not picked up
+  NoPatrol: boolean;              // SetIdlePatrol(false) / patrol 0: no mobs near -> wait where we are, no patrol
   PkSkipChamps: boolean;          // SetSkipChampions: champions are not pulled / fought
   PkRoomSeq: boolean;             // room_order SEQ: the rooms one after another from the nearest (B, C, ..., A), no counting
   PkSeqNext, PkSeqGoal: integer;  // SEQ: the room to go to next / the one we went for
@@ -535,6 +588,10 @@ var
   PkStateAt, PkRoomsAt: cardinal;
   PkPatrolX, PkPatrolY, PkPatrolK: integer;   // one by one: where the patrol runs now
   PkPatrolOn: boolean;
+  PkPatrolGo: boolean;            // the patrol over the farm spots began (its first point: the nearest one)
+  PkPatrolDir: integer;           // ... there (+1) and back (-1) along the spots: a corridor end to end, every turn
+  PkPatrolBack: boolean;          // ... a fight broke the run: on to the same point after it
+  PkWaitSaid: boolean;            // patrol off: "waiting here" told for this pause (once until the next mob)
   PkAreaSet: boolean;
   PkZRange: integer;              // SetZRange: pack farm takes mobs only this far up / down from us (0 = any)
   PkCornerR: integer;             // SetCornerRadius: at the corner fight mobs this far from the point (0 = only in hit range)
@@ -593,6 +650,38 @@ var
   MbName: array of string;        // ... its name in skills.json (MgPrepare)
   MbHold: array of cardinal;      // ... did not go: not tried again before this
   MbTold: array of boolean;       // ... "no such skill" said
+
+// ===================== Bow kite (SetBowKite / K kite) =====================
+  KtOn: boolean;                  // the fight of an archer: shot, its arrow lands, a short step away, the next shot
+  KtStep: integer;                // K kite_step: the step (0 -> KT_STEP_DEFAULT)
+  KtRange: integer;               // K kite_range: targets within this are shot (0 -> KT_RANGE_DEFAULT)
+  KtWait: integer;                // K kite_wait: the step this many ms after the shot start (0 = once its arrow lands)
+  KtNear: integer;                // K kite_near: the step only while a mob on us is closer than this (0 = range - step)
+  KtFlyMs: integer;               // measured: ms from the shot to its arrow landing, averaged (0 = not yet)
+  KtPX, KtPY: integer;            // KtStepPoint: where the step goes
+  KtNearSeen: boolean;            // KtNearest: its mob is in sight (no wall of the map between)
+  KtStepSees: boolean;            // KtStepPoint: the target is in sight from the step point
+  KtSpOID, KtSpMX, KtSpMY: integer;   // KtShootPoint: for this mob at this place ...
+  KtSpX, KtSpY: integer;          // ... the green spot to shoot it from ...
+  KtSpOk: boolean;                // ... (false = none)
+  PkSightAt: cardinal;            // PkDbgSight: the last table of what is round us
+  // PvP answer (SetPvpAnswer / K pvp)
+  PvOn: boolean;                  // a player (not party / clan) who hits us is hit back
+  PvMin, PvMax: integer;          // ... the reaction, ms (0 0 = PV_DELAY_MIN..PV_DELAY_MAX)
+  PvOID: integer;                 // ... the player we answer (0 = none)
+  PvName: string;
+  PvAt, PvLast, PvScanAt, PvCastAt: cardinal;   // answer from / his last hit on us / the last look / his last cast at us
+  PvCastOID, PvHP: integer;       // ... who cast at us last / our HP at the last look
+  PvFarSaid: boolean;             // ... "out of our reach" said
+  PvSeenOID, PvSeenAtk: array of integer;       // ... the players at the last look: OID, whom they attacked
+  PvSeenTime: array of cardinal;                // ... and their AtkTime
+  PvSkipOID: array of integer;    // ... could not be attacked (not flagged): left alone until PvSkipUntil
+  PvSkipUntil: array of cardinal;
+  PkLiveOn: boolean;              // SetLiveMap / K live: the live view file
+  PkLiveAt: cardinal;             // ... written last
+  PkLiveFile: string;             // ... Library\Nav\<nick>.navlive
+  PkFightStyle: string;           // K fight (nav_view "How they are hit"): MELEE / BOW / MAGE, '' = by the lines
+                                  //   (mage skills set -> mage, K kite 1 -> bow, else melee)
 
 // ===================== Caster farm (SetCasterFarm) + summon (SetSummon) =====================
   CasterEnabled: boolean;         // SetCasterFarm called: the script farms, the interface stays OFF
@@ -798,6 +887,66 @@ begin
   PkRangedSet := true;
 end;
 
+// an archer (K kite): after every shot - once its arrow lands (WaitMs > 0: this long after the shot start) -
+// a step of Step away from the mobs on us, then the next shot; a target farther than Range -> run closer
+// first. Step / Range 0 -> 120 / 500. One mob after another: SetFarmMode(FARM_SINGLE)
+procedure SetBowKite(Step, Range, WaitMs: integer);
+begin
+  KtOn := true;
+  PkFightStyle := 'BOW';               // a script line after SetNavGrid wins over K fight of the map
+  KtStep := Step;
+  KtRange := Range;
+  KtWait := WaitMs;
+end;
+
+// the kite step only while a mob on us (it hits us / has us as its target) is closer than Dist; farther - we stand
+// and shoot. 0 = the default: the range minus the step
+procedure SetKiteNear(Dist: integer);
+begin
+  KtNear := Dist;
+end;
+
+// the debug log file Library\Logs\dbg_<nick>_<time>_N.log (K debug_file): the pull, the fight, what is in sight
+// ([Sight]), the patrol; Runs: every run moment into it too - clicks, route points, stuck (K debug_run)
+procedure SetDebugLog(Fight, Runs: boolean);
+begin
+  if Fight then PkDbgFile := '1' else PkDbgFile := '0';
+  if Runs then PkDbgRun := '1' else PkDbgRun := '0';
+  NavSetDebug(Runs);
+end;
+
+// a player (not party / clan) hits us -> after a random MinMs..MaxMs our auto attack at him, without Ctrl (only
+// a flagged one - he hit first - is hit; no PK by mistake). Over when he dies / is gone / stops hitting us
+// (0, 0 = 300..800 ms)
+procedure SetPvpAnswer(MinMs, MaxMs: integer);
+begin
+  PvOn := true;
+  PvMin := MinMs;
+  PvMax := MaxMs;
+end;
+
+// the live view: Library\Nav\<nick>.navlive every PK_LIVE_MS - where we are, our state, the run click, the goal
+// of the run and its route, our target, the patrol point, the mobs and the players round us. nav_view.html, button
+// Live, draws it as it changes
+procedure SetLiveMap(Enable: boolean);
+begin
+  PkLiveOn := Enable;
+end;
+
+// the strict map (Core\nav_move): runs on green only, never a run line / a click through red; standing in red -
+// out onto green first. On by itself when the map has the blue sight cells
+procedure SetNavStrict(Enable: boolean);
+begin
+  NavSetStrict(Enable);
+end;
+
+// false = no mobs near -> we stand where we are and wait for them (the safe point, if set: there), no run over the
+// farm spots / the patrol points / the map. Mobs within the usual reach are still taken
+procedure SetIdlePatrol(Enable: boolean);
+begin
+  NoPatrol := not Enable;
+end;
+
 // true = the pack is taken only to the farm spots of the map (the best that fits, else the nearest),
 // never to a corner found by itself (SetAutoCorner) or an AddCorner point
 procedure SetSpotsOnly(Enable: boolean);
@@ -999,7 +1148,7 @@ begin
 end;
 
 // self buff: the buff BuffID is gone -> cast SkillID (BuffID = 0 -> the buff has the skill's ID)
-procedure AddSelfBuff(SkillID, BuffID: integer);
+procedure SbAdd(SkillID, BuffID: integer; OnMe: boolean);
 var n: integer;
 begin
   SelfBuffSet := true;
@@ -1007,8 +1156,21 @@ begin
   n := Length(SelfBuffSkill);
   SetLength(SelfBuffSkill, n + 1);
   SetLength(SelfBuffID, n + 1);
+  SetLength(SelfBuffOnMe, n + 1);
   SelfBuffSkill[n] := SkillID;
   if BuffID > 0 then SelfBuffID[n] := BuffID else SelfBuffID[n] := SkillID;
+  SelfBuffOnMe[n] := OnMe;
+end;
+
+procedure AddSelfBuff(SkillID, BuffID: integer);
+begin
+  SbAdd(SkillID, BuffID, false);
+end;
+
+// a skill cast at a target (Noblesse 1323 ...): we target ourselves, cast it, then the target we had back
+procedure AddSelfBuffOnMe(SkillID, BuffID: integer);
+begin
+  SbAdd(SkillID, BuffID, true);
 end;
 
 // double teleport: after the Aden gatekeeper teleport run to NPC NpcID (it is near the landing)
@@ -1339,7 +1501,7 @@ end;
 
 function HasPatrol(): boolean;
 begin
-  result := Length(PatrolPoints) >= 3;
+  result := (not NoPatrol) and (Length(PatrolPoints) >= 3);   // SetIdlePatrol(false): no patrol at all
 end;
 
 // walks to the next patrol point (round robin)
@@ -1588,7 +1750,7 @@ begin
     SetLength(Path, n);
     for i := 0 to n - 1 do Path[i] := StrToIntDef(PtField(V, i), 0);
   end
-  else if K = 'selfbuff' then AddSelfBuff(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0))
+  else if K = 'selfbuff' then SbAdd(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), PtField(V, 2) = '1')   // 3rd: target me first
   else if K = 'pack' then begin        // size spoil sweep id,id,...
     PkPackStart(StrToIntDef(PtField(V, 0), 6), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), 0));
     M := PkRest(V, 3);
@@ -1637,8 +1799,22 @@ begin
   else if K = 'room_avoid' then RoomSetAvoid(StrToIntDef(V, 30))
   else if K = 'debug' then SetDebug(StrToIntDef(V, 1))
   else if K = 'ranged_ms' then SetRangedHunt(StrToIntDef(V, 3000))
+  else if K = 'kite' then KtOn := V = '1'
+  else if K = 'fight' then PkFightStyle := UpperCase(V)   // MELEE / BOW / MAGE: applied in RunFarm (wins over kite / mage)
+  else if K = 'kite_step' then KtStep := StrToIntDef(V, 0)
+  else if K = 'kite_range' then KtRange := StrToIntDef(V, 0)
+  else if K = 'kite_wait' then KtWait := StrToIntDef(V, 0)
+  else if K = 'kite_near' then KtNear := StrToIntDef(V, 0)
+  else if K = 'pvp' then PvOn := V = '1'
+  else if K = 'live' then PkLiveOn := V = '1'
+  else if K = 'nav_strict' then NavSetStrict(V = '1')
+  else if K = 'pvp_delay' then begin   // min max, ms
+    PvMin := StrToIntDef(PtField(V, 0), 0);
+    PvMax := StrToIntDef(PtField(V, 1), PvMin);
+  end
   else if K = 'spots_only' then SetSpotsOnly(V = '1')
   else if K = 'pickup' then SetPickup(V <> '0')
+  else if K = 'patrol' then SetIdlePatrol(V <> '0')
   else if K = 'debug_file' then PkDbgFile := V
   else if K = 'debug_run' then begin
     PkDbgRun := V;
@@ -1766,9 +1942,14 @@ begin
     BEAST_BLESSED_SPIRITSHOT: begin EntryID := 35;  Price := 120;   Name := 'Beast Blessed Spiritshot'; end;
     SPIRIT_ORE:               begin EntryID := 59;  Price := 540;   Name := 'Spirit Ore';               end;
     CURSED_BONE:              begin EntryID := 47;  Price := 360;   Name := 'Cursed Bone';              end;
-    MANA_DRUG:                begin EntryID := 103; Price := 35000; Name := 'Mana Drug';                end;
-    MANA_POTION:              begin EntryID := 101; Price := 40000; Name := 'Mana Potion';              end;
-    HEALING_POTION:           begin EntryID := 99;  Price := 20000; Name := 'Healing Potion';           end;
+    // the shop got CP potions at 99 (Core\consumables_import.pas, 2026-11-12): HP / MP / MD moved by 2
+    CP_POTION:                begin EntryID := 99;  Price := 50000; Name := 'CP Potion';                end;
+    HEALING_POTION:           begin EntryID := 101; Price := 20000; Name := 'Healing Potion';           end;
+    MANA_POTION:              begin EntryID := 103; Price := 40000; Name := 'Mana Potion';              end;
+    MANA_DRUG:                begin EntryID := 105; Price := 35000; Name := 'Mana Drug';                end;
+    ARROW_S:                  begin EntryID := 45;  Price := 420;   Name := 'Arrows S';                 end;
+    SOUL_ORE:                 begin EntryID := 57;  Price := 337;   Name := 'Soul Ore';                 end;
+    ENERGY_STONE:             begin EntryID := 61;  Price := 130;   Name := 'Energy Stone';             end;
   else
     result := false;
   end;
@@ -2567,9 +2748,14 @@ begin
   result := SkillList.ByID(ID, Sk);    // the bot's own search (see BuffTime)
 end;
 
-// one look (every second): a watched buff is gone and its skill is ready -> cast it
+// one look (every second): a watched buff is gone and its skill is ready -> cast it (a skill cast at a target:
+// at ourselves, then the target we had back). On as soon as the buff is on us (at most SB_WAIT_MS after the cast)
 procedure SelfBuffTick();
-var i, SkillID, ID: integer;
+const
+  SB_WAIT_MS = 700;
+var i, SkillID, ID, Prev: integer;
+  W: cardinal;
+  T: TL2Live;
 begin
   if Length(SbTold) <> Length(SelfBuffSkill) then begin
     SetLength(SbTold, Length(SelfBuffSkill));
@@ -2591,8 +2777,25 @@ begin
     if SpSkillLeft(SkillID) > 0 then continue;  // reuse
     Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
     PkActed := true;
+    Prev := 0;
+    if (i < Length(SelfBuffOnMe)) and SelfBuffOnMe[i] then begin   // cast at a target: at ourselves
+      T := User.Target;
+      if T <> nil then Prev := T.OID;
+      if Prev <> User.OID then begin
+        Engine.SetTarget(User.OID);
+        W := GetTickCount;
+        while GetTickCount - W < 600 do begin
+          T := User.Target;
+          if T <> nil then
+            if T.OID = User.OID then break;
+          Delay(30);
+        end;
+      end;
+    end;
     Engine.UseSkill(SkillID);
-    Delay(1500);
+    W := GetTickCount;
+    while (GetTickCount - W < SB_WAIT_MS) and (BuffTime(ID) = 0) do Delay(50);
+    if (Prev <> 0) and (Prev <> User.OID) then Engine.SetTarget(Prev);   // the mob we had back
   end;
 end;
 
@@ -4053,6 +4256,7 @@ end;
 // safe point is clear), buy supplies once per cycle; failing again and again -> back via Aden
 procedure RebuffTick();
 var Cleared: boolean;
+  RbAt: cardinal;
 begin
   if TreeBusy or SummonBusy or PatrolBusy then exit;   // tree handler / summon renew / patrol run are busy, rebuff after them
   if (not IsOnline()) or IsRecovering or NeedReturn then begin
@@ -4157,7 +4361,8 @@ begin
 
     SummonBeforeBuff();   // the summon is buffed together with us
     BuffAltB();
-    Delay(2000);
+    RbAt := GetTickCount;                // on as soon as the buff is back (at most 2 s)
+    while (GetTickCount - RbAt < 2000) and (BuffTime(BuffID) < REBUFF_TIME) and (not User.Dead) do Delay(100);
 
     if (BuffTime(BuffID) < REBUFF_TIME) then begin
       Inc(RbFails);
@@ -5277,6 +5482,340 @@ begin
   end;
 end;
 
+// the nick for a file name: letters, digits, _ and - only
+function PkFileNick(): string;
+var i: integer;
+  N, C: string;
+begin
+  N := User.Name;
+  result := '';
+  for i := 1 to Length(N) do begin
+    C := Copy(N, i, 1);
+    if Pos(C, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-') > 0 then result := result + C
+    else result := result + '_';
+  end;
+  if result = '' then result := 'char';
+end;
+
+// ===================== Live view (SetLiveMap / K live) =====================
+// Library\Nav\<nick>.navlive, rewritten every PK_LIVE_MS (one snapshot, END last - half a file is not taken):
+//   N nick | U x y z hp% dead | S state | C x y ms-ago (the last run click) | G x y ms-ago (the goal of the run)
+//   R x y x y ... (its route nodes from us on) | A target OID | P x y (the patrol point) | H x y (the shoot spot)
+//   M oid x y on-us in-sight name (mobs within the z range) | Y oid x y name (players)
+// the lines into the live file. nav_view.html reads it every 0.3 s (every bot's file): a plain SaveToFile wants
+// the file for itself and fails while the page is reading it (the bot prints that as "Script error ... Access
+// violation" at a wrong line, the farm goes on). This one lets the readers in; a failed write - the next one 0.3 s on
+procedure PkLiveSave(L: TStringList);
+var FS: TFileStream;
+begin
+  try
+    FS := TFileStream.Create(PkLiveFile, fmCreate or fmShareDenyNone);
+    try
+      L.SaveToStream(FS);
+    finally
+      FS.Free;
+    end;
+  except
+  end;
+end;
+
+procedure PkLiveTick();
+var L: TStringList;
+  i, UX, UY, UZ, NX, NY, NZ, Vis: integer;
+  D: double;
+  S: string;
+begin
+  if not PkLiveOn then exit;
+  if GetTickCount - PkLiveAt < PK_LIVE_MS then exit;
+  PkLiveAt := GetTickCount;
+  if PkLiveFile = '' then PkLiveFile := Script.Path + '..\Nav\' + PkFileNick() + '.navlive';
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  L := TStringList.Create;
+  L.Add('NAVLIVE 1');
+  L.Add('N ' + User.Name);
+  S := '0';
+  if User.Dead then S := '1';
+  L.Add('U ' + IntToStr(UX) + ' ' + IntToStr(UY) + ' ' + IntToStr(UZ) + ' ' + IntToStr(User.HP) + ' ' + S);
+  if PkLastState <> '' then L.Add('S ' + PkLastState);
+  if NavLastClickAt() <> 0 then
+    L.Add('C ' + IntToStr(NavLastClickX()) + ' ' + IntToStr(NavLastClickY()) + ' ' + IntToStr(GetTickCount - NavLastClickAt()));
+  if NavLastGoalAt() <> 0 then begin
+    L.Add('G ' + IntToStr(NavLastGoalX()) + ' ' + IntToStr(NavLastGoalY()) + ' ' + IntToStr(GetTickCount - NavLastGoalAt()));
+    S := NavLastRoute();
+    if S <> '' then L.Add('R ' + S);
+  end;
+  L.Add('A ' + IntToStr(TargetOID()));
+  if PkPatrolOn then L.Add('P ' + IntToStr(PkPatrolX) + ' ' + IntToStr(PkPatrolY));
+  if KtSpOk and (KtSpOID <> 0) and (SpMobIdx(KtSpOID) >= 0) then L.Add('H ' + IntToStr(KtSpX) + ' ' + IntToStr(KtSpY));
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    D := PkDist(NX, NY);
+    if D > PK_LIVE_RANGE then continue;
+    NZ := NpcList(i).Z;
+    if not PkZOk(NZ) then continue;    // another floor (SetZRange / K zrange): not ours, not shown
+    Vis := 0;
+    if D <= PK_LIVE_SIGHT then Vis := Ord(NavSee(UX, UY, NX, NY));
+    L.Add('M ' + IntToStr(NpcList(i).OID) + ' ' + IntToStr(NX) + ' ' + IntToStr(NY) + ' ' + IntToStr(Ord(PkFightMob(i))) + ' ' +
+      IntToStr(Vis) + ' ' + PullNpcName(i));
+  end;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if CharList(i).OID = User.OID then continue;
+    NX := CharList(i).X;
+    NY := CharList(i).Y;
+    if PkDist(NX, NY) > PK_LIVE_RANGE then continue;
+    L.Add('Y ' + IntToStr(CharList(i).OID) + ' ' + IntToStr(NX) + ' ' + IntToStr(NY) + ' ' + CharList(i).Name);
+  end;
+  L.Add('END');
+  PkLiveSave(L);
+  L.Free;
+end;
+
+// ===================== PvP answer (SetPvpAnswer / K pvp) =====================
+// A player (not party / clan) hits us: a new auto attack on us (his AtkOID is us and his AtkTime changed), or he
+// cast at us and our HP went down within PV_CAST_MS with no mob on us. After a random reaction (K pvp_delay) he is
+// hit back: our auto attack, sent WITHOUT Ctrl - a player who hit us is flagged and is hit, a not flagged one cannot
+// be (no PK by mistake): no attack of ours at him in PV_NO_SHOT_MS -> he is left alone PV_SKIP_MS. A bow: from
+// where we stand, within the kite range and in sight; melee: up to PV_MELEE_RANGE. The mobs wait meanwhile. Over:
+// he dies / is gone / has not hit us PV_FORGET_MS; out of our reach -> the mobs meanwhile, answered when back
+
+function PvIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+function PvSkipped(OID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to Length(PvSkipOID) - 1 do
+    if (PvSkipOID[i] = OID) and (GetTickCount < PvSkipUntil[i]) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+procedure PvSkip(OID: integer);
+var n: integer;
+begin
+  n := Length(PvSkipOID);
+  SetLength(PvSkipOID, n + 1);
+  SetLength(PvSkipUntil, n + 1);
+  PvSkipOID[n] := OID;
+  PvSkipUntil[n] := GetTickCount + PV_SKIP_MS;
+end;
+
+procedure PvDone(Why: string);
+begin
+  Engine.Msg('[PvP]', PvName + ' ' + Why + ' - back to the mobs', 0);
+  if DbgOn() then Dbg('[PvP]', 'over: ' + PvName + ' ' + Why);
+  PvOID := 0;
+end;
+
+// one look at the players: a stranger hitting us -> PvOID (the first one), his hits -> PvLast
+procedure PvScan();
+var i, j, k, n, OID, Atk, Tgt, HP, Mn, Mx: integer;
+  AT: cardinal;
+  T: TL2Live;
+  Hit, HpDown: boolean;
+  NewOID, NewAtk: array of integer;
+  NewTime: array of cardinal;
+begin
+  HP := User.CurHP;
+  HpDown := (PvHP > 0) and (HP < PvHP);
+  PvHP := HP;
+  SetLength(NewOID, 0);
+  SetLength(NewAtk, 0);
+  SetLength(NewTime, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    OID := CharList(i).OID;
+    if OID = User.OID then continue;
+    if CharList(i).Dead then continue;
+    if IsFriendly(CharList(i)) then continue;       // our party / clan
+    Atk := CharList(i).AtkOID;
+    AT := CharList(i).AtkTime;
+    Tgt := 0;
+    T := CharList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    n := Length(NewOID);
+    SetLength(NewOID, n + 1);
+    SetLength(NewAtk, n + 1);
+    SetLength(NewTime, n + 1);
+    NewOID[n] := OID;
+    NewAtk[n] := Atk;
+    NewTime[n] := AT;
+    if (Atk <> User.OID) and (Tgt <> User.OID) then continue;
+    // a new auto attack on us: he was not on us at the last look, or he swung again
+    Hit := false;
+    if Atk = User.OID then begin
+      k := -1;
+      for j := 0 to Length(PvSeenOID) - 1 do
+        if PvSeenOID[j] = OID then k := j;
+      if k >= 0 then Hit := (PvSeenAtk[k] <> User.OID) or (PvSeenTime[k] <> AT);
+    end;
+    // a cast at us: his skill when our HP goes down soon after it and no mob is on us (a buffer heals, not hurts)
+    if Tgt = User.OID then
+      if CharList(i).Cast.EndTime > 0 then begin
+        PvCastOID := OID;
+        PvCastAt := GetTickCount;
+      end;
+    if (not Hit) and HpDown and (OID = PvCastOID) and (GetTickCount - PvCastAt <= PV_CAST_MS) then
+      if PkCountAggro() = 0 then Hit := true;
+    if not Hit then continue;
+    if PvSkipped(OID) then continue;
+    if PvOID = 0 then begin
+      Mn := PvMin;
+      Mx := PvMax;
+      if (Mn <= 0) and (Mx <= 0) then begin
+        Mn := PV_DELAY_MIN;
+        Mx := PV_DELAY_MAX;
+      end;
+      if Mn < 0 then Mn := 0;
+      if Mx < Mn then Mx := Mn;
+      PvOID := OID;
+      PvName := CharList(i).Name;
+      PvAt := GetTickCount + cardinal(Mn + Random(Mx - Mn + 1));
+      PvFarSaid := false;
+      Alert('[PvP]', PvName + ' hits me - answering in ' + IntToStr(PvAt - GetTickCount) + ' ms', PlayerSound);
+      if DbgOn() then
+        Dbg('[PvP]', PvName + ' (' + IntToStr(OID) + ') hits us: auto attack ' + IntToStr(Ord(Atk = User.OID)) +
+          ' (else a skill), our HP ' + IntToStr(HP));
+    end;
+    if OID = PvOID then PvLast := GetTickCount;
+  end;
+  SetLength(PvSeenOID, Length(NewOID));
+  SetLength(PvSeenAtk, Length(NewOID));
+  SetLength(PvSeenTime, Length(NewOID));
+  for i := 0 to Length(NewOID) - 1 do begin
+    PvSeenOID[i] := NewOID[i];
+    PvSeenAtk[i] := NewAtk[i];
+    PvSeenTime[i] := NewTime[i];
+  end;
+end;
+
+// how far a player is answered: a bow - its kite range, melee - PV_MELEE_RANGE
+function PvReach(): integer;
+begin
+  result := PV_MELEE_RANGE;
+  if KtOn then begin
+    result := KtRange;
+    if result <= 0 then result := KT_RANGE_DEFAULT;
+  end;
+end;
+
+// the answer: our auto attack at him until he dies / is gone / stops hitting us / is out of our reach.
+// true = we attacked him (the target in the game changed)
+function PvFight(): boolean;
+var i, PX, PY, PZ, UX, UY, R: integer;
+  Started, SentAt, TgtAt, UAtk: cardinal;
+  D: double;
+  Shot, Far: boolean;
+begin
+  result := false;
+  R := PvReach();
+  Started := GetTickCount;
+  SentAt := 0;
+  TgtAt := 0;
+  UAtk := User.AtkTime;
+  Shot := false;
+  while (not User.Dead) and IsOnline() and (not NeedReturn) do begin
+    DbgTick();
+    PkLiveTick();
+    if GetTickCount - PvScanAt >= PV_SCAN_MS then begin
+      PvScanAt := GetTickCount;
+      PvScan();
+    end;
+    i := PvIdx(PvOID);
+    if i < 0 then begin
+      PvDone('is gone');
+      break;
+    end;
+    if CharList(i).Dead then begin
+      PvDone('is dead');
+      break;
+    end;
+    if GetTickCount - PvLast > PV_FORGET_MS then begin
+      PvDone('has not hit us for ' + IntToStr(PV_FORGET_MS div 1000) + ' s');
+      break;
+    end;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    D := User.DistTo(PX, PY, PZ);
+    UX := User.X;
+    UY := User.Y;
+    Far := D > R;
+    if (not Far) and KtOn then Far := not NavSee(UX, UY, PX, PY);   // a bow: only in sight
+    if Far then begin
+      if not PvFarSaid then begin
+        PvFarSaid := true;
+        Engine.Msg('[PvP]', PvName + ' is out of our reach (' + IntToStr(Round(D)) + ' / behind a wall) - the mobs meanwhile', 0);
+        if DbgOn() then Dbg('[PvP]', PvName + ' out of reach d=' + IntToStr(Round(D)) + ' (reach ' + IntToStr(R) + ')');
+      end;
+      break;
+    end;
+    PvFarSaid := false;
+    if (User.AtkOID = PvOID) and (User.AtkTime <> UAtk) then Shot := true;
+    if (not Shot) and (GetTickCount - Started > PV_NO_SHOT_MS) then begin
+      Engine.Msg('[PvP]', 'Cannot attack ' + PvName + ' without Ctrl (not flagged?) - leaving him alone for ' +
+        IntToStr(PV_SKIP_MS div 1000) + ' s', 0);
+      if DbgOn() then Dbg('[PvP]', 'no attack of ours at ' + PvName + ' in ' + IntToStr(PV_NO_SHOT_MS) + ' ms - skipped');
+      PvSkip(PvOID);
+      PvOID := 0;
+      break;
+    end;
+    if not result then begin
+      Engine.Msg('[PvP]', 'Answering ' + PvName + ' (d=' + IntToStr(Round(D)) + ')', 0);
+      if DbgOn() then Dbg('[PvP]', 'answering ' + PvName + ' d=' + IntToStr(Round(D)));
+    end;
+    result := true;
+    if (TargetOID() <> PvOID) and (GetTickCount - TgtAt >= 500) then begin
+      Engine.SetTarget(PvOID);
+      TgtAt := GetTickCount;
+    end;
+    if (SentAt = 0) or (GetTickCount - SentAt >= KT_RESEND_MS) then begin
+      Engine.Attack(KT_TICK_MS, false);  // no Ctrl: only a flagged player is hit
+      SentAt := GetTickCount;
+    end;
+    Delay(KT_TICK_MS);
+  end;
+  if result then NavMoveReset();       // the run clocks afresh for the farm
+end;
+
+// every tick of the farm / the fight: true = we answered a player now (the target changed)
+function PvTick(): boolean;
+var i: integer;
+  Gone: boolean;
+begin
+  result := false;
+  if not PvOn then exit;
+  if User.Dead then exit;
+  if GetTickCount - PvScanAt >= PV_SCAN_MS then begin
+    PvScanAt := GetTickCount;
+    PvScan();
+  end;
+  if PvOID = 0 then exit;
+  i := PvIdx(PvOID);
+  Gone := i < 0;
+  if not Gone then Gone := CharList(i).Dead;
+  if Gone or (GetTickCount - PvLast > PV_FORGET_MS) then begin
+    PvDone('is gone / dead / stopped');
+    exit;
+  end;
+  if GetTickCount < PvAt then exit;    // the reaction first, the mobs meanwhile
+  result := PvFight();
+end;
+
 // during a fight (every tick of it): the alerts, the zone, a disarm (the weapon back), an own buff that
 // ended - as their own threads did before, between the hits. true = a cast / the weapon put on: the
 // target in the game changed, the fight selects its own target again
@@ -5284,6 +5823,8 @@ function PkFightTick(): boolean;
 begin
   PkActed := false;
   PkLightTick();
+  PkLiveTick();                        // the live view file (SetLiveMap)
+  if PvTick() then PkActed := true;    // a player hit us: answered (SetPvpAnswer)
   if GetTickCount - PkSelfBuffAt >= 1000 then begin
     PkSelfBuffAt := GetTickCount;
     ZoneCheck();
@@ -6104,6 +6645,470 @@ begin
   if (not User.Dead) and (PkMassSweep > 0) and HasSkill(PkMassSweep) then PkFinalSweep();
 end;
 
+// ===================== Bow kite (SetBowKite / K kite) =====================
+function KtStepLen(): integer;
+begin
+  result := KtStep;
+  if result <= 0 then result := KT_STEP_DEFAULT;
+end;
+
+function KtReach(): integer;
+begin
+  result := KtRange;
+  if result <= 0 then result := KT_RANGE_DEFAULT;
+end;
+
+// a bow, the mob off green (in the blue sight cells / at the wall): the green spot to shoot it from - within the
+// range minus 50, seeing it, the nearest to us (Core NavShootPoint). Kept while it is the same mob near the same place
+function KtShootPoint(OID, MX, MY: integer): boolean;
+begin
+  if (OID = KtSpOID) and (Abs(MX - KtSpMX) < 120) and (Abs(MY - KtSpMY) < 120) then begin
+    result := KtSpOk;
+    exit;
+  end;
+  KtSpOID := OID;
+  KtSpMX := MX;
+  KtSpMY := MY;
+  KtSpOk := NavShootPoint(MX, MY, KtReach() - 50);
+  if KtSpOk then begin
+    KtSpX := NavShootX();
+    KtSpY := NavShootY();
+  end;
+  if DbgOn() then begin
+    if KtSpOk then Dbg('[Sight]', 'mob ' + IntToStr(OID) + ' off green at ' + IntToStr(MX) + ',' + IntToStr(MY) +
+      ' - shoot from ' + IntToStr(KtSpX) + ',' + IntToStr(KtSpY))
+    else Dbg('[Sight]', 'mob ' + IntToStr(OID) + ' off green at ' + IntToStr(MX) + ',' + IntToStr(MY) +
+      ' - no green spot within ' + IntToStr(KtReach() - 50) + ' sees it');
+  end;
+  result := KtSpOk;
+end;
+
+// the step only while a mob on us is closer than this (K kite_near; none - the range minus the step)
+function KtNearDist(): integer;
+begin
+  result := KtNear;
+  if result <= 0 then result := KtReach() - KtStepLen();
+end;
+
+// a bow shoots only along a free line: no wall of the nav map between us and X, Y (round a corner - no shot)
+function KtSees(X, Y: integer): boolean;
+var UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  result := NavSee(UX, UY, X, Y);
+end;
+
+// the nearest mob on us that is not skipped (SpIgnore), the ones in sight first (KtNearSeen: it is); 0 = none
+function KtNearest(): integer;
+var i, NX, NY: integer;
+  D, Best: double;
+  Seen: boolean;
+begin
+  result := 0;
+  KtNearSeen := false;
+  Best := 1E18;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if not PkFightMob(i) then continue;
+    if SpIgnored(NpcList(i).OID) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    D := PkDist(NX, NY);
+    Seen := KtSees(NX, NY);
+    if not Seen then D := D + 1E6;     // out of sight: only when no mob on us is in sight
+    if D < Best then begin
+      Best := D;
+      result := NpcList(i).OID;
+      KtNearSeen := Seen;
+    end;
+  end;
+end;
+
+// the debug log: what is round us (within 1500) and what the bow sees - every mob with its distance, in sight on
+// the nav map (no wall between), on us. At most every 3 s
+procedure PkDbgSight(Tag: string);
+var i, NX, NY, n, UX, UY: integer;
+  D: double;
+  S: string;
+begin
+  if not DbgOn() then exit;
+  if GetTickCount - PkSightAt < 3000 then exit;
+  PkSightAt := GetTickCount;
+  S := '';
+  n := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    D := PkDist(NX, NY);
+    if D > 1500 then continue;
+    Inc(n);
+    S := S + ' | ' + PullNpcName(i) + ' d=' + IntToStr(Round(D)) + ' sight=' + IntToStr(Ord(KtSees(NX, NY))) +
+      ' on us=' + IntToStr(Ord(PkFightMob(i)));
+  end;
+  UX := User.X;
+  UY := User.Y;
+  Dbg(Tag, 'we at ' + IntToStr(UX) + ',' + IntToStr(UY) + ': ' + IntToStr(n) + ' mobs within 1500' + S);
+end;
+
+// the step of the kite (KtPX, KtPY): KtStepLen() from us, away from the mobs on us within KT_PUSH_RANGE (the nearer
+// one pushes harder; none - away from the target). The straight line must be free on the nav map: that way
+// blocked -> turned by 30, 60 ... 120 deg either way. Farther than KT_LEASH from where the fight began (AnX, AnY):
+// a step back towards it counts more - we circle round the place instead of drifting off. A step that hides the
+// target behind a wall (round a corner) only when no other one keeps it in sight. false = no free step
+function KtStepPoint(OID, AnX, AnY: integer): boolean;
+var i, k, UX, UY, NX, NY, PX, PY, L0, TX, TY: integer;
+  AX, AY, DX, DY, L, Ang, CA, SA, VX, VY, Score, Best, DA0, DA1: double;
+  HasT, Vis: boolean;
+begin
+  result := false;
+  UX := User.X;
+  UY := User.Y;
+  L0 := KtStepLen();
+  AX := 0;
+  AY := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if not PkFightMob(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    DX := UX - NX;
+    DY := UY - NY;
+    L := Sqrt(DX * DX + DY * DY);
+    if (L < 1) or (L > KT_PUSH_RANGE) then continue;
+    AX := AX + DX / (L * L);           // the unit vector away from it, weight 1 / distance
+    AY := AY + DY / (L * L);
+  end;
+  L := Sqrt(AX * AX + AY * AY);
+  if L < 1E-9 then begin               // nobody near enough (or right under us): away from the target, else east
+    AX := 1;
+    AY := 0;
+    i := SpMobIdx(OID);
+    if i >= 0 then begin
+      NX := NpcList(i).X;
+      NY := NpcList(i).Y;
+      DX := UX - NX;
+      DY := UY - NY;
+      L := Sqrt(DX * DX + DY * DY);
+      if L >= 1 then begin
+        AX := DX / L;
+        AY := DY / L;
+      end;
+    end;
+  end else begin
+    AX := AX / L;
+    AY := AY / L;
+  end;
+  HasT := false;
+  TX := 0;
+  TY := 0;
+  i := SpMobIdx(OID);
+  if i >= 0 then begin
+    TX := NpcList(i).X;
+    TY := NpcList(i).Y;
+    HasT := true;
+  end;
+  DX := UX - AnX;
+  DY := UY - AnY;
+  DA0 := Sqrt(DX * DX + DY * DY);
+  Best := -1E9;
+  for k := 0 to 8 do begin             // 0, +30, -30, +60, -60 ... +120, -120 deg
+    Ang := ((k + 1) div 2) * 30 * 3.14159265 / 180;
+    if k mod 2 = 0 then Ang := -Ang;
+    CA := Cos(Ang);
+    SA := Sin(Ang);
+    VX := AX * CA - AY * SA;
+    VY := AX * SA + AY * CA;
+    PX := UX + Round(VX * L0);
+    PY := UY + Round(VY * L0);
+    if not NavIsFree(PX, PY) then continue;
+    if not NavWalkLine(UX, UY, PX, PY) then continue;   // a run line (the strict map: on green only)
+    Score := CA;                       // straight away 1, sideways 0
+    if not NavRunCell(PX, PY) then Score := Score - 1.5;   // closer than the run margin to the red: only if nothing else
+    if DA0 > KT_LEASH then begin
+      DX := PX - AnX;
+      DY := PY - AnY;
+      DA1 := Sqrt(DX * DX + DY * DY);
+      Score := Score - (DA1 - DA0) / L0;   // -1 (farther from the place) .. +1 (back to it)
+    end;
+    Vis := true;
+    if HasT then Vis := NavSee(PX, PY, TX, TY);
+    if not Vis then Score := Score - 3;   // the target would hide round the corner
+    if Score > Best then begin
+      Best := Score;
+      KtPX := PX;
+      KtPY := PY;
+      KtStepSees := Vis;
+      result := true;
+    end;
+  end;
+end;
+
+// the fight of an archer (K kite). The target is shot until it dies, then the nearest mob on us. Its shot seen
+// (our AtkTime / its MyAtkTime changed) -> its arrow lands (the target loses HP; none: a miss, the usual landing
+// time + KT_FLY_SPARE_MS; K kite_wait: this many ms after the shot instead) -> a short step away from the mobs on
+// us (KtStepPoint) -> the next attack order as soon as we stand. HP down with no shot seen = the arrow is there:
+// the step at once. No step while every mob on us is farther than KtNearDist() (K kite_near; default the range
+// minus the step - a shooter stays where it is). A bow shoots only what it sees: a wall of the nav map between us
+// and the target (round a corner) -> another one on us in sight is shot; none KT_HIDDEN_WAIT_MS -> run round the
+// wall to it along the map (the corridor, the bend) until it is in sight. The target farther than the range
+// (K kite_range) -> run closer along the map; no damage on it MG_NODMG_MS in sight -> up to it; none even there -> skipped
+procedure PkKiteFight();
+const
+  KS_SHOOT = 0;                        // the attack order is out, waiting for the shot
+  KS_FLY   = 1;                        // the shot went, its arrow is in the air
+  KS_STEP  = 2;                        // stepping away
+var OID, NewOID, Idx, TX, TY, TZ, RunOID, HP, HPPrev, HPShot, Phase, AnX, AnY, UA, F, Cap, UX, UY, UZ: integer;
+  LastX, LastY, StepMs: integer;
+  ShotAt, SentAt, StepAt, TgtAt, DmgAt, UAtk, MAtk, MovedAt, IdleSince, MyAt: cardinal;
+  D, Spd: double;
+  Running, WasRunning, Close, Hit, DoStep, Shot, First, Sees, Hidden: boolean;
+  HidAt: cardinal;
+  SeenLog: integer;
+begin
+  Dbg('[Fight]', 'kite start, step ' + IntToStr(KtStepLen()) + ' range ' + IntToStr(KtReach()) + ' wait ' + IntToStr(KtWait));
+  PkDbgFight('[Fight]');
+  AnX := User.X;
+  AnY := User.Y;
+  OID := 0;
+  RunOID := 0;
+  Running := false;
+  Phase := KS_SHOOT;
+  HP := 0;
+  HPPrev := -1;
+  HPShot := 0;
+  ShotAt := 0;
+  SentAt := 0;
+  StepAt := 0;
+  StepMs := 0;
+  TgtAt := 0;
+  DmgAt := GetTickCount;
+  UAtk := 0;
+  MAtk := 0;
+  MovedAt := 0;
+  LastX := 0;
+  LastY := 0;
+  IdleSince := 0;
+  HidAt := 0;
+  SeenLog := -1;
+  PkCorpseSince := 0;
+  while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
+    DbgTick();
+    if PkFightTick() then OID := 0;    // a cast / the weapon: our target is selected again below
+    WasRunning := Running;
+    Running := false;
+    PkCheckShooters();
+    if PkCountFight() = 0 then begin   // all on us are dead
+      Dbg('[Fight]', 'end: no fight mob left');
+      PkDbgFight('[Fight]');
+      break;
+    end;
+    // the target: the one we shoot while it is on us, else the nearest one on us (in sight first). Ours out of
+    // sight KT_SWITCH_MS (round a corner) and another one on us is in sight -> that one meanwhile
+    NewOID := 0;
+    if OID <> 0 then begin
+      Idx := SpMobIdx(OID);
+      if Idx >= 0 then
+        if PkFightMob(Idx) and (not SpIgnored(OID)) then NewOID := OID;
+    end;
+    if (NewOID <> 0) and (HidAt <> 0) and (GetTickCount - HidAt >= KT_SWITCH_MS) then begin
+      UA := KtNearest();
+      if (UA <> 0) and KtNearSeen then begin
+        if DbgOn() and (UA <> NewOID) then
+          Dbg('[Sight]', 'switch to ' + IntToStr(UA) + ' (in sight): ' + IntToStr(NewOID) + ' out of sight ' +
+            IntToStr(GetTickCount - HidAt) + ' ms');
+        NewOID := UA;
+      end;
+    end;
+    if NewOID = 0 then NewOID := KtNearest();
+    if NewOID <> 0 then begin
+      Idx := SpMobIdx(NewOID);
+      if Idx < 0 then NewOID := 0;
+    end;
+    if NewOID = 0 then begin           // only skipped ones on us (no damage / out of reach)
+      if IdleSince = 0 then IdleSince := GetTickCount;
+      if GetTickCount - IdleSince > PK_FIGHT_IDLE_MS then begin
+        Dbg('[Fight]', 'end: nobody to shoot');
+        Engine.Msg('[Kite]', 'Nobody we can shoot, fight over', 0);
+        break;
+      end;
+      OID := 0;
+      Delay(KT_TICK_MS);
+      continue;
+    end;
+    IdleSince := 0;
+    if NewOID <> OID then begin
+      OID := NewOID;
+      Dbg('[Kite]', 'target ' + IntToStr(OID) + ' ' + PullNpcName(Idx));
+      Engine.SetTarget(OID);
+      TgtAt := GetTickCount;
+      DmgAt := GetTickCount;
+      HidAt := 0;
+      SeenLog := -1;
+      Phase := KS_SHOOT;
+      SentAt := 0;
+      HPPrev := -1;
+      UAtk := User.AtkTime;
+      MAtk := NpcList(Idx).MyAtkTime;
+    end else if (GetTickCount - TgtAt >= 500) and (TargetOID() <> OID) then begin
+      Engine.SetTarget(OID);           // a mob / the game knocked our target off: again
+      TgtAt := GetTickCount;
+    end;
+    Idx := SpMobIdx(OID);              // its index right before it is read: the bot's list shifts meanwhile
+    if Idx < 0 then begin
+      OID := 0;
+      Delay(KT_TICK_MS);
+      continue;
+    end;
+    TX := NpcList(Idx).X;
+    TY := NpcList(Idx).Y;
+    TZ := NpcList(Idx).Z;
+    HP := NpcList(Idx).CurHP;
+    Hit := (HPPrev >= 0) and (HP < HPPrev);
+    HPPrev := HP;
+    if Hit then DmgAt := GetTickCount;
+    D := PkDist(TX, TY);
+    Sees := KtSees(TX, TY);            // no wall of the map between: the bow can shoot it
+    if Sees then HidAt := 0
+    else begin
+      if HidAt = 0 then HidAt := GetTickCount;
+      DmgAt := GetTickCount;           // "no damage" counts only while it is in sight
+    end;
+    Hidden := (not Sees) and (GetTickCount - HidAt >= KT_HIDDEN_WAIT_MS);
+    if DbgOn() and (Ord(Sees) <> SeenLog) then begin
+      SeenLog := Ord(Sees);
+      if Sees then
+        Dbg('[Sight]', 'target ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' in sight d=' + IntToStr(Round(D)))
+      else
+        Dbg('[Sight]', 'target ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' out of sight (a wall of the map between) d=' +
+          IntToStr(Round(D)) + ': no shot; another one in sight after ' + IntToStr(KT_SWITCH_MS) + ' ms, none - run round to it after ' +
+          IntToStr(KT_HIDDEN_WAIT_MS) + ' ms');
+    end;
+    Close := GetTickCount - DmgAt > MG_NODMG_MS;
+    if Close and (D <= MG_CLOSE_RANGE) and (GetTickCount - DmgAt > MG_NODMG_MS * 3) then begin
+      Engine.Msg('[Kite]', PullNpcName(Idx) + ' takes no damage from our arrows, skipping it', 0);
+      Dbg('[Kite]', 'skip ' + IntToStr(OID) + ': no damage');
+      SpIgnore(OID);
+      OID := 0;
+      continue;
+    end;
+
+    // too far for the bow / out of sight round a corner / no damage from here: closer along the map, round the
+    // walls - never while the arrow flies (a move may cancel the shot)
+    if (Phase <> KS_FLY) and ((D > KtReach()) or Hidden or (Close and (D > MG_CLOSE_RANGE))) then begin
+      First := (not WasRunning) or (OID <> RunOID);
+      if First then NavMoveReset();
+      Running := true;
+      if NavStillMs() > PK_STUCK_MS then begin
+        Engine.Msg('[Kite]', 'Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it', 0);
+        Dbg('[Kite]', 'skip ' + IntToStr(OID) + ': stuck running to it d=' + IntToStr(Round(D)));
+        SpIgnore(OID);
+        OID := 0;
+        RunOID := 0;
+        Running := false;
+        continue;
+      end;
+      if First and DbgOn() then
+        Dbg('[Kite]', 'closer to ' + IntToStr(OID) + ' d=' + IntToStr(Round(D)) + ' (out of sight ' + IntToStr(Ord(not Sees)) +
+          ', no damage ' + IntToStr(Ord(Close)) + ')');
+      if (not NavIsFree(TX, TY)) and KtShootPoint(OID, TX, TY) then begin   // off green: to a spot to shoot it from
+        if First then NavStepReset();
+        NavStep(KtSpX, KtSpY, TZ, true);
+      end else
+        PullChase(OID, First);         // along the map: a wall between -> via the route nodes until it is in sight
+      RunOID := OID;
+      Phase := KS_SHOOT;
+      SentAt := 0;
+      Delay(KT_TICK_MS);
+      continue;
+    end;
+    RunOID := 0;
+
+    // stepping: done at its point / stopped (a wall) / its time is over -> the next shot at once
+    if Phase = KS_STEP then begin
+      UX := User.X;
+      UY := User.Y;
+      if (UX <> LastX) or (UY <> LastY) then begin
+        LastX := UX;
+        LastY := UY;
+        MovedAt := GetTickCount;
+      end;
+      if (PkDist(KtPX, KtPY) <= KT_STEP_REACH) or (GetTickCount - StepAt >= cardinal(StepMs)) or
+         ((GetTickCount - StepAt >= 250) and (GetTickCount - MovedAt >= 150)) then begin
+        Phase := KS_SHOOT;
+        SentAt := 0;
+      end;
+    end;
+
+    DoStep := false;
+    // the arrow in the air: its landing (HP down), else the usual landing time + a spare = a miss
+    if Phase = KS_FLY then begin
+      if KtWait > 0 then begin
+        if GetTickCount - ShotAt >= cardinal(KtWait) then DoStep := true;
+      end else if HP < HPShot then begin
+        F := GetTickCount - ShotAt;
+        if KtFlyMs <= 0 then KtFlyMs := F else KtFlyMs := (KtFlyMs * 3 + F) div 4;
+        DoStep := true;
+        if DbgOn() then Dbg('[Kite]', 'landed after ' + IntToStr(F) + ' ms (usual ' + IntToStr(KtFlyMs) + ')');
+      end else begin
+        if KtFlyMs > 0 then Cap := KtFlyMs + KT_FLY_SPARE_MS else Cap := KT_FLY_FIRST_MS;
+        if GetTickCount - ShotAt >= cardinal(Cap) then begin
+          DoStep := true;
+          if DbgOn() then Dbg('[Kite]', 'no HP drop ' + IntToStr(Cap) + ' ms after the shot - a miss, stepping');
+        end;
+      end;
+    end;
+
+    // the attack order is out: the shot seen -> the arrow flies; HP down with no shot seen -> the arrow is there
+    if Phase = KS_SHOOT then begin
+      UA := User.AtkOID;
+      Idx := SpMobIdx(OID);            // again (the sight / the run / the step took a while)
+      MyAt := MAtk;
+      if Idx >= 0 then MyAt := NpcList(Idx).MyAtkTime;
+      Shot := ((UA = OID) and (User.AtkTime <> UAtk)) or (MyAt <> MAtk);
+      if Shot then begin
+        UAtk := User.AtkTime;
+        MAtk := MyAt;
+        ShotAt := GetTickCount;
+        HPShot := HP;
+        Phase := KS_FLY;
+        if DbgOn() then Dbg('[Kite]', 'shot at ' + IntToStr(OID) + ' d=' + IntToStr(Round(D)) + ' hp ' + IntToStr(HP));
+      end else if Hit then begin
+        DoStep := true;
+        if DbgOn() then Dbg('[Kite]', 'hit on ' + IntToStr(OID) + ' with no shot seen - stepping');
+      end else if Sees and ((SentAt = 0) or (GetTickCount - SentAt >= KT_RESEND_MS)) then begin
+        Engine.Attack(KT_TICK_MS);     // out of sight: no order (the game only says it cannot see it)
+        SentAt := GetTickCount;
+      end;
+    end;
+
+    // the step: only while a mob on us comes close (the nearest one nearer than K kite_near)
+    if DoStep then begin
+      Phase := KS_SHOOT;
+      SentAt := 0;
+      UA := PkNearestFight();          // PkNearD: the nearest mob on us
+      if (UA <> 0) and (PkNearD < KtNearDist()) and KtStepPoint(OID, AnX, AnY) then begin
+        UZ := User.Z;
+        NavClick(KtPX, KtPY, UZ);
+        StepAt := GetTickCount;
+        MovedAt := StepAt;
+        LastX := User.X;
+        LastY := User.Y;
+        Spd := User.Speed;
+        if Spd < 50 then Spd := 150;
+        StepMs := Round(KtStepLen() * 1000 / Spd) + 300;
+        Phase := KS_STEP;
+        if DbgOn() then
+          Dbg('[Kite]', 'step to ' + IntToStr(KtPX) + ',' + IntToStr(KtPY) + ' nearest ' + IntToStr(Round(PkNearD)) +
+            ' ' + IntToStr(StepMs) + ' ms, the target in sight from there ' + IntToStr(Ord(KtStepSees)));
+      end else if DbgOn() then
+        Dbg('[Kite]', 'no step: nearest on us ' + IntToStr(Round(PkNearD)) + ' (steps closer than ' + IntToStr(KtNearDist()) + ')');
+    end;
+    Delay(KT_TICK_MS);
+  end;
+  // an archer has no sweep: only if a mass sweep is set and this character has it
+  if (not User.Dead) and (PkMassSweep > 0) and HasSkill(PkMassSweep) then PkFinalSweep();
+end;
+
 procedure PkFight();
 var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, BestOID: integer;
   NextSpoil, IdleSince, SpoilCastAt, RangedSince, BestAt: cardinal;
@@ -6114,6 +7119,10 @@ var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, 
 begin
   if MgOn() then begin                 // a mage: skills, no auto attack / spoil
     PkMageFight();
+    exit;
+  end;
+  if KtOn then begin                   // an archer (K kite): shot, a short step away, shot ...
+    PkKiteFight();
     exit;
   end;
   Dbg('[Fight]', 'start');
@@ -6341,24 +7350,65 @@ begin
   end;
 end;
 
-// one by one, nothing to kill near: run over the location - the farm spots (#f), else the patrol
-// points, else far nav map points one after another. Never stands: the next point is taken before
-// we reach this one
+// one by one, nothing to kill near: run over the location - the farm spots (#f) there and back in their
+// order (the nearest one first; a corridor end to end, every turn), else the patrol points, else far nav
+// map points one after another. Never stands: the next point is taken before we reach this one. A fight
+// on the way: on to the same point after it
 procedure PkPatrolTick();
-var UX, UY, UZ, TX, TY, n: integer;
-  D: double;
+var UX, UY, UZ, TX, TY, n, k: integer;
+  D, BestD: double;
 begin
   UX := User.X;
   UY := User.Y;
   UZ := User.Z;
+  PkDbgSight('[Sight]');               // the debug log: what is round us (every 3 s)
+  if NoPatrol then begin               // SetIdlePatrol(false) / K patrol 0: no run round - we wait for them here
+    PkPatrolOn := false;
+    PkPatrolBack := false;
+    if not PkWaitSaid then begin
+      PkWaitSaid := true;
+      Engine.Msg('[Hunt]', 'No mobs near, waiting here (patrol off)', 0);
+      if DbgOn() then Dbg('[Patrol]', 'off: waiting at ' + IntToStr(UX) + ',' + IntToStr(UY));
+    end;
+    if HasSafePoint then
+      if PkDist(SafeX, SafeY) > 150 then NavStep(SafeX, SafeY, SafeZ, true);   // the safe point, if set: wait there
+    exit;
+  end;
   if PkPatrolOn then begin
+    if PkPatrolBack then begin         // back from a fight: the click and the stuck clock afresh
+      PkPatrolBack := false;
+      NavStepReset();
+      if DbgOn() then Dbg('[Patrol]', 'back to ' + IntToStr(PkPatrolX) + ',' + IntToStr(PkPatrolY) + ' after the fight, d=' +
+        IntToStr(Round(PkDist(PkPatrolX, PkPatrolY))));
+    end;
     D := PkDist(PkPatrolX, PkPatrolY);
-    if D < 200 then PkPatrolOn := false;
+    if D < 200 then begin
+      PkPatrolOn := false;
+      if DbgOn() then Dbg('[Patrol]', 'reached ' + IntToStr(PkPatrolX) + ',' + IntToStr(PkPatrolY));
+    end;
   end;
   if not PkPatrolOn then begin
     n := Length(PatrolPoints) div 3;
     if PkSpotN > 1 then begin
-      PkPatrolK := (PkPatrolK + 1) mod PkSpotN;
+      if not PkPatrolGo then begin
+        PkPatrolGo := true;
+        PkPatrolDir := 1;
+        BestD := 1E18;
+        for k := 0 to PkSpotN - 1 do begin
+          TX := PkSpotX[k];
+          TY := PkSpotY[k];
+          D := PkDist(TX, TY);
+          if D < BestD then begin
+            BestD := D;
+            PkPatrolK := k;
+          end;
+        end;
+      end else begin
+        if PkPatrolDir = 0 then PkPatrolDir := 1;
+        if (PkPatrolK + PkPatrolDir < 0) or (PkPatrolK + PkPatrolDir >= PkSpotN) then PkPatrolDir := -PkPatrolDir;
+        PkPatrolK := PkPatrolK + PkPatrolDir;
+        if (PkPatrolK < 0) or (PkPatrolK >= PkSpotN) then PkPatrolK := 0;
+      end;
       PkPatrolX := PkSpotX[PkPatrolK];
       PkPatrolY := PkSpotY[PkPatrolK];
       PkPatrolOn := true;
@@ -6376,10 +7426,22 @@ begin
       exit;
     end;
     Engine.Msg('[Hunt]', 'No mobs near, patrol to ' + IntToStr(PkPatrolX) + ', ' + IntToStr(PkPatrolY), 0);
+    if DbgOn() then begin
+      if PkSpotN > 1 then
+        Dbg('[Patrol]', 'to farm spot ' + IntToStr(PkPatrolK + 1) + ' of ' + IntToStr(PkSpotN) + ' (' + IntToStr(PkPatrolX) + ',' +
+          IntToStr(PkPatrolY) + ') way ' + IntToStr(PkPatrolDir) + ', d=' + IntToStr(Round(PkDist(PkPatrolX, PkPatrolY))))
+      else
+        Dbg('[Patrol]', 'to ' + IntToStr(PkPatrolX) + ',' + IntToStr(PkPatrolY) + ' (no farm spots: a far map point), d=' +
+          IntToStr(Round(PkDist(PkPatrolX, PkPatrolY))));
+    end;
     NavStepReset();
   end;
   NavStep(PkPatrolX, PkPatrolY, UZ, true);
-  if NavStillMs() > PK_POINT_STUCK_MS then PkPatrolOn := false;   // cannot get there: the next point
+  if NavStillMs() > PK_POINT_STUCK_MS then begin   // cannot get there: the next point
+    PkPatrolOn := false;
+    if DbgOn() then Dbg('[Patrol]', 'stuck ' + IntToStr(PK_POINT_STUCK_MS) + ' ms at ' + IntToStr(UX) + ',' + IntToStr(UY) +
+      ' on the way to ' + IntToStr(PkPatrolX) + ',' + IntToStr(PkPatrolY) + ' - the next point');
+  end;
 end;
 
 // FARM_AUTO: few free mobs near us -> one by one (a pack pull is not worth it)
@@ -6394,12 +7456,16 @@ end;
 // one by one: the nearest free mob (by the way, nav map) - run at it never stopping, hit it, then the
 // usual fight with everything on us (spoil, sweep, dagger); nobody near -> patrol
 procedure PkSingleTick();
-var OID, Idx, MX, MY, Reach: integer;
+var OID, Idx, MX, MY, UZ, Reach, St, SeenLog: integer;
   Started: cardinal;
-  First: boolean;
+  D: double;
+  First, Chasing, InSight: boolean;
+  Nm: string;
 begin
   if PkCountAggro() > 0 then begin     // something hits us: kill it here
     PkState('one by one: ' + IntToStr(PkCountAggro()) + ' on us - fight here');
+    PkWaitSaid := false;
+    if PkPatrolOn then PkPatrolBack := true;   // the patrol goes on to the same point after it
     PkCorner := -1;
     PkFight();
     PkPickup();
@@ -6407,23 +7473,60 @@ begin
   end;
   OID := PullPickSingle();
   if OID = 0 then begin
-    PkState('one by one: no free mob within reach - patrol');
+    if NoPatrol then PkState('one by one: no free mob within reach - waiting (patrol off)')
+    else PkState('one by one: no free mob within reach - patrol');
     PkPatrolTick();
     exit;
   end;
-  PkPatrolOn := false;
+  PkWaitSaid := false;
+  if PkPatrolOn then PkPatrolBack := true;   // the patrol goes on to the same point after this one
   Idx := SpMobIdx(OID);
   if Idx >= 0 then PkState('one by one: running at ' + PullNpcName(Idx));
-  Started := GetTickCount;
-  First := true;
-  while not AoeMustStop() do begin
-    Idx := SpMobIdx(OID);
-    if (Idx < 0) or NpcList(Idx).Dead then exit;
-    if PkCountAggro() > 0 then break;  // it (or another) is on us now: fight
+  if DbgOn() and (Idx >= 0) then begin
+    PkDbgSight('[Sight]');
+    Idx := SpMobIdx(OID);              // again: the list shifts while we look round (another mob at the old index)
+  end;
+  if DbgOn() and (Idx >= 0) then begin
     MX := NpcList(Idx).X;
     MY := NpcList(Idx).Y;
-    if MgOn() then Reach := MgReach() else Reach := PK_HIT_RANGE;
-    if PkDist(MX, MY) <= Reach then begin
+    Dbg('[Hunt]', 'pick ' + IntToStr(OID) + ' ' + PullNpcName(Idx) + ' d=' + IntToStr(Round(PkDist(MX, MY))) + ' by the map ' +
+      IntToStr(Round(NavPathLen(MX, MY))) + ', in sight ' + IntToStr(Ord(KtSees(MX, MY))));
+  end;
+  SeenLog := -1;
+  Started := GetTickCount;
+  First := true;
+  Chasing := false;
+  while not AoeMustStop() do begin
+    if PkCountAggro() > 0 then break;  // it (or another) is on us now: fight
+    DbgTick();
+    PkLiveTick();                      // the live view file (SetLiveMap)
+    if PvTick() then exit;             // a player hit us: answered (SetPvpAnswer), then the pick again
+    // its index right before it is read: the bot's list shifts meanwhile (the old index = another mob)
+    Idx := SpMobIdx(OID);
+    if (Idx < 0) or NpcList(Idx).Dead then exit;
+    MX := NpcList(Idx).X;
+    MY := NpcList(Idx).Y;
+    Nm := PullNpcName(Idx);
+    if MgOn() then Reach := MgReach() else if KtOn then Reach := KtReach() else Reach := PK_HIT_RANGE;
+    D := PkDist(MX, MY);
+    InSight := true;
+    if KtOn then InSight := KtSees(MX, MY);
+    if DbgOn() and KtOn then begin     // the debug log: every change of out of reach / behind a wall / in sight
+      St := 0;
+      if D <= Reach then St := 1 + Ord(InSight);
+      if St <> SeenLog then begin
+        SeenLog := St;
+        if St = 0 then
+          Dbg('[Sight]', Nm + ' d=' + IntToStr(Round(D)) + ' farther than ' + IntToStr(Reach) + ' - running')
+        else if St = 1 then
+          Dbg('[Sight]', Nm + ' d=' + IntToStr(Round(D)) + ' in reach but behind a wall of the map - running on round it')
+        else
+          Dbg('[Sight]', Nm + ' d=' + IntToStr(Round(D)) + ' in reach and in sight - the first shot');
+      end;
+    end;
+    // a bow: in reach AND in sight (no wall of the map between) - round a corner it runs on along the map
+    if (D <= Reach) and InSight then begin
+      Chasing := false;
       if MgOn() then begin
         if TargetOID() <> OID then Engine.SetTarget(OID);
         MgCast(OID);                   // a mage: the first skill from here - it is on us after it
@@ -6432,15 +7535,35 @@ begin
         Engine.Attack(300);            // the first hit: it is on us after it
       end;
     end else begin
-      PullChase(OID, First);           // by the nav map, through it, no stops
+      if not Chasing then begin        // a new run (or on again after it went out of sight): the stuck clock afresh
+        Chasing := true;
+        First := true;
+        NavMoveReset();
+      end;
+      if KtOn and (not NavIsFree(MX, MY)) then begin   // a bow, the mob off green (blue / the wall): to a spot to shoot it from
+        if not KtShootPoint(OID, MX, MY) then begin
+          Engine.Msg('[Hunt]', 'No green spot to shoot ' + Nm + ' from, skipping it', 0);
+          if DbgOn() then Dbg('[Hunt]', 'no shoot spot for ' + Nm + ' d=' + IntToStr(Round(D)) + ' - skipped');
+          PullForget(OID, SP_IGNORE_MS);
+          exit;
+        end;
+        if First then NavStepReset();
+        UZ := User.Z;
+        NavStep(KtSpX, KtSpY, UZ, true);
+      end else
+        PullChase(OID, First);         // by the nav map, through it, no stops
       First := false;
       if NavStillMs() > PK_POINT_STUCK_MS then begin
-        Engine.Msg('[Hunt]', 'Cannot get to ' + PullNpcName(Idx) + ', skipping it', 0);
+        Engine.Msg('[Hunt]', 'Cannot get to ' + Nm + ', skipping it', 0);
+        if DbgOn() then Dbg('[Hunt]', 'stuck ' + IntToStr(PK_POINT_STUCK_MS) + ' ms running at ' + Nm + ' d=' +
+          IntToStr(Round(D)) + ' - skipped');
         PullForget(OID, SP_IGNORE_MS);
         exit;
       end;
     end;
     if GetTickCount - Started > SP_APPROACH_MS then begin
+      if DbgOn() then Dbg('[Hunt]', Nm + ' not on us after ' + IntToStr(SP_APPROACH_MS div 1000) + ' s (d=' +
+        IntToStr(Round(D)) + ', in sight ' + IntToStr(Ord(InSight)) + ') - skipped');
       PullForget(OID, SP_IGNORE_MS);
       exit;
     end;
@@ -7262,6 +8385,8 @@ begin
       NextWeapon := GetTickCount + WEAPON_POLL_MS;
       WeaponTick();
     end;
+    PkLiveTick();                      // the live view file (SetLiveMap)
+    if PvTick() then continue;         // a player hit us: answered (SetPvpAnswer), then the farm again
     PackTick();
   end;
 end;
@@ -7362,6 +8487,17 @@ begin
     else PullSkipChampions(DEFAULT_CHAMPION_HP);
   end;
   LoadIgnoreNames();
+  // K fight (the viewer's "How they are hit") wins over K kite and the mage skills kept in the map
+  if PkFightStyle = 'BOW' then KtOn := true
+  else if (PkFightStyle = 'MELEE') or (PkFightStyle = 'MAGE') then KtOn := false;
+  if (PkFightStyle = 'MELEE') or (PkFightStyle = 'BOW') then begin
+    SetLength(MgPrio, 0);
+    SetLength(MgID, 0);
+    SetLength(MgCond, 0);
+    SetLength(MgVal, 0);
+  end;
+  // an archer with no mode and no rooms: one by one (not packs)
+  if KtOn and (Length(MgID) = 0) and (not PkFarmModeSet) and (RoomCount() = 0) then PkFarmMode := FARM_SINGLE;
   if MgOn() or (Length(MbID) > 0) then MgPrepare();   // the skill list Library\Nav\skills.json, the order by priority
   if Length(MbID) > 0 then MgBuffInfo();
   if MgOn() and PkProfile and (not PackEnabled) then
@@ -7380,6 +8516,26 @@ begin
       Engine.Msg('[Init]', 'Mage: ' + IntToStr(Length(MgID)) + ' skills, targets within ' + IntToStr(MgReach()) +
         ', the pull: running past them - no auto attack, no spoil', 0);
     MgHealSetup();                     // drains / heals ("our HP below") while pulling and running too
+  end;
+  if KtOn and MgOn() then
+    Engine.Msg('[Init]', 'Bow kite is not used: the mage skills are set (the mage fight wins)', 128)
+  else if KtOn then begin
+    // an archer needs no pack line (SetBowKite + one by one): the script farms all the same
+    if (not PackEnabled) and (not PkProfile) then PkPackStart(6, 0, 0);
+    if PkFarmMode = FARM_SINGLE then
+      Engine.Msg('[Init]', 'Bow kite, one by one', 0);
+    if KtWait > 0 then
+      Engine.Msg('[Init]', 'Bow kite: targets within ' + IntToStr(KtReach()) + ', ' + IntToStr(KtWait) +
+        ' ms after every shot a step of ' + IntToStr(KtStepLen()) + ' away while a mob on us is closer than ' +
+        IntToStr(KtNearDist()), 0)
+    else
+      Engine.Msg('[Init]', 'Bow kite: targets within ' + IntToStr(KtReach()) + ', after every shot (once its arrow lands) a step of ' +
+        IntToStr(KtStepLen()) + ' away while a mob on us is closer than ' + IntToStr(KtNearDist()), 0);
+  end;
+  if PkLiveOn then Engine.Msg('[Init]', 'Live view: Library\Nav\' + PkFileNick() + '.navlive (nav_view.html, button Live)', 0);
+  if PvOn then begin
+    if PkProfile then Engine.Msg('[Init]', 'PvP answer is not used in the profile mode', 128)
+    else Engine.Msg('[Init]', 'PvP answer: a player (not party / clan) who hits us is hit back, no Ctrl (only a flagged one)', 0);
   end;
   IsRecovering := false;
   NeedReturn := false;
@@ -7406,7 +8562,11 @@ begin
     if AoeEnabled or SpoilEnabled or CasterEnabled then
       Engine.Msg('[Init]', 'SetPackFarm wins: SetAoeFarm / SetSpoilFarm / SetCasterFarm are not used with it', 128);
     Engine.Msg('[Init]', 'Pack farm: one thread', 0);
-    if (PkDbgFile = '1') or (PkDbgRun = '1') then DbgStart(User.Name);
+    if (PkDbgFile = '1') or (PkDbgRun = '1') then begin
+      DbgStart(PkFileNick());          // letters / digits only: any nick makes a file name
+      Dbg('[Init]', 'debug log of ' + User.Name);
+      DbgFlush();                      // the file is there at once (not only 2 s later)
+    end;
     if MgOn() then MgDbgConfig();      // the mage set-up into the debug log
     PackMain();
     exit;

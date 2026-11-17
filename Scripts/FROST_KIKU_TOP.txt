@@ -1,0 +1,14 @@
+uses SysUtils;
+uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
+
+// All settings, rooms, farm spots and the safe point are in KIKU.navgrid (Library\Nav):
+// open it in Library\Nav\nav_view.html, button "Settings". A line after SetNavGrid overrides the file.
+
+begin
+  SetNavGrid('FROST_KIKU_TOP.navgrid');
+  SetDebugLog(true, true);             // the debug log Library\Logs\dbg_<nick>_<time>_N.log: sight, fight, patrol, every run
+  SetPvpAnswer(300, 800);              // a player (not party / clan) hits us -> hit him back after 300..800 ms
+  SetLiveMap(true);                    // Library\Nav\<nick>.navlive: nav_view.html, button Live - where it runs, live
+  SetNavStrict(true);                  // runs on green only, red is never crossed (by itself once the map has blue sight cells)
+  RunFarm();
+end.

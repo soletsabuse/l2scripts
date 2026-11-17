@@ -800,10 +800,16 @@ begin
   if L > 1 then begin
     TX := MX + Round(DX / L * MpOvershoot);
     TY := MY + Round(DY / L * MpOvershoot);
-    if NavIsReady() and (not NavSee(MX, MY, TX, TY)) then begin   // a wall right behind it: no overshoot
+    if NavIsReady() and (not NavWalkLine(MX, MY, TX, TY)) then begin   // a wall right behind it: no overshoot
       TX := MX;
       TY := MY;
     end;
+  end;
+  // the strict map: never a click into red / the sight cells - up to the last green on the way only
+  if NavIsReady() and NavStrictOn() then begin
+    if not NavWalkClamp(UX, UY, TX, TY) then exit;   // no green on the way at all: no click (never into red)
+    TX := NavClampX();
+    TY := NavClampY();
   end;
   MpChaseMX := MX;
   MpChaseMY := MY;

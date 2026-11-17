@@ -41,6 +41,10 @@
   button.primary:hover { background: linear-gradient(180deg, #5aa3f5, #357bd0); }
   button.ghost { background: transparent; border-color: transparent; }
   button.ghost:hover { background: var(--panel3); }
+  button.danger:hover { background: #3a1d22; border-color: #ff5d6c; color: #ff8a95; }
+  #sub button.danger, #sub button.live { padding: 3px 10px; font-size: 12px; }
+  #sub button.live.on { border-color: #3ddc84; color: #3ddc84; }
+  #sub button.live.stale { border-color: #ffd166; color: #ffd166; }
   button.icon { padding: 5px 7px; }
   button:disabled { opacity: .3; cursor: default; }
   #save.dirty::after, #cfgSave.dirty::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #ffd166; box-shadow: 0 0 0 2px rgba(255, 209, 102, .25); }
@@ -185,6 +189,16 @@
   .addrow { justify-self: start; font-size: 12px; color: var(--accent); background: transparent; border-style: dashed; }
   .rw.hd { font-size: 11px; color: var(--dim); }
   .fld .wt { color: #c4ccd8; }
+  .choice { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 8px; max-width: 820px; margin-top: 6px; }
+  .choice .opt { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 9px 12px; border-radius: 10px;
+    white-space: normal; background: var(--panel2); border-color: var(--line); }
+  .choice .opt b { font-size: 13px; font-weight: 600; color: #dfe5ee; }
+  .choice .opt span { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+  .choice .opt.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--panel2)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
+  .choice .opt.on b { color: #fff; }
+  .fld.sum .what { font-size: 13.5px; line-height: 1.6; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--c);
+    border-radius: 10px; padding: 10px 14px; max-width: 820px; }
+  .fld.sum .pills { margin-top: 8px; }
   .fld .acts { display: flex; gap: 8px; align-items: center; }
   .fld.wide > .wt, .fld.wide > .rows, .fld.wide > .acts { grid-column: 1; }
   .fld[data-k="mage"] > .rows, .fld[data-k="_skills"] > .rows { max-width: 880px; }
@@ -219,8 +233,9 @@
   </div>
   <span class="vsep"></span>
   <div class="grp seg" title="Paint colour">
-    <button data-color="good"><span class="sw" style="background:#3ddc84"></span>Walkable</button>
-    <button data-color="bad"><span class="sw" style="background:#ff5d6c"></span>Wall</button>
+    <button data-color="good" title="Walkable: the bot runs here (and only here on a map with Sight cells)"><span class="sw" style="background:#3ddc84"></span>Walk</button>
+    <button data-color="see" title="Sight: mobs stand here and are shot / targeted, the bot never runs here. A map with Sight cells is strict: runs on green only, red is never crossed"><span class="sw" style="background:#4fb3ff"></span>Sight</button>
+    <button data-color="bad" title="Wall: nothing passes - no run, no shot"><span class="sw" style="background:#ff5d6c"></span>Wall</button>
   </div>
   <div class="grp seg">
     <button data-tool="brush" data-ic="brush">Brush</button>
@@ -238,9 +253,8 @@
   <div class="grp">
     <button id="regen" class="primary" data-ic="regen" title="Rebuild the bot's graph from the painted cells">Rebuild</button>
     <button id="undo" class="icon" data-ic="undo" title="Undo (Ctrl+Z)"></button>
+    <button id="helpBtn" class="icon ghost" data-ic="help" title="Help"></button>
   </div>
-  <span class="sp"></span>
-  <button id="helpBtn" class="icon ghost" data-ic="help" title="Help"></button>
 </header>
 <div id="sub">
   <span class="tname" id="toolName"></span>
@@ -248,6 +262,8 @@
   <span class="opt" id="optBrush">Size <input id="brush" type="range" min="1" max="100" value="1"><b id="brushV">1</b></span>
   <label class="opt" id="optFill"><input id="byTrace" type="checkbox" checked> Stop at run lines</label>
   <div class="view">
+    <div class="grp"><button id="clearAll" class="danger" data-ic="trash" title="Clear the map: the navmesh and everything drawn (rooms, farm spots, the safe point, nodes, rails, the run lines, the zone). The settings stay. Then open a new .navtrace and build the map on it. Ctrl+Z brings it all back">Clear map</button></div>
+    <div class="grp"><button id="liveBtn" class="live" data-ic="locate" title="Live: where the character is and runs right now. The script writes Library\Nav\<nick>.navlive (SetLiveMap(true) or Settings → Live view); the first time pick the Library\Nav folder. Click again — off; Shift+click — another folder"><span id="liveTxt">Live</span></button><label class="opt" title="keep the character on the screen"><input id="liveFollow" type="checkbox" checked> Follow</label></div>
     <div class="grp" title="Navmesh cell size: a new size moves the painting onto the new cells"><span class="lbl">Cell</span><input id="cell" type="number" value="4" min="2" step="2"></div>
     <div class="grp" title="Map tile layer"><span class="lbl">Level</span><span id="levels"></span></div>
     <div class="grp" title="Shift of the map tiles"><span class="lbl">Offset</span><input id="cdx" type="number" value="0" step="16"><input id="cdy" type="number" value="0" step="16"></div>
@@ -273,9 +289,11 @@
       <li><b>.txt</b> script — its corners and safe point; an old script can also hand its settings to Settings</li>
       <li><b>Open</b> or drop the files anywhere on the page; <b>Save</b> writes the .navgrid</li></ul></section>
     <section><h4>Painting</h4><ul>
-      <li>Pick <b>Walkable</b> or <b>Wall</b> and paint with the <b>Brush</b> or <b>Fill</b> (a click inside a shape, like in Paint; the run lines help as walls)</li>
+      <li>Pick <b>Walk</b>, <b>Sight</b> or <b>Wall</b> and paint with the <b>Brush</b> or <b>Fill</b> (a click inside a shape, like in Paint; the run lines help as walls)</li>
+      <li><b>Walk</b> (green) — the bot runs here. <b>Sight</b> (blue) — mobs stand here and are shot, the bot never runs here. <b>Wall</b> (red) — nothing passes. A map with Sight cells is strict: runs on green only, a click / a run line never crosses red; standing in red the bot first steps out onto green</li>
       <li>Then press <b>Rebuild</b> and check it with <b>Route</b> A→B — the orange line is exactly how the bot runs</li>
-      <li><b>Cell</b> — the navmesh cell size; a new size moves the painting onto the new cells</li></ul></section>
+      <li><b>Cell</b> — the navmesh cell size; a new size moves the painting onto the new cells</li>
+      <li><b>Clear map</b> (under the toolbar, right) — wipes the navmesh and everything drawn (rooms, spots, safe point, nodes, rails, run lines, zone); the settings stay. Then open a new <b>.navtrace</b>, paint on it and <b>Save</b> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> brings it back)</li></ul></section>
     <section><h4>Map objects</h4><ul>
       <li><b>Room</b> — click the corners, <kbd>Enter</kbd> or the first corner closes it, drag a corner to move it; room settings — the panel on the right</li>
       <li><b>Spot</b> — a farm spot: click to place, drag the star to move</li>
@@ -287,7 +305,8 @@
       <li>Wheel — zoom · right mouse or <kbd>Space</kbd> + drag — pan</li>
       <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> — undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> — save the .navgrid</li>
       <li><kbd>Enter</kbd> / <kbd>Esc</kbd> / <kbd>Backspace</kbd> — finish / cancel / remove the last point of a room or rail</li>
-      <li><b>Level</b> — the map tile layer · <b>Offset</b> — shift of the map tiles</li></ul></section>
+      <li><b>Level</b> — the map tile layer · <b>Offset</b> — shift of the map tiles</li>
+      <li><b>Live</b> — the character right now (the script with <code>SetLiveMap(true)</code>): blue dot and its trail, yellow line — where it clicked, orange dashes — its route to the goal, green cross — the spot it shoots a mob off green from; mobs: red — on it, yellow — free, hollow — a wall of the map between (no shot); white ring — its target; violet — players</li></ul></section>
   </div>
 </div></div>
 <div id="toast"></div>
@@ -318,6 +337,7 @@ const IC = {
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
   reset: '<path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
   locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/>',
   up: '<path d="M6 15l6-6 6 6"/>',
@@ -331,11 +351,12 @@ const IC = {
   flask: '<path d="M9 3h6M10 3v6l-5.6 10A1.4 1.4 0 0 0 5.6 21h12.8a1.4 1.4 0 0 0 1.2-2L14 9V3"/><path d="M7.3 15h9.4"/>',
   bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
   compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
-  book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>' };
+  book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>',
+  bow: '<path d="M5 3c9 1 15 7 16 16"/><path d="M5 3l16 16"/><path d="M4 20 18 6M18 6h-5M18 6v5"/>' };
 const icon = n => '<svg class="i" viewBox="0 0 24 24">' + (IC[n] || '') + '</svg>';
 // the tools: name and the hint in the bar under the toolbar
 const TOOLS = {
-  brush: ['brush', 'Brush', 'Paint the chosen colour — Walkable or Wall. Wheel — zoom, right mouse or Space + drag — pan.'],
+  brush: ['brush', 'Brush', 'Paint the chosen colour — Walk (runs), Sight (mobs are shot there, no runs) or Wall. Wheel — zoom, right mouse or Space + drag — pan.'],
   fill: ['fill', 'Fill', 'Click inside a closed shape to flood it with the chosen colour, like in Paint. With "Stop at run lines" the run lines work as walls.'],
   route: ['route', 'Route A→B', 'Click A, then B: the orange line is exactly how the bot will run it.'],
   room: ['room', 'Room', 'Click the corners; Enter or a click on the first corner closes it, Esc cancels, Backspace removes the last corner. Drag a corner to move it. Room settings — the panel on the right.'],
@@ -401,7 +422,7 @@ function ensure(x, y) {
 }
 function paint(p) {
   ensure(p[0], p[1]);
-  const g = grid, r = +$('brush').value, v = color === 'good' ? 1 : 2;
+  const g = grid, r = +$('brush').value, v = colorVal();
   const cx = Math.floor((p[0] - g.x0) / g.cell), cy = Math.floor((p[1] - g.y0) / g.cell);
   for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
     if (dx * dx + dy * dy > r * r) continue;
@@ -415,13 +436,14 @@ function paint(p) {
 // with scanned rows in it is filled whole; "wall" from an empty cell fills only empty cells (inside a
 // pillar). From a cell of the other colour: that colour's area is repainted. The cells under the
 // lines next to the fill get it too
+const colorVal = () => color === 'good' ? 1 : color === 'see' ? 3 : 2;   // the cell value of the paint colour
 function fillAt(p) {
   ensure(p[0], p[1]);
-  const g = grid, n = g.w * g.h, v = color === 'good' ? 1 : 2;
+  const g = grid, n = g.w * g.h, v = colorVal();
   const start = Math.floor((p[1] - g.y0) / g.cell) * g.w + Math.floor((p[0] - g.x0) / g.cell);
   const v0 = g.f[start];
-  if (v0 === v) { toast('Already ' + (v === 1 ? 'walkable' : 'wall') + ' here'); return; }
-  const through = c => v0 === 0 && v === 1 ? g.f[c] !== 2 : g.f[c] === v0;
+  if (v0 === v) { toast('Already ' + (v === 1 ? 'walkable' : v === 3 ? 'sight' : 'wall') + ' here'); return; }
+  const through = c => v0 === 0 && v === 1 ? g.f[c] !== 2 && g.f[c] !== 3 : g.f[c] === v0;   // walk over the unknown stops at walls and sight
   // run lines as walls for the fill: the lines, stroke ends closer than 64 joined, then made 1 cell
   // thicker all round - no slipping through between points or across a diagonal
   const thin = new Uint8Array(n), line = new Uint8Array(n);
@@ -461,7 +483,127 @@ function fillAt(p) {
   gridImg = null; graph = null; route.path = null; draw(); infoLine();
 }
 function snapshot() { if (!grid) return; history.push({ ...grid, f: grid.f.slice() }); if (history.length > 40) history.shift(); }
-function undo() { if (!history.length) return; grid = history.pop(); gridImg = null; graph = null; route.path = null; draw(); }
+function undo() { if (!history.length) return; const s = history.pop();
+  if (s.all) { ({ zone, strokes, seeds, grid, rooms, spots, safe, unodes, bans, rails } = s.all); graph = null; gridImg = null; route.path = null;
+    roomsUi(); fit(); if (grid) regen(); else draw(); dirty(); toast('The map is back'); return; }
+  grid = s; gridImg = null; graph = null; route.path = null; draw(); }
+// ===== live: the script writes Library\Nav\<nick>.navlive (SetLiveMap / K live) every 0.3 s - where the character
+// is, its state, the last run click, the goal of the run and its route nodes, its target, the mobs and players round it
+let liveDir = null, liveOn = false, livePollT = 0, liveErr = '';
+const lives = {};                                  // file name -> { d: the last snapshot, mod: its time, trail: [[x, y]] }
+async function liveSub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
+async function liveToggle(e) {
+  if (liveOn && !e.shiftKey) { liveOn = false; clearTimeout(livePollT); liveUi(); draw(); return; }
+  if (!window.showDirectoryPicker) { toast('Live needs Chrome / Edge (the page reads a folder)'); return; }
+  try {
+    let h = e.shiftKey ? null : (liveDir || await idb('readonly', st => st.get('liveDir')));
+    if (h) { let p = 'prompt'; try { p = await h.queryPermission({ mode: 'read' }); } catch (x) {}
+      if (p !== 'granted' && (await h.requestPermission({ mode: 'read' })) !== 'granted') h = null; }
+    if (!h) { toast('Pick the Library\\Nav folder (once)'); h = await picker(o => showDirectoryPicker(o), { mode: 'read' }); }
+    if (h.name.toLowerCase() !== 'nav') h = (await liveSub(h, 'Nav')) || (await liveSub(h, 'Library', 'Nav')) || h;
+    liveDir = h; idb('readwrite', st => st.put(h, 'liveDir'));
+    liveOn = true; liveUi(); clearTimeout(livePollT); livePoll();
+  } catch (x) { if (x.name !== 'AbortError') toast('Live: ' + x.message); }
+}
+// one snapshot; null = half written (no END yet)
+function liveParse(t) {
+  const L = t.split(/\r?\n/).filter(Boolean); if (L[L.length - 1] !== 'END') return null;
+  const d = { mobs: [], players: [], route: [] };
+  for (const l of L) { const f = l.split(' ');
+    switch (f[0]) {
+      case 'N': d.name = l.slice(2); break;
+      case 'U': d.u = { x: +f[1], y: +f[2], z: +f[3], hp: +f[4], dead: f[5] === '1' }; break;
+      case 'S': d.state = l.slice(2); break;
+      case 'C': d.click = { x: +f[1], y: +f[2], age: +f[3] }; break;
+      case 'G': d.goal = { x: +f[1], y: +f[2], age: +f[3] }; break;
+      case 'R': for (let i = 1; i + 1 < f.length; i += 2) d.route.push([+f[i], +f[i + 1]]); break;
+      case 'A': d.tgt = +f[1]; break;
+      case 'P': d.patrol = { x: +f[1], y: +f[2] }; break;
+      case 'H': d.shoot = { x: +f[1], y: +f[2] }; break;
+      case 'M': d.mobs.push({ oid: +f[1], x: +f[2], y: +f[3], on: f[4] === '1', see: f[5] === '1', name: f.slice(6).join(' ') }); break;
+      case 'Y': d.players.push({ oid: +f[1], x: +f[2], y: +f[3], name: f.slice(4).join(' ') }); break; } }
+  return d;
+}
+async function livePoll() {
+  if (!liveOn || !liveDir) return;
+  const now = Date.now(); liveErr = '';
+  try {
+    for await (const [name, h] of liveDir.entries()) {
+      if (h.kind !== 'file' || !/\.navlive$/i.test(name)) continue;
+      let f, t;
+      try { f = await h.getFile(); } catch (x) { continue; }                      // being written right now: the next time
+      if (now - f.lastModified > 120000) { delete lives[name]; continue; }      // that bot stopped long ago
+      const L = lives[name] || (lives[name] = { mod: 0, trail: [], d: null });
+      if (f.lastModified === L.mod) continue;
+      try { t = await f.text(); } catch (x) { continue; }                        // changed while read: the next time
+      const d = liveParse(t); if (!d) continue;                                  // caught half written: the next time
+      L.mod = f.lastModified; L.d = d;
+      if (d.u) { const t = L.trail, q = t[t.length - 1];
+        if (!q || Math.hypot(q[0] - d.u.x, q[1] - d.u.y) > 6) { t.push([d.u.x, d.u.y]); if (t.length > 600) t.shift(); } }
+    }
+  } catch (x) { liveErr = x.message; }
+  liveFollow(); liveUi(); draw();
+  livePollT = setTimeout(livePoll, 300);
+}
+function liveMain() { let best = null; for (const L of Object.values(lives)) if (L.d && (!best || L.mod > best.mod)) best = L; return best; }
+function liveFollow() {
+  if (!$('liveFollow').checked) return;
+  const L = liveMain(); if (!L || !L.d.u) return;
+  const X = sx(L.d.u.x), Y = sy(L.d.u.y), m = 0.25;
+  if (X < W() * m || X > W() * (1 - m) || Y < H() * m || Y > H() * (1 - m)) { ox += W() / 2 - X; oy += H() / 2 - Y; }
+}
+function liveUi() {
+  const b = $('liveBtn'), L = liveMain(), age = L ? (Date.now() - L.mod) / 1000 : Infinity;
+  b.classList.toggle('on', liveOn && age < 3); b.classList.toggle('stale', liveOn && age >= 3);
+  $('liveTxt').textContent = !liveOn ? 'Live' : liveErr ? 'Live: ' + liveErr : !L ? 'Live: no .navlive (SetLiveMap)' :
+    age < 3 ? 'Live · ' + (L.d.name || '') : 'Live · ' + Math.round(age) + ' s old';
+}
+function drawLive() {
+  if (!liveOn) return;
+  const now = Date.now();
+  const txt = (s, X, Y, c, b) => { ctx.font = (b ? 'bold ' : '') + '11px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(s, X, Y); ctx.fillStyle = c; ctx.fillText(s, X, Y); };
+  for (const L of Object.values(lives)) { const d = L.d; if (!d || !d.u) continue;
+    const old = now - L.mod > 3000, U = [d.u.x, d.u.y];
+    ctx.save(); ctx.setLineDash([]);
+    if (L.trail.length > 1) { ctx.strokeStyle = 'rgba(94,230,255,.55)'; ctx.lineWidth = 2; path(L.trail); ctx.stroke(); }
+    // the run: route nodes to the goal (orange dashes), the click right now (yellow, with a cross)
+    if (d.goal && d.goal.age < 4000) { ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2; ctx.setLineDash([7, 5]); path([U, ...d.route, [d.goal.x, d.goal.y]]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#ffb347'; for (const p of d.route) { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3.5, 0, 7); ctx.fill(); }
+      ctx.lineWidth = 2; ctx.strokeStyle = '#ffb347'; ctx.beginPath(); ctx.arc(sx(d.goal.x), sy(d.goal.y), 7, 0, 7); ctx.stroke(); }
+    if (d.click && d.click.age < 3000) { const X = sx(d.click.x), Y = sy(d.click.y); ctx.strokeStyle = '#ffe14d'; ctx.lineWidth = 2.5; path([U, [d.click.x, d.click.y]]); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X - 6, Y - 6); ctx.lineTo(X + 6, Y + 6); ctx.moveTo(X + 6, Y - 6); ctx.lineTo(X - 6, Y + 6); ctx.stroke(); }
+    if (d.shoot) { const X = sx(d.shoot.x), Y = sy(d.shoot.y); ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X, Y, 8, 0, 7);
+      ctx.moveTo(X - 12, Y); ctx.lineTo(X + 12, Y); ctx.moveTo(X, Y - 12); ctx.lineTo(X, Y + 12); ctx.stroke(); txt('shoot from', X + 12, Y - 6, '#3ddc84'); }
+    if (d.patrol) { const X = sx(d.patrol.x), Y = sy(d.patrol.y); ctx.strokeStyle = '#c792ea'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X, Y - 9); ctx.lineTo(X + 9, Y); ctx.lineTo(X, Y + 9); ctx.lineTo(X - 9, Y); ctx.closePath(); ctx.stroke(); txt('patrol', X + 11, Y + 4, '#c792ea'); }
+    // mobs: red - on us, yellow - free; hollow - a wall of the map between (no shot); white ring - our target
+    for (const m of d.mobs) { const X = sx(m.x), Y = sy(m.y), c = m.on ? '#ff5d6c' : '#ffd166';
+      if (m.oid === d.tgt) { ctx.strokeStyle = m.see ? '#ffffff' : '#9aa4b2'; ctx.lineWidth = 1.5; ctx.setLineDash(m.see ? [] : [4, 4]); path([U, [m.x, m.y]]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(X, Y, 10, 0, 7); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); txt(m.name + (m.see ? '' : ' (behind a wall)'), X + 12, Y - 8, '#ffffff'); }
+      ctx.beginPath(); ctx.arc(X, Y, 5, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = c; if (m.see) { ctx.fillStyle = c; ctx.fill(); } ctx.stroke(); }
+    for (const p of d.players) { const X = sx(p.x), Y = sy(p.y); ctx.fillStyle = '#c792ea'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(X, Y - 7); ctx.lineTo(X + 7, Y); ctx.lineTo(X, Y + 7); ctx.lineTo(X - 7, Y); ctx.closePath(); ctx.fill(); ctx.stroke(); txt(p.name, X + 9, Y + 4, '#c792ea'); }
+    // the character
+    const X = sx(U[0]), Y = sy(U[1]);
+    ctx.fillStyle = old ? '#7b8494' : d.u.dead ? '#ff5d6c' : '#5ee6ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(X, Y, 8, 0, 7); ctx.fill(); ctx.stroke();
+    txt((d.name || '') + ' · HP ' + d.u.hp + '%' + (d.u.dead ? ' · dead' : '') + (old ? ' · no update ' + Math.round((now - L.mod) / 1000) + ' s' : ''), X + 12, Y - 4, '#5ee6ff', true);
+    if (d.state) txt(d.state.length > 90 ? d.state.slice(0, 90) + '…' : d.state, X + 12, Y + 10, '#e6edf3');
+    ctx.restore(); }
+}
+
+// Clear: the navmesh and everything drawn go (the settings stay) - a new run (.navtrace) builds the map anew
+function clearAll() {
+  if (!grid && !zone && !strokes.length && !rooms.length && !spots.length && !safe && !unodes.length && !rails.length) { toast('The map is empty already'); return; }
+  if (!confirm('Clear the whole map?\n\nThe navmesh, rooms, farm spots, the safe point, own nodes, rails, the run lines and the zone go. The settings (tab Settings) stay.\nThen open a new .navtrace, paint the map on it and Save.\n\nCtrl+Z brings it all back.')) return;
+  history.push({ all: { zone, strokes, seeds, grid, rooms, spots, safe, unodes, bans, rails } });
+  if (history.length > 40) history.shift();
+  zone = null; strokes = []; seeds = []; grid = null; graph = null; gridImg = null; leak = null;
+  rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = [];
+  railDraw = null; roomDraw = null; roomDrag = null; ptDrag = null; selRoom = -1; route = { a: null, b: null, path: null };
+  roomsUi(); draw(); dirty();
+  $('info').innerHTML = 'The map is cleared (the settings stay). Open / drop a new <b>.navtrace</b>, paint <b>Walkable</b> on it (<b>Fill</b> stops at its lines), <b>Rebuild</b> and <b>Save</b>.';
+  if (cfgOpen()) cfgUi();
+  toast('Map cleared — open a new .navtrace');
+}
 
 // ===== graph: the bot's algorithm (Core\nav_move.pas) =====
 function regen() {
@@ -584,7 +726,8 @@ function findRoute(A, B) {
 }
 function infoLine() {
   if (!grid) return; const free = grid.f.reduce((a, v) => a + (v === 1 ? 1 : 0), 0);
-  let s = '<b>Navmesh</b> ' + free + ' cells of ' + grid.cell;
+  const sight = grid.f.reduce((a, v) => a + (v === 3 ? 1 : 0), 0);
+  let s = '<b>Navmesh</b> ' + free + ' cells of ' + grid.cell + (sight ? ' · <b>sight</b> ' + sight + ' (strict: runs on green only)' : '');
   if (graph) { const c = graph.nodes.length ? components() : 0;
     s += ' · <b>graph</b> ' + graph.nodes.length + ' nodes / ' + graph.edges.length + ' links';
     if (c > 1) s += ' · <span class="warn">the graph is ' + c + ' unlinked parts — a passage is blocked or too narrow somewhere</span>'; }
@@ -602,12 +745,14 @@ function parseFile(text, name) {
     if (zone.outer.length >= 3 && (!grid || confirm('Start the navmesh over from the zone ' + name + '?\n\nOK — yes; Cancel — keep what is painted, the zone is shown as an outline only'))) {
       snapshot(); grid = gridFromZone(); gridImg = null; graph = null; }
     fname = name.replace(/\.\w+$/, '');
-  } else if (/^\s*S\s+-?\d+\s*$/m.test(text)) {
-    strokes = []; let cur = null;
+  } else if (/^\s*S\s+-?\d+\s*$/m.test(text) || (/^#\s*navtrace/m.test(text) && !/^G /m.test(text))) {   // a run, or only its farm spots
+    if (/^\s*S\s+-?\d+\s*$/m.test(text)) strokes = [];   // only farm spots in it: the guide line on the screen stays
+    let cur = null; const n0 = spots.length;
     for (const line of text.split(/\r?\n/)) { const f = line.trim().split(/\s+/);
       if (f[0] === 'S') { cur = []; strokes.push(cur); } else if (f[0] === 'P' && cur) cur.push([+f[1], +f[2]]);
       else if (f[0] === 'F') addSpot(+f[1], +f[2], +f[3] || 0, true); }   // farm spots (#f) -> the map
     strokes = strokes.filter(s => s.length >= 2);
+    if (spots.length > n0) { roomsUi(); dirty(); toast((spots.length - n0) + ' farm spots from ' + name + ' — save the .navgrid'); }
     // the map must cover the run: grow it (or start an empty one) round the run
     const all = strokes.flat();
     if (all.length) { const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
@@ -616,7 +761,7 @@ function parseFile(text, name) {
     let g = null, row = 0;
     for (const line of text.split(/\r?\n/)) {
       if (line.startsWith('G ')) { const f = line.trim().split(/\s+/); g = { x0: +f[1], y0: +f[2], cell: +f[3], w: +f[4], h: +f[5], z: +f[6] || 0 }; g.f = new Uint8Array(g.w * g.h); }
-      else if (line.startsWith('R ') && g && row < g.h) { const s = line.slice(2); for (let cx = 0; cx < g.w; cx++) g.f[row * g.w + cx] = s[cx] === '.' ? 1 : s[cx] === '#' ? 2 : 0; row++; }
+      else if (line.startsWith('R ') && g && row < g.h) { const s = line.slice(2); for (let cx = 0; cx < g.w; cx++) g.f[row * g.w + cx] = s[cx] === '.' ? 1 : s[cx] === '#' ? 2 : s[cx] === ',' ? 3 : 0; row++; }
     }
     if (g) { snapshot(); grid = g; gridImg = null; graph = null; $('cell').value = g.cell; fname = name.replace(/\.\w+$/, '');
       rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = []; railDraw = null; cfg = {}; cfgExtra = []; setClean();
@@ -653,7 +798,7 @@ function gridVer(lines) {
 }
 function gridText() {
   const g = grid, G = 'G ' + g.x0 + ' ' + g.y0 + ' ' + g.cell + ' ' + g.w + ' ' + g.h + ' ' + (g.z || 0);
-  const ch = ['?', '.', '#'], rows = [];
+  const ch = ['?', '.', '#', ','], rows = [];   // "," = sight: mobs are shot there, no runs
   for (let cy = 0; cy < g.h; cy++) { let r = 'R '; for (let cx = 0; cx < g.w; cx++) r += ch[g.f[cy * g.w + cx]]; rows.push(r); }
   const nl = unodes.map(p => 'N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
   const xl = bans.map(p => 'X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
@@ -814,11 +959,12 @@ let cfg = {}, cfgExtra = [], cfgDirty = false;
 const ITEMS = [[1463, 'Soulshot D'], [1464, 'Soulshot C'], [1465, 'Soulshot B'], [1466, 'Soulshot A'], [1467, 'Soulshot S'],
   [3948, 'Blessed Spiritshot D'], [3949, 'Blessed Spiritshot C'], [3950, 'Blessed Spiritshot B'], [3951, 'Blessed Spiritshot A'],
   [3952, 'Blessed Spiritshot S'], [6645, 'Beast Soulshot'], [6647, 'Beast Blessed Spiritshot'], [3031, 'Spirit Ore'],
-  [2508, 'Cursed Bone'], [726, 'Mana Drug'], [728, 'Mana Potion'], [1539, 'Healing Potion']];
+  [2508, 'Cursed Bone'], [726, 'Mana Drug'], [728, 'Mana Potion'], [1539, 'Healing Potion'], [5592, 'CP Potion'],
+  [1345, 'Arrows S (Shining Arrow)'], [1785, 'Soul Ore'], [5589, 'Energy Stone']];
 const ITEM_CONST = { SOULSHOT_D: 1463, SOULSHOT_C: 1464, SOULSHOT_B: 1465, SOULSHOT_A: 1466, SOULSHOT_S: 1467,
   BLESSED_SPIRITSHOT_D: 3948, BLESSED_SPIRITSHOT_C: 3949, BLESSED_SPIRITSHOT_B: 3950, BLESSED_SPIRITSHOT_A: 3951,
   BLESSED_SPIRITSHOT_S: 3952, BEAST_SOULSHOT: 6645, BEAST_BLESSED_SPIRITSHOT: 6647, SPIRIT_ORE: 3031, CURSED_BONE: 2508,
-  MANA_DRUG: 726, MANA_POTION: 728, HEALING_POTION: 1539 };
+  MANA_DRUG: 726, MANA_POTION: 728, HEALING_POTION: 1539, CP_POTION: 5592, ARROW_S: 1345, SOUL_ORE: 1785, ENERGY_STONE: 5589 };
 // pull tuning (Core\mob_pull.pas, PullSet): key, label, default, hint
 const PULL = [
   ['pull_range', 'Pull range', 0, 'with a pack in tow, free mobs farther than this are not taken (0 — any)'],
@@ -844,9 +990,9 @@ const PULL_ADV = [
   ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
   ['hit_range', 'Hit range', 80], ['stuck_ms', 'Stuck, ms', 1500], ['aggro_dist', 'Aggro farther than this does not count', 1500],
   ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 50]];
-const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1' };
+const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', patrol: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1', kite: '0', pvp: '0', live: '0' };
 const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
-  'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max'];
+  'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max', 'kite_step', 'kite_range', 'kite_wait', 'kite_near', 'fight', 'pvp_delay'];
 // the skill list of the mage fight: Library\Nav\skills.json, one for every map (the farm script reads it) - how
 // each skill is cast, its cast range, AoE radius, name. A page opened from the disk cannot read a file by itself:
 // the list opened / saved here last is kept in the browser (IndexedDB) with the file's handle, and at the start
@@ -872,7 +1018,17 @@ const MAGE_CONDS = [['READY', 'Whenever ready'], ['HP_BELOW', 'Our HP % below'],
   ['PER_MOB', 'Again on a mob after, ms'], ['MOB_HP_ABOVE', 'Target MaxHP above'], ['EVERY', 'At most every, ms']];
 const MAGE_PH = { READY: '—', HP_BELOW: '70', MOBS: '3', PER_MOB: '30000 (0 — once)', MOB_HP_ABOVE: '100000', EVERY: '5000' };
 // cfg.mage: [skill, when, value] in the order of the priority (the upper row first; saved as K mage 1.., 2.., ...)
-const mageOn = () => (cfg.mage || []).some(r => +r[0]);
+// what the farm does: how the mobs are taken (K mode; none - rooms if drawn, an archer one by one, else packs)
+// and how they are hit (K fight; none - Mage if mage skills are set, Bow if K kite 1, else Melee)
+const FIGHTS = ['MELEE', 'BOW', 'MAGE'];
+const mageRows = () => (cfg.mage || []).some(r => +r[0]);
+const fightOf = () => { const f = cv0('fight').toUpperCase(); return FIGHTS.includes(f) ? f : mageRows() ? 'MAGE' : cv0('kite') === '1' ? 'BOW' : 'MELEE'; };
+const modeOf = () => cv0('mode').toUpperCase() || (rooms.length ? 'ROOMS' : fightOf() === 'BOW' ? 'SINGLE' : 'PACK');
+const isPull = () => ['PACK', 'AUTO', 'ROOMS'].includes(modeOf());   // packs are pulled: a corner / a farm spot / a room
+const isProf = () => modeOf() === 'PROFILE';
+const notProf = () => !isProf();
+const isMelee = () => fightOf() === 'MELEE' && !isProf();
+const mageOn = () => fightOf() === 'MAGE' && mageRows();
 // a K mage line / AddMageSkill: the row goes after the rows of the same or a higher priority
 function mageAdd(prio, skill, cond, val) {
   const L = cfg.mage = cfg.mage || [], p = parseInt(prio) || 1;
@@ -958,42 +1114,58 @@ function skillsUiRefresh(self) {
 }
 // the settings cards: ic = icon (IC), c = accent colour; fields: k = key, l = label, type, ph = default shown grey, h = hint
 const CARDS = [
+  { ic: 'sword', c: '#ff6b7a', t: 'How to farm', sub: 'Pick these two first — the cards below show only what fits them', f: [
+    { k: 'mode', l: 'How the mobs are taken', type: 'seg', eff: modeOf, opts: [
+      ['SINGLE', 'One by one', 'runs over the spot, kills each mob where it stands'],
+      ['PACK', 'Packs', 'pulls a pack by running past the mobs, kills it at a farm spot / corner'],
+      ['ROOMS', 'Rooms', 'room after room of the map, each by its own mode (set on the map)'],
+      ['AUTO', 'Auto', 'many free mobs near — a pack, few — one by one'],
+      ['PROFILE', 'Bot profile', 'the bot interface farms (Profile .xml), the script runs to the spot and buffs']],
+      h: () => cv0('mode') ? '' : 'not picked yet — taken by the map: ' + (rooms.length ? 'rooms are drawn → Rooms' : fightOf() === 'BOW' ? 'an archer → One by one' : 'no rooms → Packs') },
+    { k: 'fight', l: 'How they are hit', type: 'seg', eff: fightOf, show: notProf, opts: [
+      ['MELEE', 'Melee', 'the auto attack; mass spoil / sweep if set'],
+      ['BOW', 'Bow + kite', 'a shot, a short step away from the mob, the next shot'],
+      ['MAGE', 'Mage skills', 'the skills of the Mage card, no auto attack']] },
+    { k: '_sum', type: 'summary' }] },
   { ic: 'user', c: '#5aa9ff', t: 'Account & start', sub: 'Game login and bot files', f: [
     { k: 'login.user', l: 'Login', h: 'empty — no auto-login' },
     { k: 'login.pass', l: 'Password', type: 'pass' },
     { k: 'zone', l: 'Zone .zmap', ph: 'MOS_1.zmap', h: 'Library\\Zones; empty — the zone active in the bot' },
     { k: 'config', l: 'Profile .xml', ph: 'alarm.xml', h: 'Library\\Configurations. Mode Profile: it farms; the other modes: an alarm one (auto attack off)' }] },
-  { ic: 'sword', c: '#ff6b7a', t: 'Farm', sub: 'What to hit and how', f: [
-    { k: 'pack.size', l: 'Pack size', type: 'num', ph: '6', h: 'how many mobs to gather before the fight' },
-    { k: 'pack.spoil', l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302 (with Mage skills — none), 0 — no spoil' },
-    { k: 'spoil_per_mob', l: 'Mass spoils per mob', type: 'num', ph: '2', h: 'system messages are not read: a mob counts as spoiled once it was under this many mass spoils (resurrected / late ones get as many too)' },
-    { k: 'pack.sweep', l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444 (with Mage skills — none), 0 — no sweep' },
-    { k: 'pack.mobs', l: 'Mob IDs', type: 'ids', ph: '22126, 22127', h: 'empty — any mob in the zone' },
-    { k: 'mode', l: 'Mode', type: 'sel', opts: [['', 'Auto: rooms if drawn, else packs'], ['PACK', 'Pack → to a corner'],
-      ['SINGLE', 'Single, where they stand'], ['AUTO', 'Auto: many — pack, few — single'], ['ROOMS', 'Rooms'], ['PROFILE', 'Profile: the bot interface farms']],
-      h: 'Profile: the script runs to the spot and turns the zone and the interface (Profile .xml) on; buff low — interface off, fights off what hits us (on the safe point if there is one), buffs, interface on' },
-    { k: 'skip_champions', l: 'Skip champions', type: 'bool', h: 'champions are never pulled or hit — a room with only them left counts as cleared, we move on' },
-    { k: 'champ_hp', l: 'Champion from MaxHP', type: 'num', ph: '100000', h: 'a mob with MaxHP above this is a champion; empty — the threshold from Alerts' },
-    { k: 'pickup', l: 'Pick up drop', type: 'bool', h: 'after a fight pick up the drop nearby (off — leave it, move on at once)' },
-    { k: 'zrange', l: 'Own floor only', type: 'num', ph: '0', h: 'mobs no farther than this by height (0 — no limit)' },
+  { ic: 'target', c: '#ff8a7a', t: 'Mobs', sub: 'Which mobs, the pack, spoil', f: [
+    { k: 'pack.size', show: () => ['PACK', 'AUTO'].includes(modeOf()), l: 'Pack size', type: 'num', ph: '6', h: 'how many mobs to gather before the fight' },
+    { k: 'pack.spoil', show: isMelee, l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302 (with Mage skills / Bow kite — none), 0 — no spoil' },
+    { k: 'spoil_per_mob', show: isMelee, l: 'Mass spoils per mob', type: 'num', ph: '2', h: 'system messages are not read: a mob counts as spoiled once it was under this many mass spoils (resurrected / late ones get as many too)' },
+    { k: 'pack.sweep', show: isMelee, l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444 (with Mage skills / Bow kite — none), 0 — no sweep' },
+    { k: 'pack.mobs', show: notProf, l: 'Mob IDs', type: 'ids', ph: '22126, 22127', h: 'empty — any mob in the zone' },
+    { k: 'skip_champions', show: notProf, l: 'Skip champions', type: 'bool', h: 'champions are never pulled or hit — a room with only them left counts as cleared, we move on' },
+    { k: 'champ_hp', show: notProf, l: 'Champion from MaxHP', type: 'num', ph: '100000', h: 'a mob with MaxHP above this is a champion; empty — the threshold from Alerts' },
+    { k: 'pickup', show: notProf, l: 'Pick up drop', type: 'bool', h: 'after a fight pick up the drop nearby (off — leave it, move on at once)' },
+    { k: 'patrol', show: notProf, l: 'Patrol when no mobs', type: 'bool', h: 'nothing to hit near — run over the farm spots / patrol points / the map looking for mobs. Off — stand where it is and wait for the respawn (the safe point, if set — there); a mob within the usual reach is still taken' },
+    { k: 'zrange', show: notProf, l: 'Own floor only', type: 'num', ph: '0', h: 'mobs no farther than this by height (0 — no limit)' },
     { k: 'ignore', l: 'Ignored mobs', type: 'ids', ph: '12345, 67890', h: 'never pulled or hit (archers shooting from their place…)' }] },
-  { ic: 'pin', c: '#c792ea', t: 'Farm spot & rooms', sub: 'Where to stand and fight the pack', f: [
+  { ic: 'pin', c: '#c792ea', show: isPull, t: 'Farm spot & rooms', sub: 'Where to stand and fight the pack', f: [
     { k: 'spots_only', l: 'My spots only', type: 'bool', h: 'take the pack only to the farm spots on the map, never look for own corners' },
-    { k: 'spot_wait_ms', l: 'Wait for the pack, ms', type: 'num', ph: '1500', h: 'do not hit until the pack has come (80% near / stopped coming / this time), holding the spot; 0 — hit at once' },
-    { k: 'corner_radius', l: 'Spot radius', type: 'num', ph: '0', h: 'hits pack mobs up to this far from the spot, stepping to them (0 — stands)' },
+    { k: 'spot_wait_ms', show: () => fightOf() === 'MELEE', l: 'Wait for the pack, ms', type: 'num', ph: '1500', h: 'do not hit until the pack has come (80% near / stopped coming / this time), holding the spot; 0 — hit at once' },
+    { k: 'corner_radius', show: () => fightOf() === 'MELEE', l: 'Spot radius', type: 'num', ph: '0', h: 'hits pack mobs up to this far from the spot, stepping to them (0 — stands)' },
     { k: 'auto_corner', l: 'Look for a corner within', type: 'num', ph: '0', h: 'no fitting farm spot — a wall corner within this radius (0 — off)' },
-    { k: 'ranged_ms', l: 'Ranged attacker, ms', type: 'num', ph: '3000', h: 'a mob on us stands and does not come this long — run to kill it, then back (0 — wait)' },
-    { k: 'room_order', l: 'Room order', type: 'sel', opts: [['', 'Smart: where most mobs are (by room "min")'], ['SEQ', 'In turn: A, B, C… without counting mobs']],
+    { k: 'ranged_ms', show: () => fightOf() !== 'BOW', l: 'Ranged attacker, ms', type: 'num', ph: '3000', h: 'a mob on us stands and does not come this long — run to kill it, then back (0 — wait)' },
+    { k: 'room_order', show: () => modeOf() === 'ROOMS', l: 'Room order', type: 'sel', opts: [['', 'Smart: where most mobs are (by room "min")'], ['SEQ', 'In turn: A, B, C… without counting mobs']],
       h: 'in turn — in the order of the room list on the map from the room nearest to the start (started in B — B, C, …, A); its pack is dead — on to the next one at once, mobs on us come along' },
-    { k: 'room_cycle_wait', l: 'Pause after a round, s', type: 'num', ph: '0', h: 'in turn: all rooms done — wait this long, then a new round (0 — at once)' },
-    { k: 'room_pause_min', l: 'Pause before the next room, ms: from', type: 'num', ph: '1000', h: 'a room done — a random «human» pause, from … to ms, before the run to the next one (mobs on us — no pause); 0 and 0 — none' },
-    { k: 'room_pause_max', l: '… to, ms', type: 'num', ph: '3000' },
-    { k: 'room_recount', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
-    { k: 'room_ignore_way', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight)' },
-    { k: 'room_players', l: 'Player in the room, s', type: 'num', ph: '60', h: 'a stranger in the room this many seconds — leave (0 — at once, -1 — ignore). A room with a stranger seen from afar is not chosen' },
-    { k: 'room_avoid', l: 'Avoid it for, s', type: 'num', ph: '30', h: 'after leaving because of a player the room is avoided this many seconds' },
+    { k: 'room_cycle_wait', show: () => modeOf() === 'ROOMS', l: 'Pause after a round, s', type: 'num', ph: '0', h: 'in turn: all rooms done — wait this long, then a new round (0 — at once)' },
+    { k: 'room_pause_min', show: () => modeOf() === 'ROOMS', l: 'Pause before the next room, ms: from', type: 'num', ph: '1000', h: 'a room done — a random «human» pause, from … to ms, before the run to the next one (mobs on us — no pause); 0 and 0 — none' },
+    { k: 'room_pause_max', show: () => modeOf() === 'ROOMS', l: '… to, ms', type: 'num', ph: '3000' },
+    { k: 'room_recount', show: () => modeOf() === 'ROOMS', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
+    { k: 'room_ignore_way', show: () => modeOf() === 'ROOMS', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight)' },
+    { k: 'room_players', show: () => modeOf() === 'ROOMS', l: 'Player in the room, s', type: 'num', ph: '60', h: 'a stranger in the room this many seconds — leave (0 — at once, -1 — ignore). A room with a stranger seen from afar is not chosen' },
+    { k: 'room_avoid', show: () => modeOf() === 'ROOMS', l: 'Avoid it for, s', type: 'num', ph: '30', h: 'after leaving because of a player the room is avoided this many seconds' },
     { k: '_map', type: 'map' }] },
-  { ic: 'spark', c: '#b18cff', t: 'Mage', sub: 'The pack is killed by skills instead of the auto attack', f: [
+  { ic: 'bow', c: '#ff9f43', show: () => fightOf() === 'BOW' && notProf(), t: 'Bow kite', sub: 'After every shot (once its arrow lands) a short step away from the mobs on us, then the next shot', f: [
+    { k: 'kite_step', l: 'Step', type: 'num', ph: '120', h: 'how far each step goes; shorter — the next shot comes sooner' },
+    { k: 'kite_range', l: 'Shoot from', type: 'num', ph: '500', h: 'about the bow range: a target farther than this — run closer first' },
+    { k: 'kite_near', l: 'Step when a mob is closer than', type: 'num', ph: '380', h: 'the step goes only while a mob that hits us / has us as its target is closer than this; all farther — stand and shoot. Empty — «Shoot from» minus «Step» (380 with the defaults)' },
+    { k: 'kite_wait', l: 'Step after the shot, ms', type: 'num', ph: 'auto', h: 'empty — as soon as the arrow lands (the mob loses HP; a miss — after the usual landing time); a number — this many ms after the shot starts' }] },
+  { ic: 'spark', c: '#b18cff', show: () => fightOf() === 'MAGE' && notProf(), t: 'Mage', sub: 'The pack is killed by skills instead of the auto attack', f: [
     { k: 'mage', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
       cols: [['Skill', 'skill', null, '3fr'], ['Use when', 'sel', MAGE_CONDS, '1.6fr'], ['Value', 'num', r => MAGE_PH[r[1]] || '', '.8fr']],
       newRow: () => { const used = (cfg.mage || []).map(r => r[0]), s = skillDb.find(s => +s.id && !used.includes(s.id)); return [s ? s.id : '', 'READY', '']; },
@@ -1011,25 +1183,27 @@ const CARDS = [
       newRow: () => { const used = (cfg.mage_buff || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type === 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '']; },
       note: () => skillDb.some(s => s.type === 'SELF') ? null : mk('div', { class: 'h', text: 'no skill «On us» in the skill list — add your buffs in the Skills card below (how it is cast: «On us»): here they are picked from it' }),
       h: 'a buff is gone or ends within «Recast» seconds — its skill is cast on us at a calm moment: no mob on us (right before the pull of a room, during the pause between the rooms, while waiting), we stand until it is on. Never in the middle of a fight: a buff gone there waits for the end of the fight. Buff ID — only when the effect on us has another ID than the skill (empty — the same). Recast: empty — 60 s, 0 — only when it is gone. A toggle is cast only when it is off. Works in the pack / rooms farm, not in Profile mode' }] },
-  { ic: 'book', c: '#8c9bff', t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the Mage card picks from it', db: true, f: [
+  { ic: 'book', c: '#8c9bff', show: () => fightOf() === 'MAGE' && notProf(), t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the Mage card picks from it', db: true, f: [
     { k: '_skills', l: 'Skill list', type: 'skilldb',
       h: 'how each skill is cast, its cast range and AoE radius. Saved by its own button into skills.json (the farm script reads it there), not with the .navgrid; the page remembers the file it opened / saved' }] },
   { ic: 'target', c: '#ffb454', t: 'Weapon', sub: 'Farm weapon and the tap for the pull', f: [
     { k: 'weapon', l: 'Farm weapon', type: 'num', h: 'item ID; empty — what is in hands at start' },
-    { k: 'tap.id', l: 'Tap weapon', type: 'num', h: 'a mob does not aggro on a run-by — hit it with this, then on' },
-    { k: 'tap.range', l: 'Tap range', type: 'num', ph: '80' },
-    { k: 'tap_always', l: 'Tap every mob', type: 'bool', h: 'pull every mob with a hit, no run-by' },
-    { k: 'dagger.id', l: 'Dagger for a fat mob', type: 'num', h: 'one fat mob left — the dagger' },
-    { k: 'dagger.hp', l: 'Fat from MaxHP', type: 'num', ph: '0', h: '0 — the champion threshold' }] },
+    { k: 'tap.id', show: isPull, l: 'Tap weapon', type: 'num', h: 'a mob does not aggro on a run-by — hit it with this, then on' },
+    { k: 'tap.range', show: isPull, l: 'Tap range', type: 'num', ph: '80' },
+    { k: 'tap_always', show: isPull, l: 'Tap every mob', type: 'bool', h: 'pull every mob with a hit, no run-by' },
+    { k: 'dagger.id', show: isMelee, l: 'Dagger for a fat mob', type: 'num', h: 'one fat mob left — the dagger' },
+    { k: 'dagger.hp', show: isMelee, l: 'Fat from MaxHP', type: 'num', ph: '0', h: '0 — the champion threshold' }] },
   { ic: 'spark', c: '#ffd166', t: 'Buffs', sub: 'Buffer service and own buffs', f: [
     { k: 'buff.id', l: 'Buff ID (watched)', type: 'num', ph: '1204', h: 'empty — 1204 with the bypasses below (as on all our chars); 0 — no buff' },
     { k: 'buff.bypass', l: 'Buff bypasses', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'one per line, in this order' },
-    { k: 'selfbuff', l: 'Own buffs', type: 'rows', cols: [['Skill', 'num', '421'], ['Buff ID', 'num', '0 = same as skill']], h: 'no buff on us — the skill is cast on self. Empty — 421; skill 0 — no own buffs' }] },
-  { ic: 'magnet', c: '#4dd4ac', t: 'Pull', sub: 'Core\\mob_pull.pas — empty = the default (grey)', pull: true },
+    { k: 'selfbuff', l: 'Own buffs', type: 'rows', cols: [['Skill', 'num', '421'], ['Buff ID', 'num', '0 = same as skill'], ['Cast', 'sel', [['0', 'on self'], ['1', 'target me first']]]], h: 'no buff on us — the skill is cast on self. «target me first» — a skill cast at a target (1323): the bot targets itself, casts, then the mob back. Empty — 421; skill 0 — no own buffs' }] },
+  { ic: 'magnet', c: '#4dd4ac', show: notProf, t: 'Pull', sub: 'Core\\mob_pull.pas — empty = the default (grey)', pull: true },
   { ic: 'flask', c: '#7ee787', t: 'Supplies', sub: 'Below the minimum — buy up to the maximum', f: [
     { k: 'supply', l: 'Supplies', type: 'rows', wide: true, cols: [['Item', 'item'], ['Min', 'num', '100'], ['Max', 'num', '400']] }] },
   { ic: 'bell', c: '#ff8fab', t: 'Alerts', sub: 'Private messages, general chat, death and champions are on by default', f: [
     { k: 'player_alert', l: 'Player closer than', type: 'num', ph: '0', h: 'not from the party / clan (0 — off)' },
+    { k: 'pvp', l: 'Hit back a player who hits me', type: 'bool', h: 'not party / clan. Without Ctrl: only a flagged one (he hit first) is hit — no PK by mistake. Bow: from where it stands, within «Shoot from» and in sight; melee: up to 600 away. Over when he dies, is gone or has not hit for 8 s' },
+    { k: 'pvp_delay', l: 'Reaction before the answer, ms', ph: '300 800', h: 'a random pause from — to' },
     { k: 'private_alert', l: 'Private messages', type: 'bool' },
     { k: 'chat_alert', l: 'General chat closer than', type: 'num', ph: '1000', h: 'a player (not party / clan) wrote in the general chat closer than this; an unseen one (GM in invisibility) too. 0 — off' },
     { k: 'champion_alert', l: 'Champion from MaxHP', type: 'num', ph: '100000', h: '0 — off' },
@@ -1043,6 +1217,7 @@ const CARDS = [
   { ic: 'sliders', c: '#a3aec0', t: 'Misc', sub: 'Experience, debug and run tuning', f: [
     { k: 'exp_off', l: 'Experience off', type: 'bool', h: 'exp?state=off' },
     { k: 'debug_file', l: 'Debug log to file', type: 'bool', h: 'a detailed log of the pull / fight / rooms in Library\\Logs\\dbg_<nick>_<time>_N.log (to look into problems)' },
+    { k: 'live', l: 'Live view for this page', type: 'bool', h: 'Library\\Nav\\<nick>.navlive every 0.3 s — the button Live above the map shows where the character is and runs, its route, its target and the mobs' },
     { k: 'debug_run', l: 'Run log', type: 'bool', h: 'into the same debug log (turns it on itself): every click, which route point was chosen and why, runs to nodes, "standing / stuck", unsticking, how the run ended' },
     { k: 'nav_clear', l: 'Run clearance from walls', type: 'num', ph: '40', h: 'the bot runs straight / cuts nodes only if the line is never closer than this to red along its whole length. The orange Route on the map is computed the same way — as drawn, so it runs (0 — may brush the walls)' },
     { k: 'nav_wp_cache_ms', l: 'Route cache, ms', type: 'num', ph: '500', h: 'where to click while running — recomputed at most once per this (while moved < 64). Less — more precise at corners, more — lighter on the PC; 0 — every tick' },
@@ -1064,7 +1239,7 @@ function cfgParse(line) {
     case 'dagger': cfg['dagger.id'] = f[0] || ''; cfg['dagger.hp'] = f[1] || ''; break;
     case 'ignore': cfg.ignore = ids(rest); break;
     case 'pull': if (f[0]) cfg['pull.' + f[0].toLowerCase()] = f[1] || ''; break;
-    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0']); break;
+    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0', f[2] === '1' ? '1' : '0']); break;
     case 'mage': mageAdd(f[0], f[1], f[2], f[3]); break;   // by priority: the rows are kept in its order
     case 'mage_tap': if (f[0] === '0') cfg.mage_body = '1'; else for (const id of f) if (+id) list('mage_tap', [id]); break;   // the pull skills in order
     case 'mage_buff': list('mage_buff', [f[0] || '', +f[1] ? f[1] : '', f[2] || '']); break;   // skill, buff on us (0 = the skill's), recast s before its end
@@ -1084,7 +1259,8 @@ function cfgLines() {
   else if (v('buff.id')) put('buff', v('buff.id'), (v('buff.bypass') || '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
-  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) put('selfbuff', +r[0] || 0, +r[1] || 0);
+  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) {
+    if (r[2] === '1') put('selfbuff', +r[0] || 0, +r[1] || 0, 1); else put('selfbuff', +r[0] || 0, +r[1] || 0); }
   // the priority = the row; an empty value = the grey default of its condition (HP below 70, 3 mobs...)
   (cfg.mage || []).filter(r => +r[0]).forEach((r, i) => put('mage', i + 1, +r[0], r[1] || 'READY',
     String(r[2] || '').trim() === '' ? parseInt(MAGE_PH[r[1] || 'READY']) || 0 : +r[2] || 0));
@@ -1092,14 +1268,16 @@ function cfgLines() {
   if (taps.length && v('mage_body') !== '1') put('mage_tap', ...taps);
   // own buffs: skill, buff ID on us (0 = the skill's), recast s before its end (empty — the default 60: not written)
   for (const r of cfg.mage_buff || []) if (+r[0]) put('mage_buff', +r[0], +r[1] || 0, ...(String(r[2] ?? '').trim() === '' ? [] : [+r[2] || 0]));
-  // a mage has no spoil / sweep: empty fields mean 0 then, not 302 / 444
-  const mg = mageOn();
-  if ((v('pack.size') || cfgRooms()) && !cfgProfile()) put('pack', v('pack.size') || 0, v('pack.spoil') === '' ? (mg ? 0 : 302) : v('pack.spoil'), v('pack.sweep') === '' ? (mg ? 0 : 444) : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
+  // a mage / an archer has no spoil / sweep: empty fields mean 0 then, not 302 / 444. The pack line goes in every mode
+  // but Profile (the script farm starts by it, the mob IDs are in it): no pack size - 6 (used by Packs / Auto only)
+  const mg = fightOf() !== 'MELEE';
+  if (!cfgProfile()) put('pack', v('pack.size') || (cfgRooms() ? 0 : 6), v('pack.spoil') === '' ? (mg ? 0 : 302) : v('pack.spoil'), v('pack.sweep') === '' ? (mg ? 0 : 444) : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
+  if (!cfgProfile()) put('fight', fightOf());
   if (v('tap.id')) put('tap', v('tap.id'), v('tap.range') || 0);
   if (v('dagger.id')) put('dagger', v('dagger.id'), v('dagger.hp') || 0);
   if (v('ignore')) put('ignore', ids(v('ignore')).replace(/ /g, ''));
-  for (const k of SIMPLE) if (!['zone', 'config', 'teleport'].includes(k) && v(k) !== '') put(k, v(k));
-  for (const k in BOOLS) if (v(k) !== '' && v(k) !== BOOLS[k]) put(k, v(k));
+  for (const k of SIMPLE) if (!['zone', 'config', 'teleport', 'fight'].includes(k) && v(k) !== '') put(k, v(k));
+  for (const k in BOOLS) if (k !== 'kite' && v(k) !== '' && v(k) !== BOOLS[k]) put(k, v(k));   // K kite: K fight BOW now
   for (const [k] of [...PULL, ...PULL_ADV]) if (v('pull.' + k) !== '') put('pull', k, v('pull.' + k));
   for (const r of cfg.supply || []) if (+r[0] && r[2] !== '') put('supply', +r[0], +r[1] || 0, +r[2] || 0);
   return L.concat(cfgExtra);
@@ -1126,6 +1304,12 @@ function importScript(text) {
   call('SetPackTap', a => { const p = nums(a); set('tap.id', p[0]); set('tap.range', p[1] || ''); });
   call('SetPackDagger', a => { const p = nums(a); set('dagger.id', p[0]); set('dagger.hp', p[1] || ''); });
   call('SetPackTapAlways', a => set('tap_always', /true/i.test(a) ? '1' : '0'));
+  call('SetBowKite', a => { const p = nums(a); set('fight', 'BOW'); if (+p[0]) set('kite_step', p[0]); if (+p[1]) set('kite_range', p[1]); if (+p[2]) set('kite_wait', p[2]); });
+  call('SetKiteNear', a => { const p = nums(a); if (p.length) set('kite_near', p[0]); });
+  call('SetPvpAnswer', a => { const p = nums(a); set('pvp', '1'); if (p.length) set('pvp_delay', p.join(' ')); });
+  call('SetLiveMap', a => set('live', /true/i.test(a) ? '1' : '0'));
+  call('SetIdlePatrol', a => set('patrol', /true/i.test(a) ? '1' : '0'));
+  call('SetDebugLog', a => { const b = a.split(',').map(s => /true/i.test(s)); set('debug_file', b[0] ? '1' : '0'); set('debug_run', b[1] ? '1' : '0'); });
   call('SetExpOff', a => set('exp_off', /true/i.test(a) ? '1' : '0'));
   call('SetPrivateAlert', a => set('private_alert', /true/i.test(a) ? '1' : '0'));
   call('SetTelegram', a => set('telegram', strs(a)[0] || ''));
@@ -1134,7 +1318,8 @@ function importScript(text) {
     call(fn, a => { const p = nums(a); if (p.length) set(k, p[0]); });
   call('SetPull', a => { const s = strs(a), p = nums(a.replace(/'[^']*'/g, '')); if (s[0] && p.length) set('pull.' + s[0].toLowerCase(), p[0]); });
   let sb = false, su = false, ms = false;
-  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0']); n++; });
+  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0']); n++; });
+  call('AddSelfBuffOnMe', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '1']); n++; });
   call('AddMageSkill', a => { const m = a.match(/^\s*(-?\d+)\s*,\s*(\d+)\s*,\s*'(\w*)'\s*,\s*(-?\d+)/); if (!m) return;
     if (!ms) { cfg.mage = []; ms = true; } mageAdd(m[1], m[2], m[3], m[4]); n++; });
   let mt = false;   // SetMageTap(0) = body pull; SetMageTap(x) + AddMageTap(y)... = the pull skills in order
@@ -1168,6 +1353,28 @@ function fieldUi(f) {
     return row;
   }
   if (f.type === 'skilldb') return skillDbUi(f);
+  if (f.type === 'summary') {
+    const [s, W] = farmSummary(), row = mk('div', { class: 'fld wide sum' });
+    row.dataset.s = 'what the farm does ' + s.toLowerCase();
+    row.append(mk('div', { class: 'what', text: s }));
+    if (W.length) row.append(mk('div', { class: 'pills' }, ...W.map(w => mk('span', { class: 'chip warn', text: w }))));
+    return row;
+  }
+  if (f.type === 'seg') {   // one of a few, as buttons: the picked one lit (none picked - the one taken by default lit)
+    const row = mk('div', { class: 'fld wide' }); row.dataset.k = f.k;
+    row.dataset.s = [f.l, f.k, ...f.opts.map(o => o[1] + ' ' + o[2])].join(' ').toLowerCase();
+    const cur = f.eff(), seg = mk('div', { class: 'choice' });
+    for (const [val, t, d] of f.opts) {
+      const b = mk('button', { class: 'opt' + (val === cur ? ' on' : ''), onclick: () => {
+        cfg[f.k] = val; if (f.k === 'fight') delete cfg.kite; dirty(); cfgUi(); } });
+      b.append(mk('b', { text: t }), mk('span', { text: d })); seg.append(b);
+    }
+    const rst = mk('button', { class: 'rst', title: 'Reset: taken by default', onclick: () => { delete cfg[f.k]; dirty(); cfgUi(); } });
+    rst.innerHTML = icon('reset');
+    row.append(mk('div', { class: 'wt', text: f.l }), rst, seg);
+    const h = typeof f.h === 'function' ? f.h() : f.h; if (h) row.append(mk('div', { class: 'h', text: h }));
+    row.classList.toggle('set', cv0(f.k) !== ''); return row;
+  }
   const row = mk('div', { class: 'fld' + (f.wide ? ' wide' : '') }); row.dataset.k = f.k;
   const opts = () => typeof f.opts === 'function' ? f.opts() : f.opts || [];   // a list built when drawn (the skills)
   row.dataset.s = [f.l, f.h, f.k, ...(f.cols || []).map(c => c[0]), ...opts().map(o => o[1])].join(' ').toLowerCase();
@@ -1280,17 +1487,44 @@ function skillDbUi(f) {
   if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
   return row;
 }
+const FIGHT_NAME = { MELEE: 'melee', BOW: 'bow + kite', MAGE: 'mage skills' };
+const ROOM_MODE = { PACK: 'pack', SINGLE: 'one by one', AUTO: 'auto' };
+// the "How to farm" card: what the farm will do with these settings, in one go, and what does not fit
+function farmSummary() {
+  const v = cv0, m = modeOf(), ft = fightOf(), W = [];
+  const mobs = v('pack.mobs') ? 'mobs ' + v('pack.mobs') : 'any mob of the map', size = v('pack.size') || '6';
+  let s;
+  if (m === 'PROFILE') s = 'The bot interface farms by ' + (v('config') || 'the Profile .xml') + '. The script runs to the spot and turns it on; ' +
+    'when the buff runs low it turns the interface off, kills what hits it (on the safe point if there is one), rebuffs and turns it on again.';
+  else {
+    s = m === 'SINGLE' ? 'Runs over the spot and kills ' + mobs + ' one by one where they stand.'
+      : m === 'AUTO' ? 'Many free mobs near — pulls a pack of ' + size + ' to a corner, few — kills them one by one (' + mobs + ').'
+      : m === 'ROOMS' ? 'Goes room by room, each by its own mode: ' + (rooms.map(r => r.name + ' — ' + (ROOM_MODE[r.mode] || r.mode)).join(', ') || 'no rooms drawn') + ' (' + mobs + ').'
+      : 'Pulls a pack of ' + size + ' (' + mobs + ') by running past them, takes it to a farm spot / wall corner and kills it there.';
+    const R = +v('kite_range') || 500, S = +v('kite_step') || 120;
+    s += ' ' + (ft === 'BOW' ? 'Shoots from up to ' + R + '; after every shot a step of ' + S + ' away while a mob on it is closer than ' + (+v('kite_near') || R - S) + '.'
+      : ft === 'MAGE' ? 'Kills with the ' + (cfg.mage || []).filter(r => +r[0]).length + ' skills of the Mage card, no auto attack.'
+      : 'Hits with the auto attack' + (v('pack.spoil') === '0' ? '' : ', mass spoil ' + (v('pack.spoil') || 302) + ' and sweep ' + (v('pack.sweep') || 444)) + '.');
+  }
+  if (m === 'ROOMS' && !rooms.length) W.push('Rooms picked, but no rooms on the map — draw them with the Room tool');
+  if (m === 'ROOMS' && ft === 'BOW') { const pk = rooms.filter(r => r.mode !== 'SINGLE').map(r => r.name);
+    if (pk.length) W.push('rooms ' + pk.join(', ') + ' are pulled as a pack — for one by one click the room on the map and set Single'); }
+  if (m !== 'PROFILE' && ft === 'MAGE' && !mageRows()) W.push('no mage skills yet — add them in the Mage card');
+  if (m === 'PROFILE' && !v('config')) W.push('Bot profile needs the Profile .xml (Account & start)');
+  return [s, W];
+}
 function cfgChips() {
   const box = $('cfgChips'); if (!box) return; box.innerHTML = '';
   const chip = (t, c) => box.append(mk('span', { class: 'chip ' + (c || ''), text: t }));
-  const v = cv0, mode = v('mode') || (rooms.length ? 'ROOMS' : 'PACK');
+  const v = cv0, mode = modeOf();
   const MODE = { PACK: 'packs to a corner', SINGLE: 'single', AUTO: 'auto', ROOMS: 'rooms', PROFILE: 'profile — the interface farms' };
   const mobs = v('pack.mobs') ? 'mobs ' + v('pack.mobs') : 'any mobs';
   chip(v('login.user') ? 'login ' + v('login.user') : 'no auto-login', v('login.user') ? 'ok' : '');
   if (cfgProfile()) chip(v('config') ? 'profile ' + v('config') : 'Profile mode, but no Profile .xml', v('config') ? 'ok' : 'warn');
   else if (cfgRooms()) chip('pack = the whole room · ' + mobs, 'ok');
-  else if (v('pack.size')) chip('pack of ' + v('pack.size') + ' · ' + mobs, 'ok'); else chip('no pack size — the farm will not start', 'warn');
-  chip('mode: ' + (MODE[mode] || mode), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
+  else if (mode === 'PACK' || mode === 'AUTO') chip('pack of ' + (v('pack.size') || '6') + ' · ' + mobs, 'ok');
+  else chip('one by one · ' + mobs, 'ok');
+  chip('mode: ' + (MODE[mode] || mode) + (cfgProfile() ? '' : ' · ' + FIGHT_NAME[fightOf()]), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
   const mg = (cfg.mage || []).filter(r => +r[0]);
   const mb = (cfg.mage_buff || []).filter(r => +r[0]);
   const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb].map(r => r[0]).filter(x => +x && !skillById(x)))];
@@ -1315,8 +1549,8 @@ function cfgChips() {
 }
 // changed fields per card: the card header and the side menu
 function cfgCounts() {
-  document.querySelectorAll('#cfg .card').forEach((card, i) => {
-    const db = CARDS[i] && CARDS[i].db, n = db ? 0 : card.querySelectorAll('.fld.set').length, c = card.querySelector('.cnt');
+  document.querySelectorAll('#cfg .card').forEach(card => {
+    const i = +card.dataset.i, db = CARDS[i] && CARDS[i].db, n = db ? 0 : card.querySelectorAll('.fld.set').length, c = card.querySelector('.cnt');
     if (c && db) { c.textContent = skillDb.length + ' skills' + (skillDbDirty ? ' · not saved' : ''); c.classList.toggle('none', !skillDbDirty); }   // the skill list
     else if (c) { c.textContent = n ? n + ' changed' : 'defaults'; c.classList.toggle('none', !n); }
     const a = document.querySelector('#cfg aside a[data-i="' + i + '"] .n'); if (a) { a.textContent = n || ''; a.style.display = n ? '' : 'none'; }
@@ -1326,8 +1560,8 @@ function cfgCounts() {
 let cfgQuery = '';
 function cfgFilter() {
   const q = cfgQuery.trim().toLowerCase(); let any = false;
-  document.querySelectorAll('#cfg .card').forEach((card, i) => {
-    const whole = !q || CARDS[i].t.toLowerCase().includes(q); let n = 0;
+  document.querySelectorAll('#cfg .card').forEach(card => {
+    const i = +card.dataset.i, whole = !q || CARDS[i].t.toLowerCase().includes(q); let n = 0;
     card.querySelectorAll('.fld').forEach(r => { const ok = whole || (r.dataset.s || '').includes(q); r.style.display = ok ? '' : 'none'; if (ok) n++; });
     const adv = card.querySelector('details.adv');
     if (adv) { const hit = [...adv.querySelectorAll('.fld')].some(r => r.style.display !== 'none'); adv.style.display = hit ? '' : 'none'; if (q && hit) adv.open = true; }
@@ -1340,7 +1574,7 @@ function cfgFilter() {
 function cfgSpy() {
   const main = document.querySelector('#cfg main'); if (!main) return;
   const top = main.getBoundingClientRect().top + 96; let cur = -1;
-  document.querySelectorAll('#cfg .card').forEach((c, i) => { if (c.style.display !== 'none' && (cur < 0 || c.getBoundingClientRect().top <= top)) cur = i; });
+  document.querySelectorAll('#cfg .card').forEach(c => { if (c.style.display !== 'none' && (cur < 0 || c.getBoundingClientRect().top <= top)) cur = +c.dataset.i; });
   document.querySelectorAll('#cfg aside a').forEach(a => a.classList.toggle('on', +a.dataset.i === cur));
 }
 function cfgUi() {
@@ -1358,16 +1592,22 @@ function cfgUi() {
   main.append(mk('div', { class: 'chips', id: 'cfgChips' }));
   const cards = mk('div', { class: 'cards' });
   CARDS.forEach((c, i) => {
-    const card = mk('section', { class: 'card' }); card.style.setProperty('--c', c.c);
+    if (c.show && !c.show()) return;   // does not fit the mode / the fight picked in How to farm
+    const card = mk('section', { class: 'card' }); card.style.setProperty('--c', c.c); card.dataset.i = i;
     const ic = mk('span', { class: 'ic' }); ic.innerHTML = icon(c.ic);
     card.append(mk('header', null, ic, mk('div', null, mk('h2', { text: c.t }), c.sub ? mk('div', { class: 'sub', text: c.sub }) : null), mk('span', { class: 'cnt' })));
     const body = mk('div', { class: 'body' });
     if (c.pull) {
-      for (const [k, l, d, h] of PULL) body.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
-      const adv = mk('details', { class: 'adv' }, mk('summary', { text: 'Fine tuning (' + PULL_ADV.length + ')' }));
-      for (const [k, l, d] of PULL_ADV) adv.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d) }));
+      // only what the mode uses in sight: one by one - its reach (the rest of the pull under Fine tuning), the single reach
+      // with one by one in it, the pack density with Auto only
+      const m = modeOf(), fits = k => (k !== 'single_range' || ['SINGLE', 'AUTO', 'ROOMS'].includes(m)) && (k !== 'pack_density' || m === 'AUTO');
+      const top = m === 'SINGLE' ? ['single_range'] : null, isTop = k => fits(k) && (!top || top.includes(k));
+      for (const [k, l, d, h] of PULL) if (isTop(k)) body.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
+      const more = [...PULL.filter(([k]) => fits(k) && !isTop(k)), ...PULL_ADV];
+      const adv = mk('details', { class: 'adv' }, mk('summary', { text: 'Fine tuning (' + more.length + ')' }));
+      for (const [k, l, d, h] of more) adv.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
       body.append(adv);
-    } else for (const f of c.f) if (!(f.k === 'pack.size' && (cfgRooms() || cfgProfile()))) body.append(fieldUi(f));
+    } else for (const f of c.f) if (!f.show || f.show()) body.append(fieldUi(f));
     card.append(body); cards.append(card);
     const a = mk('a', { 'data-i': i, onclick: () => card.scrollIntoView({ behavior: 'smooth', block: 'start' }) }); a.style.setProperty('--c', c.c);
     const ai = mk('span', { class: 'ic' }); ai.innerHTML = icon(c.ic);
@@ -1408,7 +1648,7 @@ function gridImage() {
   if (gridImg) return gridImg;
   const c = document.createElement('canvas'); c.width = grid.w; c.height = grid.h;
   const g = c.getContext('2d'), img = g.createImageData(grid.w, grid.h);
-  const col = [[0, 0, 0, 0], [61, 220, 132, 95], [255, 93, 108, 110]];
+  const col = [[0, 0, 0, 0], [61, 220, 132, 95], [255, 93, 108, 110], [79, 179, 255, 100]];
   for (let i = 0; i < grid.f.length; i++) img.data.set(col[grid.f[i]] || col[0], i * 4);
   g.putImageData(img, 0, 0); gridImg = c; return c;
 }
@@ -1460,7 +1700,8 @@ function draw() {
     ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText(l, sx(p[0]) - 3, sy(p[1]) + 4); }
   if (route.path) { ctx.strokeStyle = '#ff9f1c'; ctx.lineWidth = 3; path(route.path); ctx.stroke(); }
   if (mouse && tool === 'brush') { const r = (+$('brush').value + .5) * (+$('cell').value || 4) * scale;
-    ctx.strokeStyle = color === 'good' ? '#3ddc84' : '#ff5d6c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(mouse[0], mouse[1], r, 0, 7); ctx.stroke(); }
+    ctx.strokeStyle = color === 'good' ? '#3ddc84' : color === 'see' ? '#4fb3ff' : '#ff5d6c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(mouse[0], mouse[1], r, 0, 7); ctx.stroke(); }
+  drawLive();
 }
 function fit() {
   const box = [...(zone ? zone.outer : []), ...strokes.flat(), ...seeds.map(s => [s.x, s.y]), ...rooms.flatMap(r => r.pts)];
@@ -1576,6 +1817,7 @@ window.addEventListener('keydown', e => {
 });
 window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
 async function load(files) { let maps = 0;
+  files = [...files].sort((a, b) => /\.navgrid$/i.test(b.name) - /\.navgrid$/i.test(a.name));   // the map first: it starts the extras over
   for (const f of files) if (/\.json$/i.test(f.name)) await loadSkills(f, null); else { parseFile(await f.text(), f.name); maps++; }
   if (!maps) return;
   fit(); if (grid) regen(); else draw();
@@ -1596,6 +1838,8 @@ $('scriptCopy').onclick = async () => { const t = $('scriptText'); try { await n
 window.addEventListener('beforeunload', e => { if (cfgDirty || skillDbDirty) { e.preventDefault(); e.returnValue = ''; } });
 $('regen').onclick = regen;
 $('undo').onclick = undo;
+$('clearAll').onclick = clearAll;
+$('liveBtn').onclick = liveToggle;
 $('brush').oninput = () => { $('brushV').textContent = $('brush').value; draw(); };
 // a new cell size: what is painted is moved onto the new cells (each new cell takes the old cell under its centre)
 $('cell').onchange = () => {

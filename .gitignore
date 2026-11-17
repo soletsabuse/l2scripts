@@ -1,0 +1,2 @@
+# live view of the running bots (SetLiveMap / K live): rewritten every 0.3 s, never committed
+*.navlive

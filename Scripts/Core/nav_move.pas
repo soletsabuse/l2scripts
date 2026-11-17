@@ -47,6 +47,23 @@ function NavSeeFromUs(X, Y: integer): boolean;
 function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
 function NavGridIs(GridFile: string): boolean;  // this .navgrid is the loaded nav map (its cells are here)
 function NavGridFree(X, Y: integer): boolean;   // a walkable cell of the loaded .navgrid (outside it: false)
+// the strict map: runs on walkable (green) cells only - a run line / a click never crosses red or unknown, never
+// ends there; standing in it we first step out onto green. Sight (NavSee, a shot) passes walkable and sight cells
+// (the viewer's blue, "," in the rows: mobs stand there, we never run there); red / unknown block it, an end in
+// them is forgiven only NAV_STRICT_LEAVE. On by itself when the map has sight cells; NavSetStrict(true) - always
+procedure NavSetStrict(Enable: boolean);
+function NavStrictOn(): boolean;
+function NavWalkLine(X1, Y1, X2, Y2: integer): boolean;   // we may run this straight line (strict: on green only)
+// the farthest point of the line X1, Y1 -> X2, Y2 we can run to on green (gaps under 8 forgiven); false = none past 8
+function NavWalkClamp(X1, Y1, X2, Y2: integer): boolean;
+function NavClampX(): integer;
+function NavClampY(): integer;
+function NavRunCell(X, Y: integer): boolean;    // a cell NavSetRunClear off the red (a run there keeps the margin)
+// a spot to shoot X, Y from (a mob off green): on green (the run margin first), within Reach of it, seeing it
+// (the sight cells pass, red / unknown not); of those the nearest to us in a straight line. false = none
+function NavShootPoint(X, Y, Reach: integer): boolean;
+function NavShootX(): integer;
+function NavShootY(): integer;
 // ---------- runs: every move of the farm goes through these. Safe from any thread: while a blocking
 // run ticks, a tick run (NavStep) of another thread does not click ----------
 // run to X, Y: along the graph when a wall is between, the server path, stuck -> the graph again ->
@@ -72,6 +89,15 @@ function NavUnstick(): boolean;
 function NavWaypoint(X, Y: integer): boolean;
 function NavWpX(): integer;
 function NavWpY(): integer;
+// what the runs do now (a live view, nav_view.html): the last click and when (0 = none yet); the goal of the
+// last NavWaypoint, when, and its route nodes "x y x y ..." from us on ('' = straight / no route)
+function NavLastClickX(): integer;
+function NavLastClickY(): integer;
+function NavLastClickAt(): cardinal;
+function NavLastGoalX(): integer;
+function NavLastGoalY(): integer;
+function NavLastGoalAt(): cardinal;
+function NavLastRoute(): string;
 function NavMoveTo(X, Y, Z, Radius: integer): boolean;   // the whole run; true = within Radius
 // a spot round a corner: walkable, the mobs at MX, MY do not see it, it sees the corner - they run
 // round the corner and bunch up there. Nearest to FromX, FromY, corners within MaxDist; false = none
@@ -108,6 +134,10 @@ const
   NAV_WP_CACHE_MS   = 500;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
   NAV_LINK_MAX      = 2500;     // longest graph link
   NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
+  NAV_NODE_ON       = 40;       // this close to a graph node = on it (clicking it would not move us)
+  NAV_STRICT_LEAVE  = 40;       // strict map: an end standing in red / unknown may leave it within this (no more)
+  NAV_STRICT_NEAR   = 12;       // ... no green this close round us = we stand in red: out onto green first
+  NAV_STRICT_OUT    = 160;      // ... the green to step out onto is looked for this far
   NAV_END_SKIP      = 60;       // a wall cell this close to us / the target does not block the sight
   NAV_RING          = 200;      // no zone file: the active zone's box is felt with InZone this often
   NAV_RING_MAX      = 20000;    // ... at most this far from us
@@ -138,6 +168,11 @@ var
   NmWcTX, NmWcTY, NmWcUX, NmWcUY: integer;   // NavWaypoint cache: the target / we at the last count ...
   NmWcAt: cardinal;                     // ... when ...
   NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
+  NmLcX, NmLcY: integer;                // the last click (NavLastClick*) ...
+  NmLcAt: cardinal;                     // ... and when
+  NmLgX, NmLgY: integer;                // the goal of the last NavWaypoint (NavLastGoal*) ...
+  NmLgAt: cardinal;                     // ... when ...
+  NmLgRoute: string;                    // ... and its route nodes "x y x y ..." ('' = straight / none)
   NmWcMs: integer;                      // NavSetWpCache: how long (NmWcMsSet false -> NAV_WP_CACHE_MS)
   NmWcMsSet: boolean;
   NmRunClear: integer;                  // NavSetRunClear: the margin of a run line (units)
@@ -158,6 +193,11 @@ var
   NmCellSet: integer;
   NgX0, NgY0, NgCell, NgW, NgH, NgZ: integer;
   NgFree, NgSafe: array of boolean;
+  NgView: array of boolean;               // sight passes: walkable or sight cells ("," - the viewer's blue)
+  NmHasView: boolean;                     // the grid has sight cells: the strict map by itself
+  NmStrictSet: boolean;                   // NavSetStrict
+  NmCpX, NmCpY: integer;                  // NavWalkClamp / the step out of red: the point
+  NmShX, NmShY: integer;                  // NavShootPoint: the spot
   NgBX0, NgBY0, NgBX1, NgBY1: integer;
   ZOX, ZOY: array of integer;             // zone outer contour
   ZOn: integer;
@@ -290,6 +330,11 @@ begin
   result := NavBusyFlag;
 end;
 
+function NmIfStr(C: boolean; A, B: string): string;
+begin
+  if C then result := A else result := B;
+end;
+
 function NmHex(Value: integer): string;
 begin
   result := IntToHex(Value and $FF, 2) + IntToHex((Value shr 8) and $FF, 2) +
@@ -306,6 +351,9 @@ begin
   UZ := User.Z;
   if NmDbg then NmLog('click ' + NmXY(X, Y) + ' d=' + IntToStr(Round(Sqrt(NmSq(X - UX) + NmSq(Y - UY)))));
   Engine.SendToServer('0F' + NmHex(X) + NmHex(Y) + NmHex(Z) + NmHex(UX) + NmHex(UY) + NmHex(UZ) + NmHex(1));
+  NmLcX := X;
+  NmLcY := Y;
+  NmLcAt := GetTickCount;
 end;
 
 procedure NavSend(Hex: string);
@@ -573,6 +621,7 @@ begin
   NmGridVer := '';
   NmGridSig := '';
   NmGridOn := false;
+  NmHasView := false;
   if not FileExists(F) then begin
     Engine.Msg('[Nav]', 'No grid file ' + F, 128);
     exit;
@@ -588,7 +637,10 @@ begin
       Total := Total + Length(S);
       Inc(Cnt);
     end;
-    if K = 'R ' then continue;         // the rows: NmGridRows
+    if K = 'R ' then begin             // the rows: NmGridRows (here only: are there sight cells)
+      if (not NmHasView) and (Pos(',', S) > 0) then NmHasView := true;
+      continue;
+    end;
     K := NmField(S, 0);
     if K = 'G' then begin
       NgX0 := StrToIntDef(NmField(S, 1), 0);
@@ -599,6 +651,7 @@ begin
       NgZ := StrToIntDef(NmField(S, 6), 0);
       SetLength(NgFree, NgW * NgH);
       SetLength(NgSafe, NgW * NgH);
+      SetLength(NgView, NgW * NgH);
     end else if K = 'V' then NmGridVer := NmField(S, 1)
     else if K = 'W' then NmAddRail(S)  // a rail drawn in the viewer
     else if (K = 'N') and (NmUserN < NAV_MAX_NODES) then begin   // a node drawn in the viewer
@@ -621,13 +674,18 @@ begin
   NmGridOn := result;
 end;
 
-// the rows of the grid file into NgFree
+// the rows of the grid file into NgFree (".") and NgView ("." and ",")
 procedure NmGridRows(F: string);
 var L: TStringList;
   i, cx, cy: integer;
   S, Row: string;
+  V: boolean;
 begin
-  for cx := 0 to NgW * NgH - 1 do NgFree[cx] := false;
+  V := Length(NgView) = NgW * NgH;
+  for cx := 0 to NgW * NgH - 1 do begin
+    NgFree[cx] := false;
+    if V then NgView[cx] := false;
+  end;
   L := TStringList.Create;
   L.LoadFromFile(F);
   cy := 0;
@@ -636,7 +694,12 @@ begin
     if (Copy(S, 1, 2) = 'R ') and (cy < NgH) then begin
       Row := Copy(S, 3, NgW);
       for cx := 0 to Length(Row) - 1 do
-        if (cx < NgW) and (Row[cx + 1] = '.') then NgFree[cy * NgW + cx] := true;
+        if cx < NgW then begin
+          if Row[cx + 1] = '.' then begin
+            NgFree[cy * NgW + cx] := true;
+            if V then NgView[cy * NgW + cx] := true;
+          end else if (Row[cx + 1] = ',') and V then NgView[cy * NgW + cx] := true;
+        end;
       Inc(cy);
     end;
   end;
@@ -683,6 +746,74 @@ begin
   if Safe then result := NgSafe[cy * NgW + cx] else result := NgFree[cy * NgW + cx];
 end;
 
+// sight passes this cell: walkable or a sight cell (outside the grid / no sight cells: as NmFreeAt)
+function NmViewAt(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := true;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  if Length(NgView) = NgW * NgH then result := NgView[cy * NgW + cx] else result := NgFree[cy * NgW + cx];
+end;
+
+function NmStrict(): boolean;
+begin
+  result := NmStrictSet or NmHasView;
+end;
+
+// strict: a wall this close to a free end is forgiven (we / the mob stand right at it)
+function NmStrictSkip(): integer;
+begin
+  if NgCell >= 16 then result := NgCell
+  else begin
+    result := NgCell * 2;
+    if result < 8 then result := 8;
+  end;
+end;
+
+function NmPassAt(X, Y: integer; Sight: boolean): boolean;
+begin
+  if Sight then result := NmViewAt(X, Y) else result := NmFreeAt(X, Y, false);
+end;
+
+// the strict line: Sight - through walkable and sight cells (a shot), else through walkable only and it must END
+// on green (a run). Red / unknown never pass: an end standing in it may only leave it within NAV_STRICT_LEAVE (a run:
+// our end only), a wall closer than NmStrictSkip() to a free end is forgiven. Sampled as NmLineFree
+function NmLineStrict(X1, Y1, X2, Y2: integer; Sight: boolean): boolean;
+var k, n, PX, PY, K0, K1: integer;
+  L, T, DX, DY, Skip: double;
+begin
+  result := false;
+  if (not Sight) and (not NmFreeAt(X2, Y2, false)) then exit;   // a run never ends in red / unknown / sight cells
+  result := true;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  if NgCell >= 16 then n := Trunc(L / (NgCell * 0.5)) + 1
+  else n := Trunc(L / 8) + 1;
+  Skip := NmStrictSkip();
+  K0 := 0;
+  K1 := n;
+  while (K0 <= n) and (K0 * L / n <= NAV_STRICT_LEAVE) and
+        (not NmPassAt(Round(X1 + DX * K0 / n), Round(Y1 + DY * K0 / n), Sight)) do Inc(K0);
+  if Sight then
+    while (K1 >= K0) and ((n - K1) * L / n <= NAV_STRICT_LEAVE) and
+          (not NmPassAt(Round(X1 + DX * K1 / n), Round(Y1 + DY * K1 / n), true)) do Dec(K1);
+  for k := K0 to K1 do begin
+    T := k / n;
+    if (K0 = 0) and (T * L < Skip) then continue;
+    if (K1 = n) and ((1 - T) * L < Skip) then continue;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if not NmPassAt(PX, PY, Sight) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
 // straight line through free cells (every half cell). Not Safe: an end standing in a wall / a hole
 // of the zone (a corner point in a cut-out, the safe point out of the zone) - the cells from it up
 // to the first free one do not count, and walls within NAV_END_SKIP of the ends do not count either
@@ -691,6 +822,10 @@ function NmLineFree(X1, Y1, X2, Y2: integer; Safe: boolean): boolean;
 var k, n, PX, PY, K0, K1: integer;
   L, T, DX, DY: double;
 begin
+  if (not Safe) and NmStrict() then begin   // the strict map: a run line on green only
+    result := NmLineStrict(X1, Y1, X2, Y2, false);
+    exit;
+  end;
   result := true;
   DX := X2 - X1;
   DY := Y2 - Y1;
@@ -759,10 +894,25 @@ begin
   end;
 end;
 
+// the sight: as NmLineFree, on the strict map through the sight cells too (red / unknown block it)
+function NmSeeLine(X1, Y1, X2, Y2: integer): boolean;
+begin
+  if NmStrict() then result := NmLineStrict(X1, Y1, X2, Y2, true)
+  else result := NmLineFree(X1, Y1, X2, Y2, false);
+end;
+
+// the last route node -> the target: a run when the target stands on green, else (a mob in the sight cells / at
+// the wall) the sight - the route ends where it is in sight
+function NmTargetLine(PX, PY, X, Y: integer): boolean;
+begin
+  if NmStrict() and (not NmFreeAt(X, Y, false)) then result := NmLineStrict(PX, PY, X, Y, true)
+  else result := NmLineFree(PX, PY, X, Y, false);
+end;
+
 function NavSee(X1, Y1, X2, Y2: integer): boolean;
 begin
   result := true;
-  if NmReady then result := NmLineFree(X1, Y1, X2, Y2, false);
+  if NmReady then result := NmSeeLine(X1, Y1, X2, Y2);
 end;
 
 function NavIsFree(X, Y: integer): boolean;
@@ -1088,7 +1238,7 @@ function NmLoadCache(): boolean;
 var C: TStringList;
   i, k, n, p, cy, A, B, Base, Len: integer;
   S: string;
-  Ok: boolean;
+  Ok, VOk, SawV: boolean;
 begin
   result := false;
   if (NmGridVer = '') or (not FileExists(NmCachePath())) then exit;
@@ -1106,10 +1256,13 @@ begin
   end;
   n := NgW * NgH;
   SetLength(NgRun, n);
+  VOk := Length(NgView) = n;
+  SawV := false;
   for i := 0 to n - 1 do begin
     NgFree[i] := false;
     NgSafe[i] := false;
     NgRun[i] := false;
+    if VOk then NgView[i] := false;
   end;
   NavN := 0;
   SetLength(NavX, NAV_MAX_NODES);
@@ -1148,9 +1301,10 @@ begin
         if (B >= 0) and (B < NavN) then NmLink(A, B);
         p := p + 5;
       end;
-    end else if (S[1] = 'F') or (S[1] = 'R') then begin
+    end else if (S[1] = 'F') or (S[1] = 'R') or (S[1] = 'V') then begin
       cy := StrToIntDef(Copy(S, 2, 5), -1);
       if (cy < 0) or (cy >= NgH) then continue;
+      if S[1] = 'V' then SawV := true;
       Base := cy * NgW;
       p := 7;
       while p + 9 <= Len do begin
@@ -1162,14 +1316,38 @@ begin
           for k := Base + A to Base + B do begin
             NgFree[k] := true;
             NgSafe[k] := true;
+            if VOk then NgView[k] := true;
           end;
+        end else if S[1] = 'V' then begin
+          if VOk then for k := Base + A to Base + B do NgView[k] := true;
         end else
           for k := Base + A to Base + B do NgRun[k] := true;
       end;
     end;
   end;
   C.Free;
+  if NmHasView and (not SawV) then exit;   // the grid has sight cells, this cache not (an older build): build again
   result := true;
+end;
+
+// the sight-only cells ("," - not walkable) of one grid row as a "V" line ('' = none in this row)
+function NmViewLine(cy: integer): string;
+var cx, A, Base: integer;
+  Fr: boolean;
+begin
+  result := '';
+  Base := cy * NgW;
+  A := -1;
+  for cx := 0 to NgW do begin
+    Fr := false;
+    if cx < NgW then Fr := NgView[Base + cx] and (not NgFree[Base + cx]);
+    if Fr and (A < 0) then A := cx
+    else if (not Fr) and (A >= 0) then begin
+      result := result + NmPad5(A) + NmPad5(cx - 1);
+      A := -1;
+    end;
+  end;
+  if result <> '' then result := 'V' + NmPad5(cy) + result;
 end;
 
 // the runs of one grid row as "F" / "R" line ('' = nothing in this row)
@@ -1223,6 +1401,11 @@ begin
     S := NmRunsLine('R', true, cy);
     if S <> '' then C.Add(S);
   end;
+  if NmHasView and (Length(NgView) = NgW * NgH) then
+    for cy := 0 to NgH - 1 do begin
+      S := NmViewLine(cy);
+      if S <> '' then C.Add(S);
+    end;
   C.Add('END');
   try
     C.SaveToFile(NmCachePath());
@@ -1247,6 +1430,7 @@ begin
   cy := (Y - NgY0) div NgCell;
   if (cx >= NgW) or (cy >= NgH) then exit;
   result := NgFree[cy * NgW + cx];
+  if (not result) and (Length(NgView) = NgW * NgH) then result := NgView[cy * NgW + cx];   // mobs stand in the sight cells too
 end;
 
 function NavBuild(): boolean;
@@ -1285,6 +1469,8 @@ begin
     Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) + ': ' +
       IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) +
       ' links - from the cache (' + IntToStr(GetTickCount - Started) + ' ms)', 128);
+    if NmStrict() then Engine.Msg('[Nav]', 'Strict map: runs on green only, red is never crossed' +
+      NmIfStr(NmHasView, ', the blue sight cells: shots only', ''), 128);
     exit;
   end;
   // corners and lines by the real map: a narrow passage must never vanish. A corner node is moved
@@ -1381,6 +1567,8 @@ begin
     ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links - built (' +
     IntToStr(GetTickCount - Started) + ' ms)', 128);
   if NmGridOn then NmSaveCache();      // the next start with this very grid takes it from the cache
+  if NmStrict() then Engine.Msg('[Nav]', 'Strict map: runs on green only, red is never crossed' +
+    NmIfStr(NmHasView, ', the blue sight cells: shots only', ''), 128);
 end;
 
 // server path to one node without stopping at it: true as soon as we are within Reach of it
@@ -1496,7 +1684,7 @@ begin
     if (Alt > NAV_SEE_MAX) or (NavD[i] + Alt >= BestD) then continue;
     PX := NavX[i];
     PY := NavY[i];
-    if NmLineFree(PX, PY, X, Y, false) then begin
+    if NmTargetLine(PX, PY, X, Y) then begin
       BestD := NavD[i] + Alt;
       Best := i;
     end;
@@ -1558,7 +1746,7 @@ begin
     DY := PY - Y;
     Alt := Sqrt(DX * DX + DY * DY);
     if Alt > NAV_SEE_MAX then continue;
-    if NmLineFree(PX, PY, X, Y, false) then NmFD[Base + i] := Alt;
+    if NmTargetLine(PX, PY, X, Y) then NmFD[Base + i] := Alt;
   end;
   for k := 0 to NavN - 1 do begin
     u := -1;
@@ -1792,6 +1980,102 @@ begin
   result := NmRailAhead(NmRoute(X, Y), 0);
 end;
 
+// a green cell at X, Y or within R round it (8 directions)
+function NmNearFree(X, Y, R: integer): boolean;
+var a: integer;
+  Ang: double;
+begin
+  result := true;
+  if NmFreeAt(X, Y, false) then exit;
+  for a := 0 to 7 do begin
+    Ang := a * 3.14159265 / 4;
+    if NmFreeAt(X + Round(Cos(Ang) * R), Y + Round(Sin(Ang) * R), false) then exit;
+  end;
+  result := false;
+end;
+
+// the nearest green round X, Y (rings of 8 up to NAV_STRICT_OUT, 16 directions), a little deeper into it when
+// there is room -> NmCpX, NmCpY; false = none
+function NmOutPoint(X, Y: integer): boolean;
+var r, a, PX, PY, QX, QY: integer;
+  Ang: double;
+begin
+  result := false;
+  r := 8;
+  while r <= NAV_STRICT_OUT do begin
+    for a := 0 to 15 do begin
+      Ang := a * 3.14159265 / 8;
+      PX := X + Round(Cos(Ang) * r);
+      PY := Y + Round(Sin(Ang) * r);
+      if not NmFreeAt(PX, PY, false) then continue;
+      QX := X + Round(Cos(Ang) * (r + 24));
+      QY := Y + Round(Sin(Ang) * (r + 24));
+      if NmFreeAt(QX, QY, false) then begin
+        PX := QX;
+        PY := QY;
+      end;
+      NmCpX := PX;
+      NmCpY := PY;
+      result := true;
+      exit;
+    end;
+    r := r + 8;
+  end;
+end;
+
+// the farthest point of the line X1, Y1 -> X2, Y2 we can run to on green: the red we stand in is left first (up to
+// NAV_STRICT_LEAVE), then a gap of 8+ off green (a real wall / the sight cells) ends it -> NmCpX, NmCpY;
+// false = not even 8 units of it
+function NmClampWalk(X1, Y1, X2, Y2: integer): boolean;
+var k, n, PX, PY, LX, LY: integer;
+  L, DX, DY, T, Gap: double;
+  Was: boolean;
+begin
+  result := false;
+  NmCpX := X2;
+  NmCpY := Y2;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  n := Trunc(L / 4) + 1;
+  Was := false;
+  LX := X1;
+  LY := Y1;
+  Gap := 0;
+  for k := 1 to n do begin
+    T := k / n;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if NmFreeAt(PX, PY, false) then begin
+      Was := true;
+      Gap := 0;
+      LX := PX;
+      LY := PY;
+    end else if Was then begin
+      Gap := Gap + L / n;
+      if Gap >= 8 then break;          // a real wall (a speck of the brush under 8 is forgiven)
+    end else if T * L > NAV_STRICT_LEAVE then break;
+  end;
+  if Sqrt(NmSq(LX - X1) + NmSq(LY - Y1)) < 8 then exit;
+  NmCpX := LX;
+  NmCpY := LY;
+  result := true;
+end;
+
+// a route of NmRoute as its node coordinates "x y x y ..."
+function NmRouteXY(R: string): string;
+var k, i, n: integer;
+begin
+  result := '';
+  n := NmRouteCount(R);
+  for k := 0 to n - 1 do begin
+    i := NmRouteAt(R, k);
+    if (i < 0) or (i >= NavN) then continue;
+    if result <> '' then result := result + ' ';
+    result := result + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]);
+  end;
+end;
+
 // where to click now on the way to X, Y: the farthest node of the route that is in sight of us
 // (a short cut over the nodes before it); false = the target is in sight itself, or no way
 function NavWaypoint(X, Y: integer): boolean;
@@ -1802,6 +2086,17 @@ begin
   if not NmReady then exit;
   UX := User.X;
   UY := User.Y;
+  NmLgX := X;                          // the live view: where the run goes
+  NmLgY := Y;
+  NmLgAt := GetTickCount;
+  // the strict map: we stand in red / unknown (no green within NAV_STRICT_NEAR) -> out onto the nearest green first
+  if NmStrict() and (not NmNearFree(UX, UY, NAV_STRICT_NEAR)) and NmOutPoint(UX, UY) then begin
+    NmWpX := NmCpX;
+    NmWpY := NmCpY;
+    result := true;
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': we stand in red / unknown - out onto green at ' + NmXY(NmWpX, NmWpY));
+    exit;
+  end;
   // the same answer as a moment ago when neither the target nor we moved much (it is called every
   // tick; a route count is the heaviest thing of the farm)
   if not NmWcMsSet then begin
@@ -1820,6 +2115,7 @@ begin
   NmWcUX := UX;
   NmWcUY := UY;
   NmWcRes := false;
+  NmLgRoute := '';
   // a rail on the way: its next point not reached is the limit - nothing past it is clicked. Near it
   // (a rail step): that point itself, the server path finds it; still far: the farthest route node
   // before it in sight (with the margin, else at all, else the first)
@@ -1827,6 +2123,7 @@ begin
   if (NmRailPN > 0) and (not ((NmSq(X - UX) + NmSq(Y - UY) <= 360000) and NmRunFree(UX, UY, X, Y) and
      (not NmRailNear(UX, UY, X, Y)))) then begin
     R := NmRoute(X, Y);
+    NmLgRoute := NmRouteXY(R);
     n := NmRouteCount(R);
     Lim := -1;
     for k := 0 to n - 1 do
@@ -1872,6 +2169,7 @@ begin
     exit;
   end;
   R := NmRoute(X, Y);
+  NmLgRoute := NmRouteXY(R);
   n := NmRouteCount(R);
   if n = 0 then begin
     if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no way on the map - the target itself');
@@ -1888,15 +2186,46 @@ begin
       break;
     end;
   end;
-  // none, or only the node under our feet (a narrow place: nothing has the margin; clicking the node we
-  // stand on never moves us) -> false: the caller clicks the target itself, the server builds the way
-  if (Best < 0) or (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then begin
-    if NmDbg then begin
-      if Best < 0 then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node (of ' + IntToStr(n) +
-        ') in sight with the margin - the target itself (server path)')
-      else NmLog('waypoint to ' + NmXY(X, Y) + ': only the node under us in sight - the target itself (server path)');
+  // only the node under our feet with the margin: clicking it never moves us
+  if (Best >= 0) and (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then Best := -1;
+  // none (a narrow place / we stand close to the red): the target itself when it is in sight at all; else the
+  // farthest route node in sight at all, else the next node after the one under us, else that one when we are
+  // off it. Never the target through a wall: the server finds a way only up to ~600, farther we run into the wall
+  if Best < 0 then begin
+    if NmLineFree(UX, UY, X, Y, false) then begin
+      if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node in sight with the margin, the target in sight - the target itself');
+      exit;
     end;
-    exit;
+    for k := n - 1 downto 0 do begin
+      i := NmRouteAt(R, k);
+      if NmDist2(UX, UY, i) < NAV_POINT_REACH then continue;
+      PX := NavX[i];
+      PY := NavY[i];
+      if NmLineFree(UX, UY, PX, PY, false) then begin
+        Best := k;
+        break;
+      end;
+    end;
+    if (Best < 0) and (n > 1) then begin
+      i := NmRouteAt(R, 1);
+      PX := NavX[i];
+      PY := NavY[i];
+      if NmLineFree(UX, UY, PX, PY, false) then Best := 1;
+    end;
+    if (Best < 0) and (NmDist2(UX, UY, NmRouteAt(R, 0)) > NAV_NODE_ON) then Best := 0;
+    // the strict map, we stand on the first node: the next one (linked to it); none (the goal off green, in sight
+    // from here) -> false: the caller runs straight at it on green as far as the green goes (never into red)
+    if (Best < 0) and NmStrict() and (n > 1) then Best := 1;
+    if Best < 0 then begin
+      if NmDbg then begin
+        if NmStrict() then NmLog('waypoint to ' + NmXY(X, Y) + ': on the node under us, the goal off green - straight at it on green')
+        else NmLog('waypoint to ' + NmXY(X, Y) + ': on the node under us, nothing else of the route (' + IntToStr(n) +
+          ' nodes) in sight - the target itself (server path)');
+      end;
+      exit;
+    end;
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node in sight with the margin - node ' + IntToStr(Best + 1) +
+      '/' + IntToStr(n) + ' in sight without it');
   end;
   i := NmRouteAt(R, Best);
   NmWpX := NavX[i];
@@ -1915,6 +2244,154 @@ end;
 function NavWpY(): integer;
 begin
   result := NmWpY;
+end;
+
+function NavLastClickX(): integer;
+begin
+  result := NmLcX;
+end;
+
+function NavLastClickY(): integer;
+begin
+  result := NmLcY;
+end;
+
+function NavLastClickAt(): cardinal;
+begin
+  result := NmLcAt;
+end;
+
+function NavLastGoalX(): integer;
+begin
+  result := NmLgX;
+end;
+
+function NavLastGoalY(): integer;
+begin
+  result := NmLgY;
+end;
+
+function NavLastGoalAt(): cardinal;
+begin
+  result := NmLgAt;
+end;
+
+function NavLastRoute(): string;
+begin
+  result := NmLgRoute;
+end;
+
+procedure NavSetStrict(Enable: boolean);
+begin
+  NmStrictSet := Enable;
+end;
+
+function NavStrictOn(): boolean;
+begin
+  result := NmStrict();
+end;
+
+function NavWalkLine(X1, Y1, X2, Y2: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmLineFree(X1, Y1, X2, Y2, false);
+end;
+
+function NavWalkClamp(X1, Y1, X2, Y2: integer): boolean;
+begin
+  if not NmReady then begin
+    NmCpX := X2;
+    NmCpY := Y2;
+    result := true;
+    exit;
+  end;
+  result := NmClampWalk(X1, Y1, X2, Y2);
+end;
+
+function NavClampX(): integer;
+begin
+  result := NmCpX;
+end;
+
+function NavShootPoint(X, Y, Reach: integer): boolean;
+var r, a, k, n, Pass, Best, PX, PY, UX, UY, cx, cy: integer;
+  Ang, Rad, BestD: double;
+  CandX, CandY: array of integer;
+  CandD: array of double;
+begin
+  result := false;
+  if not NmReady then exit;
+  UX := User.X;
+  UY := User.Y;
+  SetLength(CandX, 160);
+  SetLength(CandY, 160);
+  SetLength(CandD, 160);
+  for Pass := 0 to 1 do begin          // 0: with the run margin off the red, 1: any green
+    n := 0;
+    for r := 0 to 4 do begin           // rings 0.9 / 0.7 / 0.5 / 0.3 of Reach and 120
+      if r = 4 then Rad := 120 else Rad := Reach * (0.9 - r * 0.2);
+      if Rad < 60 then continue;
+      for a := 0 to 31 do begin
+        Ang := a * 3.14159265 / 16;
+        PX := X + Round(Cos(Ang) * Rad);
+        PY := Y + Round(Sin(Ang) * Rad);
+        if (PX < NgX0) or (PY < NgY0) then continue;
+        cx := (PX - NgX0) div NgCell;
+        cy := (PY - NgY0) div NgCell;
+        if (cx >= NgW) or (cy >= NgH) then continue;
+        if not NgFree[cy * NgW + cx] then continue;
+        if (Pass = 0) and (not NmRunAt(PX, PY)) then continue;
+        if n >= 160 then continue;
+        CandX[n] := PX;
+        CandY[n] := PY;
+        CandD[n] := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
+        Inc(n);
+      end;
+    end;
+    for k := 0 to n - 1 do begin       // the nearest to us first: the first one that sees it wins
+      Best := -1;
+      BestD := 1E17;
+      for a := 0 to n - 1 do
+        if CandD[a] < BestD then begin
+          BestD := CandD[a];
+          Best := a;
+        end;
+      if Best < 0 then break;
+      CandD[Best] := 1E18;
+      PX := CandX[Best];
+      PY := CandY[Best];
+      if NmSeeLine(PX, PY, X, Y) then begin
+        NmShX := PX;
+        NmShY := PY;
+        result := true;
+        if NmDbg then NmLog('shoot spot for ' + NmXY(X, Y) + ' (reach ' + IntToStr(Reach) + '): ' + NmXY(PX, PY) +
+          NmIfStr(Pass = 0, '', ' (closer than the run margin to the red)'));
+        exit;
+      end;
+    end;
+  end;
+  if NmDbg then NmLog('shoot spot for ' + NmXY(X, Y) + ' (reach ' + IntToStr(Reach) + '): none - no green spot sees it');
+end;
+
+function NavShootX(): integer;
+begin
+  result := NmShX;
+end;
+
+function NavShootY(): integer;
+begin
+  result := NmShY;
+end;
+
+function NavClampY(): integer;
+begin
+  result := NmCpY;
+end;
+
+function NavRunCell(X, Y: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmRunAt(X, Y);
 end;
 
 // along the graph to the target; a node is skipped as soon as the next one is in sight.
@@ -2020,13 +2497,13 @@ function NmHiddenAll(PX, PY, CX, CY: integer): boolean;
 var k, Step, MX, MY: integer;
 begin
   result := false;
-  if NmLineFree(CX, CY, PX, PY, false) then exit;
+  if NmSeeLine(CX, CY, PX, PY) then exit;
   Step := NmMobN div 8 + 1;
   k := 0;
   while k < NmMobN do begin
     MX := NmMobX[k];
     MY := NmMobY[k];
-    if NmLineFree(MX, MY, PX, PY, false) then exit;
+    if NmSeeLine(MX, MY, PX, PY) then exit;
     k := k + Step;
   end;
   result := true;
@@ -2049,7 +2526,7 @@ begin
     if k = 0 then Off := -90 else if k = 1 then Off := -50 else if k = 2 then Off := 50 else Off := 90;
     QX := PX + Round(-UY * Off);
     QY := PY + Round(UX * Off);
-    if NmFreeAt(QX, QY, false) and (not NmLineFree(CX, CY, QX, QY, false)) then Inc(result);
+    if NmFreeAt(QX, QY, false) and (not NmSeeLine(CX, CY, QX, QY)) then Inc(result);
   end;
 end;
 
@@ -2076,7 +2553,7 @@ begin
   DPC := Sqrt(NmSq(PX - CX) + NmSq(PY - CY));
   if DPC < DUC * 0.8 then exit;              // through the pack
   if not NmLineFree(NX, NY, PX, PY, not Given) then exit;
-  if not NmLineFree(CX, CY, NX, NY, false) then exit;   // the pack must see the corner itself
+  if not NmSeeLine(CX, CY, NX, NY) then exit;   // the pack must see the corner itself
   if not NmHiddenAll(PX, PY, CX, CY) then exit;
   DUP := Sqrt(NmSq(FX - PX) + NmSq(FY - PY));
   result := (1 - CosT) * 90 + NmShield(PX, PY, CX, CY) * 25 - DUP / 20;
@@ -2097,7 +2574,7 @@ begin
     NY := NavY[i];
     D := Sqrt(NmSq(NX - FromX) + NmSq(NY - FromY));
     if D > MaxDist then continue;
-    if not NmLineFree(MX, MY, NX, NY, false) then continue;   // the pack must see the corner itself
+    if not NmSeeLine(MX, MY, NX, NY) then continue;   // the pack must see the corner itself
     for r := 0 to 1 do begin
       if r = 0 then Rad := 65 else Rad := 95;
       for a := 0 to 11 do begin
@@ -2395,7 +2872,7 @@ end;
 
 // one tick of a tick run; a blocking run of another thread drives now -> nothing
 procedure NavStep(X, Y, Z: integer; Graph: boolean);
-var TX, TY: integer;
+var TX, TY, UX, UY: integer;
 begin
   if NmDriving() then exit;
   TX := X;
@@ -2403,6 +2880,12 @@ begin
   if Graph and NmReady and NavWaypoint(X, Y) then begin
     TX := NmWpX;
     TY := NmWpY;
+  end else if NmReady and NmStrict() then begin   // the strict map: straight only as far as the green goes
+    UX := User.X;
+    UY := User.Y;
+    if not NmClampWalk(UX, UY, TX, TY) then exit;
+    TX := NmCpX;
+    TY := NmCpY;
   end;
   if NavNeedClick(TX, TY) then NavClickAt(TX, TY, Z);
 end;
