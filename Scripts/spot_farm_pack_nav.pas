@@ -164,7 +164,6 @@ const
   MANA_DRUG                 = 726;
   MANA_POTION               = 728;
   HEALING_POTION            = 1539;
-  CP_POTION                 = 5592;
   ARROW_S                   = 1345;   // Shining Arrow (S grade)
   SOUL_ORE                  = 1785;
   ENERGY_STONE              = 5589;
@@ -462,6 +461,8 @@ var
   SupplyItems: array of integer;  // item IDs (AddSupply constants)
   SupplyMin: array of integer;    // buy when we have less than this
   SupplyMax: array of integer;    // ...up to this amount
+  SupplySure: array of integer;   // unchecked shop entries (SupplyUnchecked) that gave the right item this run
+  SupplyBad: array of integer;    // ... that gave something else: never bought again this run
 
 // ===================== State =====================
   IsRecovering: boolean;  // true while the return thread is moving us: rebuff thread must not touch anything
@@ -1942,16 +1943,52 @@ begin
     BEAST_BLESSED_SPIRITSHOT: begin EntryID := 35;  Price := 120;   Name := 'Beast Blessed Spiritshot'; end;
     SPIRIT_ORE:               begin EntryID := 59;  Price := 540;   Name := 'Spirit Ore';               end;
     CURSED_BONE:              begin EntryID := 47;  Price := 360;   Name := 'Cursed Bone';              end;
-    // the shop got CP potions at 99 (Core\consumables_import.pas, 2026-11-12): HP / MP / MD moved by 2
-    CP_POTION:                begin EntryID := 99;  Price := 50000; Name := 'CP Potion';                end;
-    HEALING_POTION:           begin EntryID := 101; Price := 20000; Name := 'Healing Potion';           end;
-    MANA_POTION:              begin EntryID := 103; Price := 40000; Name := 'Mana Potion';              end;
-    MANA_DRUG:                begin EntryID := 105; Price := 35000; Name := 'Mana Drug';                end;
+    // HP / MP / MD: captured with buy_logger.txt, bought by every farm since 2026-10-12. Core\consumables_import.pas
+    // has other numbers for them (CP at 99 there) - it buys by the item ID (NpcExchange), its entry numbers are
+    // never used and are NOT the shop's: do not copy them here (2026-11-16 that bought Mana Potions for HP)
+    MANA_DRUG:                begin EntryID := 103; Price := 35000; Name := 'Mana Drug';                end;
+    MANA_POTION:              begin EntryID := 101; Price := 40000; Name := 'Mana Potion';              end;
+    HEALING_POTION:           begin EntryID := 99;  Price := 20000; Name := 'Healing Potion';           end;
+    // from Core\consumables_import.pas, never bought by entry yet (SupplyUnchecked): one piece first
     ARROW_S:                  begin EntryID := 45;  Price := 420;   Name := 'Arrows S';                 end;
     SOUL_ORE:                 begin EntryID := 57;  Price := 337;   Name := 'Soul Ore';                 end;
     ENERGY_STONE:             begin EntryID := 61;  Price := 130;   Name := 'Energy Stone';             end;
   else
     result := false;
+  end;
+end;
+
+// the entry number came from Core\consumables_import.pas (its numbers are not checked against the shop): the
+// first buy of a run is one piece, the rest only when that piece is the right item
+function SupplyUnchecked(ItemID: integer): boolean;
+begin
+  result := (ItemID = ARROW_S) or (ItemID = SOUL_ORE) or (ItemID = ENERGY_STONE);
+end;
+
+// ItemID is in SupplyBad (Bad) / SupplySure (no open array: PaxScript does not pass a dynamic array to one)
+function SupplyIn(Bad: boolean; ItemID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  if Bad then begin
+    for i := 0 to Length(SupplyBad) - 1 do
+      if SupplyBad[i] = ItemID then result := true;
+  end else
+    for i := 0 to Length(SupplySure) - 1 do
+      if SupplySure[i] = ItemID then result := true;
+end;
+
+procedure SupplyMark(Good: boolean; ItemID: integer);
+var n: integer;
+begin
+  if Good then begin
+    n := Length(SupplySure);
+    SetLength(SupplySure, n + 1);
+    SupplySure[n] := ItemID;
+  end else begin
+    n := Length(SupplyBad);
+    SetLength(SupplyBad, n + 1);
+    SupplyBad[n] := ItemID;
   end;
 end;
 
@@ -2043,10 +2080,31 @@ begin
       continue;
     end;
 
+    if SupplyIn(true, ItemID) then begin
+      Engine.Msg('[Supplies]', Name + ': its shop entry gave something else - not bought (see above)', 128);
+      continue;
+    end;
+
     Engine.Msg('[Supplies]', Name + ': ' + IntToStr(Have) + ' -> buying ' + IntToStr(Need), 128);
     if not ShopOpened then begin
       OpenShop();
       ShopOpened := true;
+    end;
+    if SupplyUnchecked(ItemID) and (not SupplyIn(false, ItemID)) then begin
+      MultisellBuy(EntryID, 1);        // an unchecked entry: one piece first
+      Delay(BUY_WAIT);
+      RefreshInventory();
+      After := ItemCount(ItemID);
+      if After <= Have then begin
+        SupplyMark(false, ItemID);
+        Engine.Msg('[Supplies]', Name + ': shop entry ' + IntToStr(EntryID) + ' did not give it (one test piece bought) - ' +
+          'not bought any more. Buy one by hand with buy_logger.txt running and send the [Buy] line', 128);
+        continue;
+      end;
+      SupplyMark(true, ItemID);
+      Need := Need - (After - Have);
+      Have := After;
+      if Need <= 0 then continue;
     end;
     MultisellBuy(EntryID, Need);
     Delay(BUY_WAIT);   // let the server finish the purchase before asking for the inventory

@@ -530,7 +530,8 @@ K selfbuff 1323 0 1
 K pack 6 0 0 23453
 K fight BOW
 K zrange 300
-K champ_hp 90000
+K champ_hp 100000
+K champion_alert 0
 K kite_step 70
 K kite_range 850
 K kite_near 200
