@@ -113,6 +113,28 @@ unit SpotFarmPackNav;
 //     AddSelfBuff(1068, 0);                // optional, any number: buff gone -> cast this skill on self
 //     AddSelfBuffOnMe(1323, 0);            // the same for a skill cast at a target (1323): we target ourselves first
 //                                          //   (2nd param = buff ID to watch, 0 = same as the skill)
+//     AddSpotBuff(1068, 0);                // the same, but only at the farm spot (the spot / corner of the fight, a farm
+//                                          //   spot of the map, the safe point; a map with none - in a fight): never
+//                                          //   on the runs and the pull (K selfbuff skill buff onme 1; K mage_buff ... 1)
+//     AddOwnBuff(130, 0, 0, 2, 0, 0);      // optional, any number: an own buff with all of it - skill, buff ID (0 = the
+//                                          //   skill's), 1 = target me first, When: 0 always, 1 only at the farm spot,
+//                                          //   2 in the fight at the spot and taken off after it (a buff cutting our
+//                                          //   speed: Dispel), 3 in a fight with 1..MaxMobs mobs on us (a toggle hitting
+//                                          //   one target hard: off with more); Toggle 1 = a toggle (on whatever its time,
+//                                          //   its skill again turns it off). K selfbuff skill buff onme when toggle max
+//     SetChampionsLast(true);              // optional (default true): the fight kills the usual mobs first, the
+//                                          //   champions after them (K champs_last 0 / 1)
+//     AddFightSkill(1, 30000, 0, 1);       // optional, any number, melee / bow (a mage: its K mage rows): a skill
+//                                          //   (debuff...) pressed in the fight - at most every 30000 ms, on the same
+//                                          //   mob again after PerMobMs (0 = no limit), when at least MinMobs mobs are
+//                                          //   in its area (AoE: its radius; else the pack on us). How it is cast, its
+//                                          //   range / radius: Library\Nav\skills.json (K fight_skill skill every permob min)
+//     AddPullSkill(286, 0, 10000);         // optional, any number, the pull: skills.json AoE / AoE round us -> the pull
+//                                          //   is ONE run planned at its start: the free mobs in areas of the skill, the
+//                                          //   shortest way through them to the farm spot, the skill pressed on the run
+//                                          //   at each area (at most every 10000 ms; the 2nd number is not used); "at the
+//                                          //   target" -> every mob gets it from its range, no body pull (as the mage
+//                                          //   pull skills). K pull_skill skill 0 every
 //     SetSecondTeleport(30233, ['teleport_request', 'teleport_...']);  // optional: after the Aden
 //                                          //   teleport run to this NPC and send these bypasses one after another
 //   Every move of this library goes as a mouse-click packet: the server builds the path (hills, walls).
@@ -202,6 +224,11 @@ procedure SetMageTap(SkillID: integer);
 procedure AddMageTap(SkillID: integer);
 procedure SetMageSpam(Ms: integer);
 procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
+procedure AddFightSkill(SkillID, EveryMs, PerMobMs, MinMobs: integer);
+procedure AddPullSkill(SkillID, MinMobs, EveryMs: integer);
+procedure AddSpotBuff(SkillID, BuffID: integer);
+procedure AddOwnBuff(SkillID, BuffID, OnMe, When, Toggle, MaxMobs: integer);
+procedure SetChampionsLast(Enable: boolean);
 procedure SetCornerRadius(Radius: integer);
 procedure SetZRange(Range: integer);
 procedure SetNavGrid(Name: string);
@@ -447,6 +474,7 @@ const
 var
   ZoneName: string;
   ConfigName: string;
+  ConfigMissing: boolean;         // the profile file is not there: the bot keeps the one loaded before - never turned on
   TeleportBypass: string;
   BuffID: integer;               // watched buff (SetBuff)
   BuffBypasses: array of string;  // buff bypasses, sent in order (SetBuff)
@@ -545,6 +573,18 @@ var
   SelfBuffSkill: array of integer;   // AddSelfBuff: skill to cast on self ...
   SelfBuffID: array of integer;      // ... when this buff is gone
   SelfBuffOnMe: array of boolean;    // ... cast at a target (1323): we target ourselves first
+  SelfBuffAtSpot: array of boolean;  // ... only at the farm spot (AddSpotBuff / K selfbuff ... 1): never on the
+                                     //   runs / the pull (SbAtSpot)
+  SelfBuffWhen: array of integer;    // ... 0 always, 1 only at the farm spot, 2 in the fight at the spot - off after it,
+                                     //   3 in a fight with 1..SelfBuffMax mobs on us - off with more / after it
+  SelfBuffToggle: array of boolean;  // ... a toggle: on = on us whatever its time; its skill again turns it off
+  SelfBuffMax: array of integer;     // ... When 3: at most this many mobs on us
+  SbActAt: array of cardinal;        // ... cast / taken off then: its new state shows a moment later (no flip back)
+  SbOffTold: array of boolean;       // ... "cannot take it off" said
+  SbFewAt: cardinal;                 // SbFightTick: the last look
+  PkChampsLast: boolean;             // champs_last: the fight kills the usual mobs first, the champions after them
+  PkChampsLastSet: boolean;
+  PkInFight: boolean;             // PkFight runs (SbAtSpot: a map with no spots - the spot buffs go in a fight)
   PackEnabled: boolean;           // SetPackFarm called: the script farms packs, the interface stays OFF
   PkPackSize, PkMassSpoil, PkMassSweep: integer;
   PkMobIDs: array of integer;     // mobs to pull; empty = any mob in the zone
@@ -583,6 +623,11 @@ var
   PkProfile: boolean;             // K mode PROFILE: the interface farms (AddMageSkill does not start the pack farm)
   PkRoomSel: integer;             // the room we farm now + 1 (0 = none)
   PkRoomWaiting: boolean;         // not enough mobs anywhere: waiting in this room
+  PkRoomsBegun: boolean;          // a room was farmed since the start: before it the mobs on us come along to the first room
+  PkSweepSpot: integer;           // the farm spot (index + 1) the planned pull run (AoE pull skill) ended at: PkGather leads
+                                  //   the pack there (0 = none)
+  PkSwSpot: array[0..7] of integer;   // ... the farm spots offered to the run as its end (in the order of PullSweepEndAdd)
+  PkSwN: integer;
   PkDebug: integer;               // SetDebug: 0 off, 1 state changes (default), 2 + the rooms table
   PkDebugSet: boolean;
   PkLastState: string;            // the last [State] line and when it was said
@@ -625,6 +670,7 @@ var
   PkSnapN: integer;
   PkSweptOID: array[0..63] of integer;   // corpses a mass sweep was cast on (the bot may keep Sweepable on them)
   PkSweptHead: integer;
+  PkSweepHold: cardinal;                 // a mass sweep did not go (MP...): not tried in the fight before this
 
 // ===================== Mage fight of the pack farm (AddMageSkill / K mage + Library\Nav\skills.json) =====================
   MgPrio, MgID, MgCond, MgVal: array of integer;   // the skills of the mage fight: priority, skill, condition, value
@@ -651,6 +697,27 @@ var
   MbName: array of string;        // ... its name in skills.json (MgPrepare)
   MbHold: array of cardinal;      // ... did not go: not tried again before this
   MbTold: array of boolean;       // ... "no such skill" said
+  MbSpot: array of boolean;       // ... only at the farm spot (K mage_buff ... 1, SbAtSpot)
+  // Library\Nav\skills.json, the whole list (SdLoad, once): skill, how it is cast, cast range, AoE radius, name
+  SdID, SdT, SdR, SdA: array of integer;
+  SdN: array of string;
+  SdLoaded: boolean;
+
+// ===================== Fight skills of melee / bow (AddFightSkill / K fight_skill + skills.json) =====================
+  FsID, FsEvery, FsPerMob, FsMin: array of integer;   // skill, at most every ms, the same mob again after ms (0 =
+                                  //   no limit), at least this many mobs in its area
+  FsType, FsRng, FsRad: array of integer;   // ... from skills.json (FsPrepare): how it is cast, cast range, AoE radius
+  FsName: array of string;
+  FsLast, FsHold: array of cardinal;   // ... went last / sent and did not go: not sent again before this
+  FsTold: array of boolean;       // ... "no such skill" said
+  FsPendK, FsPendOID: integer;    // the one being sent until it goes into reuse (its row, at whom; -1 = none)
+  FsPendAt, FsSentAt: cardinal;   // ... sent first / last
+  FsLookAt: cardinal;             // FsTick: the rows looked at last (not every tick)
+  FsDebK, FsDebOID: array[0..63] of integer;   // row k went on mob OID ... (the "same mob again after")
+  FsDebAt: array[0..63] of cardinal;           // ... then
+  FsDebHead: integer;
+  // pull skills (AddPullSkill / K pull_skill): skill, free mobs in its area at least, at most every ms
+  PsID, PsMin, PsEvery: array of integer;
 
 // ===================== Bow kite (SetBowKite / K kite) =====================
   KtOn: boolean;                  // the fight of an archer: shot, its arrow lands, a short step away, the next shot
@@ -1097,7 +1164,8 @@ end;
 // us at a calm moment (MgBuffTick: no mob on us - before a pull, between the rooms; never in a fight).
 // BuffID = the effect on us when it is not the skill's ID (0 = the same); BeforeSec < 0 = MB_BEFORE_DEFAULT,
 // 0 = only when it is gone
-procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
+// AtSpot: only at the farm spot (SbAtSpot) - K mage_buff skill buff before 1
+procedure MbAdd(SkillID, BuffID, BeforeSec: integer; AtSpot: boolean);
 var n: integer;
 begin
   if SkillID <= 0 then exit;
@@ -1108,12 +1176,56 @@ begin
   SetLength(MbName, n + 1);
   SetLength(MbHold, n + 1);
   SetLength(MbTold, n + 1);
+  SetLength(MbSpot, n + 1);
   MbID[n] := SkillID;
   if BuffID > 0 then MbBuff[n] := BuffID else MbBuff[n] := SkillID;
   if BeforeSec < 0 then MbBefore[n] := MB_BEFORE_DEFAULT else MbBefore[n] := BeforeSec;
   MbName[n] := 'skill ' + IntToStr(SkillID);
   MbHold[n] := 0;
   MbTold[n] := false;
+  MbSpot[n] := AtSpot;
+end;
+
+procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
+begin
+  MbAdd(SkillID, BuffID, BeforeSec, false);
+end;
+
+// a skill pressed in the fight of melee / bow (a debuff...): at most every EveryMs (0 = whenever ready), on the
+// same mob again after PerMobMs (0 = no limit), when at least MinMobs mobs are in its area (FsMayGo). How it is
+// cast, its range and radius: Library\Nav\skills.json (FsPrepare). The line order is the priority
+procedure AddFightSkill(SkillID, EveryMs, PerMobMs, MinMobs: integer);
+var n: integer;
+begin
+  if SkillID <= 0 then exit;
+  n := Length(FsID);
+  SetLength(FsID, n + 1);
+  SetLength(FsEvery, n + 1);
+  SetLength(FsPerMob, n + 1);
+  SetLength(FsMin, n + 1);
+  FsID[n] := SkillID;
+  FsEvery[n] := EveryMs;
+  if FsEvery[n] < 0 then FsEvery[n] := 0;
+  FsPerMob[n] := PerMobMs;
+  if FsPerMob[n] < 0 then FsPerMob[n] := 0;
+  FsMin[n] := MinMobs;
+  if FsMin[n] < 1 then FsMin[n] := 1;
+end;
+
+// a skill of the pull (PsSetup in RunFarm): skills.json AoE / AoE round us -> cast when at least MinMobs free mobs
+// are in its area, at most every EveryMs (Core\mob_pull.pas PullAddAoeSkill); at the target -> a tap skill: every
+// mob gets it from its cast range (PullAddTapSkill + tap always)
+procedure AddPullSkill(SkillID, MinMobs, EveryMs: integer);
+var n: integer;
+begin
+  if SkillID <= 0 then exit;
+  n := Length(PsID);
+  SetLength(PsID, n + 1);
+  SetLength(PsMin, n + 1);
+  SetLength(PsEvery, n + 1);
+  PsID[n] := SkillID;
+  PsMin[n] := MinMobs;
+  PsEvery[n] := EveryMs;
 end;
 
 // at the corner: run to and hit pack mobs up to Radius from the corner point (0 = stand in the
@@ -1148,30 +1260,64 @@ begin
   if PkCornerR < 0 then PkCornerR := 0;
 end;
 
-// self buff: the buff BuffID is gone -> cast SkillID (BuffID = 0 -> the buff has the skill's ID)
-procedure SbAdd(SkillID, BuffID: integer; OnMe: boolean);
+// self buff: the buff BuffID is gone -> cast SkillID (BuffID = 0 -> the buff has the skill's ID). When: 0 always,
+// 1 only at the farm spot (SbAtSpot: never on the runs / the pull), 2 in the fight at the spot and taken off after it,
+// 3 in a fight with 1..MaxMobs mobs on us (off with more and after it). Toggle: on = on us whatever its time
+procedure SbAddEx(SkillID, BuffID: integer; OnMe: boolean; When: integer; Toggle: boolean; MaxMobs: integer);
 var n: integer;
 begin
   SelfBuffSet := true;
   if SkillID <= 0 then exit;           // AddSelfBuff(0, 0) = no own buffs at all (no default either)
+  if (When < 0) or (When > 3) then When := 0;
   n := Length(SelfBuffSkill);
   SetLength(SelfBuffSkill, n + 1);
   SetLength(SelfBuffID, n + 1);
   SetLength(SelfBuffOnMe, n + 1);
+  SetLength(SelfBuffAtSpot, n + 1);
+  SetLength(SelfBuffWhen, n + 1);
+  SetLength(SelfBuffToggle, n + 1);
+  SetLength(SelfBuffMax, n + 1);
   SelfBuffSkill[n] := SkillID;
   if BuffID > 0 then SelfBuffID[n] := BuffID else SelfBuffID[n] := SkillID;
   SelfBuffOnMe[n] := OnMe;
+  SelfBuffAtSpot[n] := (When = 1) or (When = 2);
+  SelfBuffWhen[n] := When;
+  SelfBuffToggle[n] := Toggle;
+  if MaxMobs < 1 then MaxMobs := 1;
+  SelfBuffMax[n] := MaxMobs;
+end;
+
+procedure SbAdd(SkillID, BuffID: integer; OnMe, AtSpot: boolean);
+begin
+  SbAddEx(SkillID, BuffID, OnMe, Ord(AtSpot), false, 1);
+end;
+
+procedure AddOwnBuff(SkillID, BuffID, OnMe, When, Toggle, MaxMobs: integer);
+begin
+  SbAddEx(SkillID, BuffID, OnMe = 1, When, Toggle = 1, MaxMobs);
+end;
+
+procedure SetChampionsLast(Enable: boolean);
+begin
+  PkChampsLast := Enable;
+  PkChampsLastSet := true;
 end;
 
 procedure AddSelfBuff(SkillID, BuffID: integer);
 begin
-  SbAdd(SkillID, BuffID, false);
+  SbAdd(SkillID, BuffID, false, false);
 end;
 
 // a skill cast at a target (Noblesse 1323 ...): we target ourselves, cast it, then the target we had back
 procedure AddSelfBuffOnMe(SkillID, BuffID: integer);
 begin
-  SbAdd(SkillID, BuffID, true);
+  SbAdd(SkillID, BuffID, true, false);
+end;
+
+// an own buff cast only at the farm spot: the run / the pull never stops for it
+procedure AddSpotBuff(SkillID, BuffID: integer);
+begin
+  SbAdd(SkillID, BuffID, false, true);
 end;
 
 // double teleport: after the Aden gatekeeper teleport run to NPC NpcID (it is near the landing)
@@ -1751,7 +1897,9 @@ begin
     SetLength(Path, n);
     for i := 0 to n - 1 do Path[i] := StrToIntDef(PtField(V, i), 0);
   end
-  else if K = 'selfbuff' then SbAdd(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), PtField(V, 2) = '1')   // 3rd: target me first
+  else if K = 'selfbuff' then          // skill buff [1 = target me first] [when 0..3] [1 = a toggle] [max mobs]
+    SbAddEx(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), PtField(V, 2) = '1',
+      StrToIntDef(PtField(V, 3), 0), PtField(V, 4) = '1', StrToIntDef(PtField(V, 5), 1))
   else if K = 'pack' then begin        // size spoil sweep id,id,...
     PkPackStart(StrToIntDef(PtField(V, 0), 6), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), 0));
     M := PkRest(V, 3);
@@ -1791,8 +1939,14 @@ begin
     if V = '1' then SetMageTap(0);
   end
   else if K = 'mage_spam_ms' then SetMageSpam(StrToIntDef(V, 0))
-  else if K = 'mage_buff' then         // skill [buff ID on us, 0 = the skill's] [recast s before its end, none = 60]
-    AddMageBuff(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), -1))
+  else if K = 'mage_buff' then         // skill [buff ID on us, 0 = the skill's] [recast s before its end, none / -1 = 60]
+    MbAdd(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), -1),
+      PtField(V, 3) = '1')             //   [1 = only at the farm spot]
+  else if K = 'fight_skill' then       // skill [at most every ms] [the same mob again after ms] [mobs at least]
+    AddFightSkill(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), 0),
+      StrToIntDef(PtField(V, 3), 1))
+  else if K = 'pull_skill' then        // skill [free mobs in its area at least] [at most every ms]
+    AddPullSkill(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), 0))
   else if K = 'dagger' then SetPackDagger(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0))
   else if K = 'corner_radius' then SetCornerRadius(StrToIntDef(V, 0))
   else if K = 'auto_corner' then SetAutoCorner(StrToIntDef(V, 0))
@@ -1827,6 +1981,7 @@ begin
   else if K = 'nav_run' then NavSetRunSteps(UpperCase(V) = 'STEP')
   else if K = 'nav_step' then NavSetStepLen(StrToIntDef(V, 400))
   else if K = 'skip_champions' then SetSkipChampions(V = '1')
+  else if K = 'champs_last' then SetChampionsLast(V = '1')
   else if K = 'champ_hp' then SetChampionHP(StrToIntDef(V, 0))
   else if K = 'room_order' then PkRoomSeq := UpperCase(V) = 'SEQ'
   else if K = 'room_cycle_wait' then PkCycleWait := StrToIntDef(V, 0)
@@ -2172,7 +2327,9 @@ end;
 procedure FarmOn();
 begin
   if ScriptMode() then begin
-    Engine.FaceControl(0, ConfigName <> '');
+    // the alarm profile on (auto attack off in it); its file missing - the bot would run the profile loaded before
+    // (a spoiler: it attacks / spoils by itself, against the pull of the script): the interface stays off
+    Engine.FaceControl(0, (ConfigName <> '') and (not ConfigMissing));
     FarmPaused := false;
   end else
     Engine.FaceControl(0, true);
@@ -2806,24 +2963,129 @@ begin
   result := SkillList.ByID(ID, Sk);    // the bot's own search (see BuffTime)
 end;
 
+// the buffs marked "only at the farm spot" (AddSpotBuff, K selfbuff / K mage_buff ... 1) may go now: we stand
+// within SB_SPOT_NEAR of the spot of the fight / corner (the last one taken), of a farm spot of the map or of the
+// safe point; a map with none of them and no corners (the fight is where the pack is) -> while a fight runs.
+// Not the pack farm (the profile / the other farms): always
+function SbAtSpot(): boolean;
+const
+  SB_SPOT_NEAR = 200;
+var k, UX, UY: integer;
+  R2: double;
+begin
+  result := true;
+  if not PackEnabled then exit;
+  UX := User.X;
+  UY := User.Y;
+  R2 := PkSq(SB_SPOT_NEAR);
+  if (PkCorner >= 0) and (PkSq(UX - PkCX) + PkSq(UY - PkCY) <= R2) then exit;
+  for k := 0 to PkSpotN - 1 do
+    if PkSq(UX - PkSpotX[k]) + PkSq(UY - PkSpotY[k]) <= R2 then exit;
+  if HasSafePoint and (PkSq(UX - SafeX) + PkSq(UY - SafeY) <= R2) then exit;
+  if (PkSpotN = 0) and (Length(PkCorners) = 0) and (PkAutoCorner <= 0) then begin
+    result := PkInFight;
+    exit;
+  end;
+  result := false;
+end;
+
+// the arrays of the own buffs' state sized to the buffs (the rows come from the script / the map before the start)
+procedure SbArrays();
+var i, n: integer;
+begin
+  n := Length(SelfBuffSkill);
+  if Length(SbTold) <> n then begin
+    SetLength(SbTold, n);
+    for i := 0 to n - 1 do SbTold[i] := false;
+  end;
+  if Length(SbActAt) <> n then begin
+    SetLength(SbActAt, n);
+    for i := 0 to n - 1 do SbActAt[i] := 0;
+  end;
+  if Length(SbOffTold) <> n then begin
+    SetLength(SbOffTold, n);
+    for i := 0 to n - 1 do SbOffTold[i] := false;
+  end;
+end;
+
+// own buff i: when it is kept (0 always, 1 only at the farm spot, 2 in the fight at the spot, 3 in a fight with few
+// mobs on us)
+function SbWhen(i: integer): integer;
+begin
+  result := 0;
+  if i < Length(SelfBuffWhen) then result := SelfBuffWhen[i];
+end;
+
+function SbIsToggle(i: integer): boolean;
+begin
+  result := (i < Length(SelfBuffToggle)) and SelfBuffToggle[i];
+end;
+
+// own buff i is on us: a toggle - on the list whatever its time (it has none); a buff - with time left
+function SbOn(i: integer): boolean;
+var B: TL2Buff;
+begin
+  if SbIsToggle(i) then result := User.Buffs.ByID(SelfBuffID[i], B)
+  else result := BuffTime(SelfBuffID[i]) > 0;
+end;
+
+// own buff i off us: a toggle - its skill once more (that turns it off); a buff - the bot's Dispel by its name (as a
+// click on its icon). Not again for SB_ACT_HOLD_MS (its new state shows a moment later). true = sent
+function SbOff(i: integer; Why: string): boolean;
+var B: TL2Buff;
+  Nm: string;
+begin
+  result := false;
+  if SbIsToggle(i) then begin
+    if SpSkillLeft(SelfBuffSkill[i]) > 0 then exit;   // its reuse: a later look
+    SbActAt[i] := GetTickCount;
+    Engine.Msg('[SelfBuff]', 'Toggle ' + IntToStr(SelfBuffSkill[i]) + ' off: ' + Why, 0);
+    Engine.DUseSkill(SelfBuffSkill[i], false, false);
+    result := true;
+    exit;
+  end;
+  if not User.Buffs.ByID(SelfBuffID[i], B) then exit;
+  Nm := B.Name;                        // read at once: the bot frees a buff object that ends under us
+  SbActAt[i] := GetTickCount;
+  Engine.Msg('[SelfBuff]', 'Buff ' + Nm + ' (' + IntToStr(SelfBuffID[i]) + ') off: ' + Why, 0);
+  result := Engine.Dispel(Nm);
+  if (not result) and (not SbOffTold[i]) then begin
+    SbOffTold[i] := true;
+    Engine.Msg('[SelfBuff]', 'Buff ' + Nm + ' (' + IntToStr(SelfBuffID[i]) + ') did not come off (Dispel refused) - ' +
+      'tried again after every fight', 128);
+  end;
+end;
+
 // one look (every second): a watched buff is gone and its skill is ready -> cast it (a skill cast at a target:
-// at ourselves, then the target we had back). On as soon as the buff is on us (at most SB_WAIT_MS after the cast)
+// at ourselves, then the target we had back). On as soon as the buff is on us (at most SB_WAIT_MS after the cast).
+// A buff "only at the farm spot" waits until we stand there (SbAtSpot): the runs and the pull never stop for it;
+// "in the fight at the spot" - only in a fight there (it is taken off after it: SbFightEnd); "few mobs on us" -
+// the fight decides (SbFightTick). A toggle: cast only when it is not on the list at all (its skill again would turn
+// it off), and not again for SB_ACT_HOLD_MS after a cast
 procedure SelfBuffTick();
 const
   SB_WAIT_MS = 700;
-var i, SkillID, ID, Prev: integer;
-  W: cardinal;
+  SB_ACT_HOLD_MS = 2500;
+var i, SkillID, ID, Prev, Spot, W: integer;
+  Wt: cardinal;
   T: TL2Live;
 begin
-  if Length(SbTold) <> Length(SelfBuffSkill) then begin
-    SetLength(SbTold, Length(SelfBuffSkill));
-    for i := 0 to Length(SbTold) - 1 do SbTold[i] := false;
-  end;
+  SbArrays();
   if User.Dead or (not IsOnline()) or IsRecovering or NeedReturn then exit;
   if SkillList.Count = 0 then exit;           // the skill list is not loaded yet (just logged in)
+  Spot := -1;                                 // SbAtSpot: counted once, only when a spot buff is due
   for i := 0 to Length(SelfBuffSkill) - 1 do begin
     SkillID := SelfBuffSkill[i];
     ID := SelfBuffID[i];
+    W := SbWhen(i);
+    if W = 3 then continue;                   // few mobs on us: SbFightTick (in the fight)
+    if (W = 2) and (not PkInFight) then continue;   // in the fight at the spot only
+    if SbIsToggle(i) and (GetTickCount - SbActAt[i] < SB_ACT_HOLD_MS) then continue;   // its last switch not shown yet
+    if (W = 1) or (W = 2) then begin
+      if SbOn(i) then continue;               // still on us
+      if Spot < 0 then Spot := Ord(SbAtSpot());
+      if Spot = 0 then continue;              // not at the farm spot: later, there
+    end;
     if not HasSkill(SkillID) then begin          // this character has no such skill: never cast it
       if not SbTold[i] then begin
         Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SkillID) + ' on this character - own buff skipped', 128);
@@ -2831,18 +3093,20 @@ begin
       end;
       continue;
     end;
-    if BuffTime(ID) > 0 then continue;          // still on us
+    if SbOn(i) then continue;                   // still on us
     if SpSkillLeft(SkillID) > 0 then continue;  // reuse
-    Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
+    if SbIsToggle(i) then Engine.Msg('[SelfBuff]', 'Toggle ' + IntToStr(SkillID) + ' is off, turning it on', 0)
+    else Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(ID) + ' is gone, casting ' + IntToStr(SkillID), 0);
     PkActed := true;
+    SbActAt[i] := GetTickCount;
     Prev := 0;
     if (i < Length(SelfBuffOnMe)) and SelfBuffOnMe[i] then begin   // cast at a target: at ourselves
       T := User.Target;
       if T <> nil then Prev := T.OID;
       if Prev <> User.OID then begin
         Engine.SetTarget(User.OID);
-        W := GetTickCount;
-        while GetTickCount - W < 600 do begin
+        Wt := GetTickCount;
+        while GetTickCount - Wt < 600 do begin
           T := User.Target;
           if T <> nil then
             if T.OID = User.OID then break;
@@ -2851,8 +3115,8 @@ begin
       end;
     end;
     Engine.UseSkill(SkillID);
-    W := GetTickCount;
-    while (GetTickCount - W < SB_WAIT_MS) and (BuffTime(ID) = 0) do Delay(50);
+    Wt := GetTickCount;
+    while (GetTickCount - Wt < SB_WAIT_MS) and (not SbOn(i)) do Delay(50);
     if (Prev <> 0) and (Prev <> User.OID) then Engine.SetTarget(Prev);   // the mob we had back
   end;
 end;
@@ -3295,9 +3559,20 @@ procedure LoadFarmSettings();
 var UX, UY, UZ: integer;
 begin
   if ConfigName <> '' then begin
-    Engine.Msg('[Init]', 'LoadConfig: ' + Script.Path + CONFIG_DIR + ConfigName, 128);
-    Engine.LoadConfig(Script.Path + CONFIG_DIR + ConfigName);
-    Delay(1000);
+    ConfigMissing := not FileExists(Script.Path + CONFIG_DIR + ConfigName);
+    if ConfigMissing then begin
+      // no such file: LoadConfig changes nothing - the profile loaded before stays and would farm by itself
+      if ScriptMode() then
+        Engine.Msg('[Init]', 'Profile ' + Script.Path + CONFIG_DIR + ConfigName + ' NOT FOUND (the profiles are .xml) - ' +
+          'the bot interface stays OFF: with the profile loaded before it would attack / spoil by itself', 128)
+      else
+        Engine.Msg('[Init]', 'Profile ' + Script.Path + CONFIG_DIR + ConfigName + ' NOT FOUND (the profiles are .xml) - ' +
+          'the bot farms with the profile loaded before', 128);
+    end else begin
+      Engine.Msg('[Init]', 'LoadConfig: ' + Script.Path + CONFIG_DIR + ConfigName, 128);
+      Engine.LoadConfig(Script.Path + CONFIG_DIR + ConfigName);
+      Delay(1000);
+    end;
   end;
 
   if ZoneName <> '' then begin
@@ -3344,6 +3619,7 @@ begin
   end;
 
   OnSpot := true;
+  PkRoomsBegun := false;               // (back) in the zone: mobs on us go along to the first room, no fight first
   if NavZoneName <> '' then NavSetZone(NavZoneName)   // the map for runs: SetNavZone,
   else NavSetZone(ZoneName);           //   else the farm zone (SetNavGrid wins over both)
   if not PkAreaSet then begin
@@ -5110,6 +5386,21 @@ begin
     Engine.Msg('[Pack]', 'Mage: pack ' + IntToStr(PkCountAggro()) + ' - fought right here', 0);
     exit;
   end;
+  // the pull was one planned run (an AoE pull skill): it ended next to this farm spot - the pack is led there
+  if PkSweepSpot > 0 then begin
+    k := PkSweepSpot - 1;
+    PkSweepSpot := 0;
+    if k < PkSpotN then begin
+      PkCorner := 0;
+      PkCX := PkSpotX[k];
+      PkCY := PkSpotY[k];
+      PkCZ := PkSpotZ[k];
+      if PkCZ = 0 then PkCZ := User.Z;
+      Engine.Msg('[Pack]', 'Pack ' + IntToStr(PullCountOurs()) + ' -> farm spot ' + IntToStr(k + 1) + ' (the end of the pull run)', 0);
+      PkRunSpot(PkCX, PkCY, PkCZ, 0);
+      exit;
+    end;
+  end;
   // SetAutoCorner: a spot round a wall corner found on the map - the pack runs round the corner
   // and bunches up on us there
   if ((PkAutoCorner > 0) and NavIsReady()) or (PkSpotN > 0) then begin
@@ -5150,6 +5441,7 @@ begin
           if (PkRoomSel > 0) and PkSpotFor(i, PkRoomSel - 1) then Inc(Far);
         Engine.Msg('[Pack]', 'No farm spot taken (pack ' + IntToStr(n) + ', spots ' + IntToStr(PkSpotN) +
           ', room ' + IntToStr(PkRoomSel - 1) + ' has ' + IntToStr(Far) + ') - fight here', 0);
+        PkCorner := -1;                // here: not the spot of the last pack (the fight would run back to it)
         exit;
       end;
       // a good corner near; none -> look twice as far (a good corner is worth the run)
@@ -5304,21 +5596,36 @@ begin
     if PkFightMob(i) then Inc(result);
 end;
 
+// a champion for the order of the fight (champs_last): MaxHP above SetChampionHP / the champion alert limit
+function PkIsChamp(i: integer): boolean;
+var Lim, HP: integer;
+begin
+  result := false;
+  if (i < 0) or (i >= NpcList.Count) then exit;
+  Lim := PkChampHP;
+  if Lim <= 0 then Lim := ChampionMinHP;
+  if Lim <= 0 then Lim := DEFAULT_CHAMPION_HP;
+  HP := NpcList(i).MaxHP;
+  result := HP > Lim;
+end;
+
 // the target within MaxReach that puts the most mobs of the pack into the splash of the auto
 // attack (a cone of +-PK_SPLASH_ANGLE in front of us, PK_SPLASH_RANGE deep). Same count -> the
 // lowest HP; out of the splash range -> the nearest. The current target is kept unless another one
-// catches more. 0 = nobody within MaxReach
+// catches more. champs_last: a champion only when no usual mob is within reach. 0 = nobody within MaxReach
 function PkBestTarget(CurOID, MaxReach: integer): integer;
 var i, j, UX, UY, NX, NY, MX, MY, Score, BestScore, CurScore: integer;
   AX, AY, BX, BY, LA, LB, Tie, BestTie, CosLim, QX, QY: double;
+  CurFound: boolean;
 begin
   result := 0;
   UX := User.X;
   UY := User.Y;
   CosLim := Cos(PK_SPLASH_ANGLE * 3.14159265 / 180);
-  BestScore := -1;
+  BestScore := -999999;
   BestTie := 999999999;
-  CurScore := -1;
+  CurScore := -999999;
+  CurFound := false;
   for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if not PkFightMob(i) then continue;
     NX := NpcList(i).X;
@@ -5355,14 +5662,18 @@ begin
       end;
       Tie := NpcList(i).CurHP;         // same count: finish the weakest
     end;
-    if NpcList(i).OID = CurOID then CurScore := Score;
+    if PkChampsLast and PkIsChamp(i) then Score := Score - 1000;   // the usual ones first, the champions after them
+    if NpcList(i).OID = CurOID then begin
+      CurScore := Score;
+      CurFound := true;
+    end;
     if (Score > BestScore) or ((Score = BestScore) and (Tie < BestTie)) then begin
       BestScore := Score;
       BestTie := Tie;
       result := NpcList(i).OID;
     end;
   end;
-  if (CurScore >= 0) and (CurScore >= BestScore) then result := CurOID;
+  if CurFound and (CurScore >= BestScore) then result := CurOID;
 end;
 
 // every mob left of the pack is fat (MaxHP above the SetPackDagger limit)
@@ -5413,16 +5724,23 @@ begin
   end;
 end;
 
-// one mass sweep on a sweepable corpse near us; every such corpse near us is then taken as swept
-// (one cast per corpse, never a sweep with no sweepable corpse around)
-procedure PkSweepNow();
+// one mass sweep on a sweepable corpse near us; it went (its reuse started) -> every such corpse near us is taken as
+// swept (one cast per corpse, never a sweep with no sweepable corpse around); it did not go (MP, reuse...) -> they stay
+// to sweep. true = it went
+function PkSweepNow(): boolean;
 var i, NX, NY, OID, COID: integer;
 begin
+  result := false;
   if PkCorpses() = 0 then exit;        // checked again right before the cast
   COID := PkCorpseOID;
   Engine.SetTarget(COID);
   Engine.UseSkill(PkMassSweep);
+  result := SpSkillLeft(PkMassSweep) > 0;   // in reuse right after the cast = it went
   Delay(PK_CAST_MS);
+  if not result then begin
+    if DbgOn() then Dbg('[Sweep]', 'mass sweep ' + IntToStr(PkMassSweep) + ' did not go (MP? reuse?) - the corpses stay to sweep');
+    exit;
+  end;
   for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
     if (not NpcList(i).Dead) or (not NpcList(i).Sweepable) then continue;
     OID := NpcList(i).OID;
@@ -5450,26 +5768,101 @@ begin
   if PkCorpseSince = 0 then PkCorpseSince := GetTickCount;
   if (n < 2) and (GetTickCount - PkCorpseSince < PK_CORPSE_MS) then exit;
   if SpSkillLeft(PkMassSweep) > 0 then exit;
-  PkSweepNow();
+  if GetTickCount < PkSweepHold then exit;   // it did not go a moment ago: the fight first
+  if not PkSweepNow() then PkSweepHold := GetTickCount + 2000;
   PkCorpseSince := 0;
-  result := true;
+  result := true;                      // the target is a corpse now
 end;
 
-// after the pack: mass sweep while a sweepable corpse not swept yet is near (waits for the reuse)
+// after the pack: every sweepable corpse not swept yet round the place of the fight (within PK_SWEEP_FAR - they lie
+// apart round the spot, not only within the sweep reach of where we stand): the corpse with the most others within
+// the sweep reach first - run next to it, wait for the reuse (however long it is), the mass sweep; again until none
+// is left. A cast that did not go is tried again (3 in a row -> given up); a corpse we cannot get next to in 4 s is
+// left. Ends: none left, a mob on us (the fight goes on), PK_SWEEP_MAX_MS
 procedure PkFinalSweep();
-var k, w: integer;
+const
+  PK_SWEEP_FAR = 700;                  // corpses this far from where the fight ended are swept too
+  PK_SWEEP_MAX_MS = 25000;             // the final sweep at most this long (spoiled corpses vanish anyway)
+var i, j, n, BestN, BestOID, BX, BY, BZ, CX, CY, OID, NX, NY, Fails, RunOID, Done: integer;
+  T0, RunSince: cardinal;
+  R2, F2: double;
 begin
-  if PkMassSweep = 0 then exit;
-  for k := 1 to 5 do begin
-    if User.Dead or NeedReturn then exit;
-    if PkCorpses() = 0 then break;
-    w := 0;
-    while (SpSkillLeft(PkMassSweep) > 0) and (w < 40) do begin
-      Delay(PK_TICK_MS);
-      Inc(w);
+  if (PkMassSweep = 0) or (not HasSkill(PkMassSweep)) then exit;
+  CX := User.X;                        // where the fight ended
+  CY := User.Y;
+  R2 := PkSq(AOE_SWEEP_RANGE);
+  F2 := PkSq(PK_SWEEP_FAR);
+  T0 := GetTickCount;
+  Fails := 0;
+  RunOID := 0;
+  RunSince := 0;
+  Done := 0;
+  while (not User.Dead) and (not NeedReturn) and (GetTickCount - T0 < PK_SWEEP_MAX_MS) do begin
+    if PkCountAggro() > 0 then break;  // a mob on us: the fight first
+    // the corpse with the most sweepable corpses within the sweep reach round it
+    BestOID := 0;
+    BestN := 0;
+    BX := 0;
+    BY := 0;
+    BZ := 0;
+    for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+      if (not NpcList(i).Dead) or (not NpcList(i).Sweepable) then continue;
+      OID := NpcList(i).OID;
+      if PkSwept(OID) then continue;
+      NX := NpcList(i).X;
+      NY := NpcList(i).Y;
+      if PkSq(NX - CX) + PkSq(NY - CY) > F2 then continue;
+      n := 0;
+      for j := 0 to NpcList.Count - 1 do if j < NpcList.Count then begin
+        if (not NpcList(j).Dead) or (not NpcList(j).Sweepable) then continue;
+        if PkSq(NpcList(j).X - NX) + PkSq(NpcList(j).Y - NY) > R2 then continue;
+        if not PkSwept(NpcList(j).OID) then Inc(n);
+      end;
+      if n > BestN then begin
+        BestN := n;
+        BestOID := OID;
+        BX := NX;
+        BY := NY;
+        BZ := NpcList(i).Z;
+      end;
     end;
-    PkSweepNow();
+    if BestOID = 0 then break;         // none left
+    // next to it: the sweep reaches it and the ones round it
+    if PkDist(BX, BY) > AOE_SWEEP_RANGE * 0.6 then begin
+      if BestOID <> RunOID then begin
+        RunOID := BestOID;
+        RunSince := GetTickCount;
+        NavMoveReset();
+      end else if GetTickCount - RunSince > 4000 then begin
+        // cannot get next to it (a wall...): it is left, the others go on
+        PkSweptOID[PkSweptHead] := BestOID;
+        PkSweptHead := (PkSweptHead + 1) mod 64;
+        if DbgOn() then Dbg('[Sweep]', 'corpse ' + IntToStr(BestOID) + ' not reached in 4 s - left');
+        RunOID := 0;
+        continue;
+      end;
+      if NavNeedClick(BX, BY) then NavClickAt(BX, BY, BZ);
+      Delay(PK_TICK_MS);
+      continue;
+    end;
+    RunOID := 0;
+    if SpSkillLeft(PkMassSweep) > 0 then begin   // its reuse: wait for it here
+      Delay(PK_TICK_MS);
+      continue;
+    end;
+    if PkSweepNow() then begin
+      Fails := 0;
+      Inc(Done);
+    end else begin
+      Inc(Fails);
+      if Fails >= 3 then begin
+        Engine.Msg('[Pack]', 'Mass sweep ' + IntToStr(PkMassSweep) + ' does not go (MP?) - the corpses left', 128);
+        break;
+      end;
+      Delay(500);
+    end;
   end;
+  if DbgOn() then Dbg('[Sweep]', 'final sweep: ' + IntToStr(Done) + ' casts in ' + IntToStr(GetTickCount - T0) + ' ms');
   PkCorpseSince := 0;
 end;
 
@@ -5874,6 +6267,67 @@ begin
   result := PvFight();
 end;
 
+// in a fight (every tick, looked at every 300 ms): the own buffs "in a fight with few mobs on us" (When 3: a toggle
+// that hits one target hard - a polearm then hits only one) - on while 1..its max mobs of the fight are on us, off
+// with more (the polearm hits them all again). Sent with no wait (no stop of the attack); a switch is not repeated
+// until its new state shows (SB_ACT_HOLD_MS)
+procedure SbFightTick();
+const
+  SB_ACT_HOLD_MS = 2500;
+var i, n, SkillID: integer;
+  Want, IsOn, Any: boolean;
+begin
+  if GetTickCount - SbFewAt < 300 then exit;
+  SbFewAt := GetTickCount;
+  Any := false;
+  for i := 0 to Length(SelfBuffWhen) - 1 do
+    if SelfBuffWhen[i] = 3 then Any := true;
+  if not Any then exit;
+  if User.Dead or (SkillList.Count = 0) then exit;
+  SbArrays();
+  n := PkCountFight();
+  for i := 0 to Length(SelfBuffSkill) - 1 do begin
+    if SbWhen(i) <> 3 then continue;
+    SkillID := SelfBuffSkill[i];
+    if GetTickCount - SbActAt[i] < SB_ACT_HOLD_MS then continue;
+    if not HasSkill(SkillID) then begin
+      if not SbTold[i] then begin
+        Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SkillID) + ' on this character - own buff skipped', 128);
+        SbTold[i] := true;
+      end;
+      continue;
+    end;
+    Want := (n >= 1) and (n <= SelfBuffMax[i]);
+    IsOn := SbOn(i);
+    if Want and (not IsOn) then begin
+      if SpSkillLeft(SkillID) > 0 then continue;   // reuse
+      SbActAt[i] := GetTickCount;
+      Engine.Msg('[SelfBuff]', IntToStr(SkillID) + ' on: ' + IntToStr(n) + ' on us, its max ' + IntToStr(SelfBuffMax[i]), 0);
+      Engine.DUseSkill(SkillID, false, false);
+    end else if (not Want) and IsOn then
+      SbOff(i, IntToStr(n) + ' on us, its max ' + IntToStr(SelfBuffMax[i]));
+  end;
+end;
+
+// the fight is over (the end of PkFight): the own buffs "in the fight at the spot" (When 2: one cutting our speed...)
+// and "with few mobs on us" (When 3) come off - the run to the pickup / the next pull goes at full speed. Waited for
+// until they are off (at most 800 ms each)
+procedure SbFightEnd();
+var i, W: integer;
+  T0: cardinal;
+begin
+  if User.Dead or (Length(SelfBuffWhen) = 0) then exit;
+  SbArrays();
+  for i := 0 to Length(SelfBuffSkill) - 1 do begin
+    W := SbWhen(i);
+    if (W <> 2) and (W <> 3) then continue;
+    if not SbOn(i) then continue;
+    if not SbOff(i, 'the fight is over') then continue;
+    T0 := GetTickCount;
+    while SbOn(i) and (GetTickCount - T0 < 800) do Delay(50);
+  end;
+end;
+
 // during a fight (every tick of it): the alerts, the zone, a disarm (the weapon back), an own buff that
 // ended - as their own threads did before, between the hits. true = a cast / the weapon put on: the
 // target in the game changed, the fight selects its own target again
@@ -5889,6 +6343,7 @@ begin
     // a mage: the blocking own-buff cast (AddSelfBuff) not in its fight - at a calm moment (PackMain)
     if (Length(SelfBuffSkill) > 0) and (Length(MgID) = 0) then SelfBuffTick();
   end;
+  SbFightTick();                       // a toggle for few mobs on us: on / off as their count goes
   if (WeaponID > 0) and (GetTickCount - PkWeaponAt >= WEAPON_POLL_MS) then begin
     PkWeaponAt := GetTickCount;
     WeaponTick();
@@ -5988,15 +6443,83 @@ begin
   result := Trim(Copy(T, 1, p - 1));
 end;
 
+// once (the first who needs it): Library\Nav\skills.json -> SdID / SdT / SdR / SdA / SdN - every skill of the
+// list: how it is cast, its cast range, AoE radius, name
+procedure SdLoad();
+var L: TStringList;
+  F, S, Obj: string;
+  i, j, ID, T, p, q: integer;
+begin
+  if SdLoaded then exit;
+  SdLoaded := true;
+  SetLength(SdID, 0);
+  SetLength(SdT, 0);
+  SetLength(SdR, 0);
+  SetLength(SdA, 0);
+  SetLength(SdN, 0);
+  F := Script.Path + '..\Nav\' + MG_SKILL_FILE;
+  if not FileExists(F) then begin
+    Engine.Msg('[Skills]', 'No skill list ' + F + ' - every skill is cast at the target from ' +
+      IntToStr(MG_DEFAULT_RANGE), 128);
+    exit;
+  end;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  S := '';
+  for i := 0 to L.Count - 1 do S := S + L[i] + ' ';
+  L.Free;
+  // { ..., "skills": [ {"id": 1234, "type": "TARGET", "range": 600, "radius": 0, "name": "..."}, ... ] }
+  p := Pos('"skills"', S);
+  if p > 0 then S := Copy(S, p + 8, Length(S)) else S := '';
+  p := Pos('[', S);
+  if p > 0 then S := Copy(S, p + 1, Length(S)) else S := '';
+  while S <> '' do begin
+    p := Pos('{', S);
+    q := Pos(']', S);
+    if p <= 0 then break;
+    if (q > 0) and (q < p) then break;   // the end of the list
+    S := Copy(S, p + 1, Length(S));
+    q := Pos('}', S);
+    if q <= 0 then break;
+    Obj := Copy(S, 1, q - 1);
+    S := Copy(S, q + 1, Length(S));
+    ID := StrToIntDef(MgJsonVal(Obj, 'id'), 0);
+    if ID <= 0 then continue;
+    T := MgTypeOf(MgJsonVal(Obj, 'type'));
+    if T = 0 then T := MG_T_TARGET;
+    j := Length(SdID);
+    SetLength(SdID, j + 1);
+    SetLength(SdT, j + 1);
+    SetLength(SdR, j + 1);
+    SetLength(SdA, j + 1);
+    SetLength(SdN, j + 1);
+    SdID[j] := ID;
+    SdT[j] := T;
+    SdR[j] := StrToIntDef(MgJsonVal(Obj, 'range'), 0);
+    SdA[j] := StrToIntDef(MgJsonVal(Obj, 'radius'), 0);
+    SdN[j] := MgJsonVal(Obj, 'name');
+  end;
+end;
+
+// the row of this skill in skills.json (SdLoad first); -1 = not in the list
+function SdFind(ID: integer): integer;
+var j: integer;
+begin
+  result := -1;
+  SdLoad();
+  for j := 0 to Length(SdID) - 1 do
+    if SdID[j] = ID then begin
+      result := j;
+      exit;
+    end;
+end;
+
 // once at the start (RunFarm): Library\Nav\skills.json -> how every K mage skill is cast, its range, AoE
 // radius, name; the rows sorted by priority (the same priority keeps the order of the lines)
 procedure MgPrepare();
-var L: TStringList;
-  F, S, TN, Obj: string;
-  i, j, k, n, x, ID, T, p, q: integer;
+var TN: string;
+  i, j, k, n, x: integer;
   Found: boolean;
-  DbID, DbT, DbR, DbA: array of integer;
-  DbN: array of string;
 begin
   n := Length(MgID);
   SetLength(MgType, n);
@@ -6008,63 +6531,17 @@ begin
   SetLength(MgTold, n);
   SetLength(MgHold, n);
   MgPendK := -1;
-  SetLength(DbID, 0);
-  SetLength(DbT, 0);
-  SetLength(DbR, 0);
-  SetLength(DbA, 0);
-  SetLength(DbN, 0);
-  F := Script.Path + '..\Nav\' + MG_SKILL_FILE;
-  if FileExists(F) then begin
-    L := TStringList.Create;
-    L.LoadFromFile(F);
-    S := '';
-    for i := 0 to L.Count - 1 do S := S + L[i] + ' ';
-    L.Free;
-    // { ..., "skills": [ {"id": 1234, "type": "TARGET", "range": 600, "radius": 0, "name": "..."}, ... ] }
-    p := Pos('"skills"', S);
-    if p > 0 then S := Copy(S, p + 8, Length(S)) else S := '';
-    p := Pos('[', S);
-    if p > 0 then S := Copy(S, p + 1, Length(S)) else S := '';
-    while S <> '' do begin
-      p := Pos('{', S);
-      q := Pos(']', S);
-      if p <= 0 then break;
-      if (q > 0) and (q < p) then break;   // the end of the list
-      S := Copy(S, p + 1, Length(S));
-      q := Pos('}', S);
-      if q <= 0 then break;
-      Obj := Copy(S, 1, q - 1);
-      S := Copy(S, q + 1, Length(S));
-      ID := StrToIntDef(MgJsonVal(Obj, 'id'), 0);
-      if ID <= 0 then continue;
-      T := MgTypeOf(MgJsonVal(Obj, 'type'));
-      if T = 0 then T := MG_T_TARGET;
-      j := Length(DbID);
-      SetLength(DbID, j + 1);
-      SetLength(DbT, j + 1);
-      SetLength(DbR, j + 1);
-      SetLength(DbA, j + 1);
-      SetLength(DbN, j + 1);
-      DbID[j] := ID;
-      DbT[j] := T;
-      DbR[j] := StrToIntDef(MgJsonVal(Obj, 'range'), 0);
-      DbA[j] := StrToIntDef(MgJsonVal(Obj, 'radius'), 0);
-      DbN[j] := MgJsonVal(Obj, 'name');
-    end;
-  end else
-    Engine.Msg('[Mage]', 'No skill list ' + F + ' - every skill is cast at the target from ' +
-      IntToStr(MG_DEFAULT_RANGE), 128);
+  SdLoad();
   for k := 0 to n - 1 do begin
     Found := false;
-    for j := 0 to Length(DbID) - 1 do
-      if DbID[j] = MgID[k] then begin
-        MgType[k] := DbT[j];
-        MgRng[k] := DbR[j];
-        MgRad[k] := DbA[j];
-        MgName[k] := DbN[j];
-        Found := true;
-        break;
-      end;
+    j := SdFind(MgID[k]);
+    if j >= 0 then begin
+      MgType[k] := SdT[j];
+      MgRng[k] := SdR[j];
+      MgRad[k] := SdA[j];
+      MgName[k] := SdN[j];
+      Found := true;
+    end;
     if not Found then begin
       MgType[k] := MG_T_TARGET;
       MgRng[k] := MG_DEFAULT_RANGE;
@@ -6115,13 +6592,15 @@ begin
   SetLength(MgPullRng, Length(MgPull));
   for i := 0 to Length(MgPull) - 1 do begin
     MgPullRng[i] := 0;
-    for j := 0 to Length(DbID) - 1 do
-      if DbID[j] = MgPull[i] then MgPullRng[i] := DbR[j];
+    j := SdFind(MgPull[i]);
+    if j >= 0 then MgPullRng[i] := SdR[j];
     if MgPullRng[i] <= 0 then MgPullRng[i] := MG_DEFAULT_RANGE;
   end;
-  for i := 0 to Length(MbID) - 1 do    // the own buffs (K mage_buff): their names
-    for j := 0 to Length(DbID) - 1 do
-      if (DbID[j] = MbID[i]) and (DbN[j] <> '') then MbName[i] := DbN[j];
+  for i := 0 to Length(MbID) - 1 do begin   // the own buffs (K mage_buff): their names
+    j := SdFind(MbID[i]);
+    if j >= 0 then
+      if SdN[j] <> '' then MbName[i] := SdN[j];
+  end;
 end;
 
 // RunFarm, a mage: the pull skills go to the pull (Core\mob_pull.pas: every mob gets the first one ready
@@ -6261,6 +6740,7 @@ begin
       continue;
     end;
     if not MbDue(k) then continue;
+    if (k < Length(MbSpot)) and MbSpot[k] and (not SbAtSpot()) then continue;   // only at the farm spot: later
     if SpSkillLeft(MbID[k]) > 0 then continue;   // reuse: a later tick
     if MbCast(k) then result := true;
     if User.Dead or (PkCountAggro() > 0) then exit;
@@ -6277,8 +6757,9 @@ begin
     if S <> '' then S := S + ', ';
     S := S + MbName[k] + ' (' + IntToStr(MbID[k]);
     if MbBuff[k] <> MbID[k] then S := S + ', buff ' + IntToStr(MbBuff[k]);
-    if MbBefore[k] > 0 then S := S + ', ' + IntToStr(MbBefore[k]) + ' s before its end)'
-    else S := S + ', when gone)';
+    if MbBefore[k] > 0 then S := S + ', ' + IntToStr(MbBefore[k]) + ' s before its end'
+    else S := S + ', when gone';
+    if (k < Length(MbSpot)) and MbSpot[k] then S := S + ', only at the farm spot)' else S := S + ')';
   end;
   Engine.Msg('[Init]', 'Own buffs: ' + S + ' - cast with no mob on us (before a pull, between the rooms)', 0);
 end;
@@ -6324,7 +6805,7 @@ begin
   result := 0;
   R := MgAoeRadius();
   Reach := MgReach();
-  BestScore := -1;
+  BestScore := -999999;
   BestHP := MaxInt;
   CurScore := -1;
   for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
@@ -6334,6 +6815,7 @@ begin
     NY := NpcList(i).Y;
     if PkDist(NX, NY) > Reach then continue;
     if R > 0 then Score := MgCountAt(NX, NY, R) else Score := 1;
+    if PkChampsLast and PkIsChamp(i) then Score := Score - 1000;   // champs_last: the usual ones first
     HP := NpcList(i).CurHP;
     if NpcList(i).OID = CurOID then CurScore := Score;
     if (Score > BestScore) or ((Score = BestScore) and (HP < BestHP)) then begin
@@ -6511,6 +6993,189 @@ begin
       ', reuse left ' + IntToStr(BestLeft) + ' d=' + IntToStr(Round(D)));
   end;
   result := true;
+end;
+
+// ===================== Fight skills of melee / bow (AddFightSkill / K fight_skill + skills.json) =====================
+// Debuffs and the like pressed in the fight of melee / bow (a mage has its own K mage rows). Every tick of the fight
+// FsTick: the first row (the line order) that may go now - ready, not within its "at most every", the target has
+// not had it within its "same mob again after", the target within its cast range, enough mobs in its area - is sent
+// (DUseSkill) again every MgSpam() ms until it goes into reuse; meanwhile no attack order (a new packet replaces
+// the skill queued on the server). Sent MG_LOCK_MS and never in reuse (out of sight, MP...) -> held MG_FAIL_HOLD_MS
+
+// once in RunFarm: how every row is cast, its range / radius (skills.json); the rows told
+procedure FsPrepare();
+var k, j, n: integer;
+  S: string;
+begin
+  FsPendK := -1;
+  for k := 0 to 63 do begin
+    FsDebK[k] := -1;
+    FsDebOID[k] := 0;
+    FsDebAt[k] := 0;
+  end;
+  n := Length(FsID);
+  SetLength(FsType, n);
+  SetLength(FsRng, n);
+  SetLength(FsRad, n);
+  SetLength(FsName, n);
+  SetLength(FsLast, n);
+  SetLength(FsHold, n);
+  SetLength(FsTold, n);
+  if n = 0 then exit;
+  if MgOn() then begin
+    Engine.Msg('[Init]', 'Fight skills (K fight_skill) are for melee / bow - a mage uses its own skill rows: not used', 128);
+    exit;
+  end;
+  for k := 0 to n - 1 do begin
+    j := SdFind(FsID[k]);
+    if j >= 0 then begin
+      FsType[k] := SdT[j];
+      FsRng[k] := SdR[j];
+      FsRad[k] := SdA[j];
+      FsName[k] := SdN[j];
+    end else begin
+      FsType[k] := MG_T_TARGET;
+      FsRng[k] := MG_DEFAULT_RANGE;
+      FsRad[k] := 0;
+      FsName[k] := '';
+      Engine.Msg('[Init]', 'Fight skill ' + IntToStr(FsID[k]) + ' is not in ' + MG_SKILL_FILE + ' - cast at the target from ' +
+        IntToStr(MG_DEFAULT_RANGE), 128);
+    end;
+    if FsName[k] = '' then FsName[k] := 'skill ' + IntToStr(FsID[k]);
+    if ((FsType[k] = MG_T_TARGET) or (FsType[k] = MG_T_AOE)) and (FsRng[k] <= 0) then FsRng[k] := MG_DEFAULT_RANGE;
+    FsLast[k] := 0;
+    FsHold[k] := 0;
+    FsTold[k] := false;
+    S := IntToStr(k + 1) + '. ' + FsName[k] + ' (' + IntToStr(FsID[k]) + ')';
+    if FsType[k] = MG_T_AOE then S := S + ' AoE at the target, range ' + IntToStr(FsRng[k]) + ', radius ' + IntToStr(FsRad[k])
+    else if FsType[k] = MG_T_SELF_AOE then S := S + ' AoE round us, radius ' + IntToStr(FsRad[k])
+    else if FsType[k] = MG_T_SELF then S := S + ' on us'
+    else S := S + ' at the target, range ' + IntToStr(FsRng[k]);
+    if FsEvery[k] > 0 then S := S + '; at most every ' + IntToStr(FsEvery[k]) + ' ms' else S := S + '; whenever ready';
+    if (FsPerMob[k] > 0) and ((FsType[k] = MG_T_TARGET) or (FsType[k] = MG_T_AOE)) then
+      S := S + ', the same mob again after ' + IntToStr(FsPerMob[k]) + ' ms';
+    if FsMin[k] > 1 then S := S + ', ' + IntToStr(FsMin[k]) + '+ mobs in its area';
+    Engine.Msg('[Init]', 'Fight skill ' + S, 0);
+  end;
+end;
+
+// ms since row k went on this mob; huge if never
+function FsAge(k, OID: integer): cardinal;
+var i: integer;
+begin
+  result := $7FFFFFFF;
+  for i := 0 to 63 do
+    if (FsDebK[i] = k) and (FsDebOID[i] = OID) and (FsDebAt[i] > 0) then
+      if GetTickCount - FsDebAt[i] < result then result := GetTickCount - FsDebAt[i];
+end;
+
+procedure FsMark(k, OID: integer);
+begin
+  FsDebK[FsDebHead] := k;
+  FsDebOID[FsDebHead] := OID;
+  FsDebAt[FsDebHead] := GetTickCount;
+  FsDebHead := (FsDebHead + 1) mod 64;
+end;
+
+// a fight: the row sent in the last one (the fight ended / the target died before it was seen in reuse): in
+// reuse now -> it went then; the next one starts with none pending
+procedure FsReset();
+var k: integer;
+begin
+  k := FsPendK;
+  if (k >= 0) and (k < Length(FsID)) then
+    if SpSkillLeft(FsID[k]) > 0 then begin
+      FsLast[k] := FsPendAt;
+      FsMark(k, FsPendOID);
+    end;
+  FsPendK := -1;
+end;
+
+// row k may go now at the target OID standing at X, Y, D away from us; we stand at UX, UY
+function FsMayGo(k, OID, X, Y, UX, UY: integer; D: double): boolean;
+var T, n: integer;
+  AtT: boolean;
+begin
+  result := false;
+  if not HasSkill(FsID[k]) then begin  // this character has no such skill: never cast it
+    if not FsTold[k] then begin
+      Engine.Msg('[Fight]', 'No skill ' + FsName[k] + ' (' + IntToStr(FsID[k]) + ') on this character - fight skill skipped', 128);
+      FsTold[k] := true;
+    end;
+    exit;
+  end;
+  if GetTickCount < FsHold[k] then exit;   // sent again and again, never went
+  if (FsEvery[k] > 0) and (FsLast[k] <> 0) and (GetTickCount - FsLast[k] < cardinal(FsEvery[k])) then exit;
+  if SpSkillLeft(FsID[k]) > 0 then exit;   // reuse
+  T := FsType[k];
+  AtT := (T = MG_T_TARGET) or (T = MG_T_AOE);
+  if AtT then begin
+    if D > FsRng[k] then exit;         // the target is out of its cast range
+    if (FsPerMob[k] > 0) and (FsAge(k, OID) < cardinal(FsPerMob[k])) then exit;   // this mob had it lately
+  end;
+  if FsMin[k] > 1 then begin
+    if T = MG_T_AOE then n := MgCountAt(X, Y, FsRad[k])
+    else if (T = MG_T_SELF_AOE) and (FsRad[k] > 0) then n := MgCountAt(UX, UY, FsRad[k])
+    else n := PkCountFight();          // no area: the pack mobs on us
+    if n < FsMin[k] then exit;
+  end;
+  result := true;
+end;
+
+// one step of the fight at the target OID (our target in the game already). true = a fight skill is being sent:
+// no attack order this tick (it would replace the skill on the server)
+function FsTick(OID: integer): boolean;
+var k, Idx, X, Y, UX, UY: integer;
+  D: double;
+begin
+  result := false;
+  if Length(FsID) = 0 then exit;
+  if SkillList.Count = 0 then exit;    // the skill list is not loaded yet (just logged in)
+  k := FsPendK;
+  if (k >= 0) and (k < Length(FsID)) then begin
+    if SpSkillLeft(FsID[k]) > 0 then begin   // it went (its cast runs): its intervals count from now
+      FsLast[k] := GetTickCount;
+      FsMark(k, FsPendOID);
+      FsPendK := -1;
+      if DbgOn() then Dbg('[Fight]', 'fight skill ' + FsName[k] + ' went after ' + IntToStr(GetTickCount - FsPendAt) + ' ms');
+      exit;                            // the attack order again
+    end;
+    if GetTickCount - FsPendAt > MG_LOCK_MS then begin
+      FsHold[k] := GetTickCount + MG_FAIL_HOLD_MS;
+      FsPendK := -1;
+      if DbgOn() then Dbg('[Fight]', 'fight skill ' + FsName[k] + ' did not go (sent ' + IntToStr(MG_LOCK_MS) +
+        ' ms, no reuse) - held ' + IntToStr(MG_FAIL_HOLD_MS) + ' ms');
+      exit;
+    end;
+    result := true;
+    if GetTickCount - FsSentAt >= cardinal(MgSpam()) then begin
+      Engine.DUseSkill(FsID[k], false, false);
+      FsSentAt := GetTickCount;
+      FsPendOID := OID;                // our target now (the fight may have switched it)
+    end;
+    exit;
+  end;
+  if GetTickCount - FsLookAt < cardinal(MgSpam()) then exit;
+  FsLookAt := GetTickCount;
+  Idx := SpMobIdx(OID);
+  if Idx < 0 then exit;
+  X := NpcList(Idx).X;
+  Y := NpcList(Idx).Y;
+  D := PkDist(X, Y);
+  UX := User.X;
+  UY := User.Y;
+  for k := 0 to Length(FsID) - 1 do begin
+    if not FsMayGo(k, OID, X, Y, UX, UY, D) then continue;
+    Engine.DUseSkill(FsID[k], false, false);
+    FsSentAt := GetTickCount;
+    FsPendK := k;
+    FsPendOID := OID;
+    FsPendAt := GetTickCount;
+    if DbgOn() then Dbg('[Fight]', 'fight skill ' + FsName[k] + ' (' + IntToStr(FsID[k]) + ') at ' + IntToStr(OID) + ' d=' +
+      IntToStr(Round(D)) + ' - sent until it goes');
+    result := true;
+    exit;
+  end;
 end;
 
 // the pack fight of a mage (PkFight calls it when AddMageSkill is set). At the farm spot / corner we
@@ -6774,6 +7439,7 @@ begin
     D := PkDist(NX, NY);
     Seen := KtSees(NX, NY);
     if not Seen then D := D + 1E6;     // out of sight: only when no mob on us is in sight
+    if PkChampsLast and PkIsChamp(i) then D := D + 1E5;   // champs_last: the usual ones in sight first
     if D < Best then begin
       Best := D;
       result := NpcList(i).OID;
@@ -6949,6 +7615,7 @@ begin
   HidAt := 0;
   SeenLog := -1;
   PkCorpseSince := 0;
+  FsReset();                           // no fight skill pending from the last fight
   while (not User.Dead) and (not NeedReturn) and (not FarmPaused) and IsOnline() do begin
     DbgTick();
     if PkFightTick() then OID := 0;    // a cast / the weapon: our target is selected again below
@@ -7133,9 +7800,13 @@ begin
       end else if Hit then begin
         DoStep := true;
         if DbgOn() then Dbg('[Kite]', 'hit on ' + IntToStr(OID) + ' with no shot seen - stepping');
-      end else if Sees and ((SentAt = 0) or (GetTickCount - SentAt >= KT_RESEND_MS)) then begin
-        Engine.Attack(KT_TICK_MS);     // out of sight: no order (the game only says it cannot see it)
-        SentAt := GetTickCount;
+      end else if Sees then begin      // out of sight: no order (the game only says it cannot see it)
+        // a fight skill (debuff... K fight_skill) goes first: no attack order until it is cast
+        if FsTick(OID) then SentAt := 0
+        else if (SentAt = 0) or (GetTickCount - SentAt >= KT_RESEND_MS) then begin
+          Engine.Attack(KT_TICK_MS);
+          SentAt := GetTickCount;
+        end;
       end;
     end;
 
@@ -7163,6 +7834,7 @@ begin
     end;
     Delay(KT_TICK_MS);
   end;
+  FsReset();                           // a fight skill sent at the end: in reuse now = it went
   // an archer has no sweep: only if a mass sweep is set and this character has it
   if (not User.Dead) and (PkMassSweep > 0) and HasSkill(PkMassSweep) then PkFinalSweep();
 end;
@@ -7175,14 +7847,20 @@ var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, 
   R, SpoilN: integer;
   DbgAt: cardinal;
 begin
+  PkInFight := true;                   // SbAtSpot: a map with no spots - the spot buffs go in a fight
   if MgOn() then begin                 // a mage: skills, no auto attack / spoil
     PkMageFight();
+    PkInFight := false;
+    SbFightEnd();
     exit;
   end;
   if KtOn then begin                   // an archer (K kite): shot, a short step away, shot ...
     PkKiteFight();
+    PkInFight := false;
+    SbFightEnd();
     exit;
   end;
+  FsReset();                           // no fight skill pending from the last fight
   Dbg('[Fight]', 'start');
   PkDbgFight('[Fight]');
   DbgAt := 0;
@@ -7378,8 +8056,15 @@ begin
       continue;
     end;
 
+    // a fight skill (debuff... K fight_skill) goes first: no attack order until it is cast
+    if FsTick(OID) then begin
+      Delay(PK_TICK_MS);
+      continue;
+    end;
+
     Engine.Attack(PK_TICK_MS);
   end;
+  FsReset();                           // a fight skill sent at the end: in reuse now = it went
 
   if PkDaggerOn then begin
     Main := PkMainWeapon;
@@ -7388,6 +8073,8 @@ begin
     PkDaggerOn := false;
   end;
   if not User.Dead then PkFinalSweep();
+  PkInFight := false;
+  SbFightEnd();                        // "in the fight at the spot" / "few mobs on us" buffs off: full speed on
 end;
 
 // pick up the drop near us (not far from the corner)
@@ -7683,8 +8370,15 @@ begin
   end;
 end;
 
+// rooms: the mobs on us come along to the room we go to, no fight on the way - room_ignore_way, or the start (no
+// room farmed yet: never one by one first) - with our HP at 50 % at least
+function PkCarry(): boolean;
+begin
+  result := (PkIgnoreWay or (not PkRoomsBegun)) and (User.HP >= 50);
+end;
+
 // run to the room along the nav map, but only until we are in it (the pull starts at the entry, not
-// in its middle); something on us on the way -> stop here, the pull goes on from here
+// in its middle); something on us on the way -> stop here, the pull goes on from here (PkCarry: on with them)
 procedure PkRunIntoRoom(n: integer);
 var Started, BestAt: cardinal;
   AX, AY, UZ, TX, TY: integer;
@@ -7698,7 +8392,7 @@ begin
   BestAt := GetTickCount;
   NavStepReset();
   while (not AoeMustStop()) and (not PkAtRoom(n)) and
-        ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) do begin
+        ((PkCountAggro() = 0) or PkCarry()) do begin
     if GetTickCount - Started > MOVE_WAIT_MS then exit;
     PullTapRestore();
     if (Length(MgID) > 0) and PullHealTick() then begin   // a mage: our HP low -> a drain / heal first
@@ -7812,6 +8506,69 @@ begin
   if PkRoomSeq and (GetTickCount >= PkSeqWaitUntil) then PkSeqSelect();
 end;
 
+// rooms, the start: mobs on us and no room taken yet - a room for them at once (they come along, its pull takes
+// the rest of it), never one by one first: the pack room we are at (inside / at its farm spot), in order the first
+// of the round (the nearest), else the nearest pack room - not busy (players) / avoided. At a one by one room /
+// none: -1 (fight here)
+function PkStartRoom(): integer;
+var k, UX, UY: integer;
+  D, BestD: double;
+begin
+  result := -1;
+  for k := 0 to RoomCount() - 1 do
+    if (RoomPointCount(k) >= 3) and PkAtRoom(k) and (not RoomBusy(k)) then begin
+      if RoomMode(k) = FARM_SINGLE then exit;   // its mode is one by one: these are fought here
+      result := k;
+      break;
+    end;
+  if (result < 0) and PkRoomSeq then begin
+    if GetTickCount >= PkSeqWaitUntil then result := PkSeqSelect();   // the nearest first after the start
+    exit;
+  end;
+  if result < 0 then begin
+    BestD := 1E18;
+    UX := User.X;
+    UY := User.Y;
+    for k := 0 to RoomCount() - 1 do begin
+      if (RoomPointCount(k) < 3) or (RoomMode(k) = FARM_SINGLE) or RoomBusy(k) or RoomTaken(k) then continue;
+      D := RoomDist(k, UX, UY);
+      if D < BestD then begin
+        BestD := D;
+        result := k;
+      end;
+    end;
+  end;
+  if result < 0 then exit;
+  PkRoomSet(result);
+  PkRoomWaiting := false;
+  if PkRoomSeq then begin              // in order: the round goes on from this room
+    PkSeqStarted := true;
+    PkSeqNext := result;
+    PkSeqGoal := result;
+  end;
+end;
+
+// rooms, before the pull of room n: its farm spots are where the pull run (an AoE pull skill: Core\mob_pull.pas
+// MpSweep) may end - it takes the one that makes the whole way shortest (in, through the room, out to it: one run),
+// PkGather leads the pack there. A mage: none (it fights where the pull ended)
+procedure PkSweepEnds(n: integer);
+var k, SX, SY: integer;
+begin
+  PullSweepEndsClear();
+  PkSwN := 0;
+  PkSweepSpot := 0;
+  if MgOn() or (not PullAoeOn()) then exit;
+  for k := 0 to PkSpotN - 1 do begin
+    if PkSwN >= 8 then break;
+    if not PkSpotFor(k, n) then continue;
+    SX := PkSpotX[k];
+    SY := PkSpotY[k];
+    PullSweepEndAdd(SX, SY);
+    PkSwSpot[PkSwN] := k;
+    Inc(PkSwN);
+  end;
+end;
+
 // FARM_ROOMS: the room with the most mobs expected (with its minimum), farmed empty by its own mode,
 // then the next; nowhere enough -> wait in the best one (a better one comes up -> go there)
 // mobs "on us" by their target, but none of them can be fought: farther than the fight range (behind
@@ -7867,7 +8624,9 @@ begin
 end;
 
 procedure PkRoomTick();
-var n, cur, UX, UY, UZ, AX, AY, k: integer;
+const
+  PK_ROOM_EMPTY_S = 15;                // the pull found nothing to take in the room: set aside this long
+var n, cur, UX, UY, UZ, AX, AY, k, Got: integer;
   MS: string;
   Near: boolean;
 begin
@@ -7879,6 +8638,13 @@ begin
   end;
   if PkCountAggro() > 0 then begin
     cur := PkRoomSel - 1;
+    // the start (no room farmed yet, none taken): a room for them at once - never one by one first
+    if (cur < 0) and (not PkRoomsBegun) then begin
+      cur := PkStartRoom();
+      if cur >= 0 then
+        Engine.Msg('[Room]', 'Start: ' + IntToStr(PkCountAggro()) + ' on us - to room ' + RoomName(cur) +
+          ' at once, they come along', 0);
+    end;
     // a fight began in a room we only ran through (another room was the goal): this room is ours now -
     // not the room we have just done (a mob that came up there after its pack comes along to the next)
     UX := User.X;
@@ -7905,9 +8671,12 @@ begin
       Near := PkAtRoom(cur) or (RoomDist(cur, UX, UY) <= PK_ROOM_ENTRY) or (PkDist(AX, AY) < 1500);
     end;
     if Near then PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us at room ' + RoomName(cur) + ' - they come along, pulling the room');
-    if (not Near) and PkIgnoreWay and (cur >= 0) and (User.HP >= 50) and (GetTickCount >= PkSeqWaitUntil) then begin
-      // not the room we go to: they follow us and join the pull there
-      PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us on the way - ignoring them, running on to room ' + RoomName(cur));
+    if (not Near) and PkCarry() and (cur >= 0) and (GetTickCount >= PkSeqWaitUntil) then begin
+      // not the room we go to: they follow us and join the pull there (room_ignore_way / the start)
+      if PkRoomsBegun then
+        PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us on the way - ignoring them, running on to room ' + RoomName(cur))
+      else
+        PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us at the start - they come along to room ' + RoomName(cur));
       Near := true;
     end;
     if not Near then begin
@@ -7970,7 +8739,7 @@ begin
     Delay(100);
     exit;
   end;
-  if (not PkAtRoom(cur)) and ((PkCountAggro() = 0) or (PkIgnoreWay and (User.HP >= 50))) then begin
+  if (not PkAtRoom(cur)) and ((PkCountAggro() = 0) or PkCarry()) then begin
     AX := RoomAnchorX(cur);
     AY := RoomAnchorY(cur);
     PkState('rooms: running to room ' + RoomName(cur) + ' (' + IntToStr(AX) + ', ' + IntToStr(AY) + ')');
@@ -8013,6 +8782,7 @@ begin
     end;
   end;
   // farm the room by its own mode
+  PkRoomsBegun := true;                // from now on mobs on us away from the room: room_ignore_way decides
   n := RoomMode(cur);
   if n = FARM_SINGLE then MS := 'one by one' else if n = FARM_AUTO then MS := 'auto' else MS := 'pack';
   PkState('rooms: farming room ' + RoomName(cur) + ' (' + MS + '): ' + IntToStr(RoomFree(cur)) + ' free');
@@ -8028,18 +8798,35 @@ begin
   end;
   if MgBuffTick() then                 // own buffs (K mage_buff) before the pull: no mob on us yet
     if AoeMustStop() or User.Dead then exit;
+  if (Length(SelfBuffSkill) > 0) and (PkCountAggro() = 0) then begin
+    SelfBuffTick();                    // own buffs before the pull (the "only at the farm spot" ones if we stand at one)
+    if AoeMustStop() or User.Dead then exit;
+  end;
   k := RoomFree(cur) + PkCountAggro();
   if k < 1 then k := 1;
   PkState('rooms: pulling room ' + RoomName(cur) + ' full: ' + IntToStr(PkCountAggro()) + ' on us, ' +
     IntToStr(RoomFree(cur)) + ' free -> pack ' + IntToStr(k));
   PullSetPackSize(k);
   PullSetPackLive(PkRoomRecount);      // respawn meanwhile: taken too, until we run to the spot
-  PullRun();
+  PkSweepEnds(cur);                    // an AoE pull skill: the run ends at the farm spot of the room
+  Got := PullRun();
+  AX := PullSweepEndPicked();
+  if (AX >= 0) and (AX < PkSwN) then PkSweepSpot := PkSwSpot[AX] + 1;
   PullSetPackLive(false);
   PullSetPackSize(PkPackSize);
   PkTapRestore();
-  if AoeMustStop() then exit;
-  if PkCountAggro() > 0 then begin
+  if AoeMustStop() or User.Dead then exit;
+  // the pull found nothing it may take (the room counted a mob it cannot: another floor, skipped, passive...) and
+  // nobody is on us: the room is set aside for a while, on to the next - no standing there pulling "0/1" again
+  if (Got = 0) and (PkCountAggro() = 0) and (PullCountOurs() = 0) then begin
+    Engine.Msg('[Room]', 'Room ' + RoomName(cur) + ': the pull found nothing to take (the room counts ' +
+      IntToStr(RoomFree(cur)) + ' free) - set aside for ' + IntToStr(PK_ROOM_EMPTY_S) + ' s', 0);
+    RoomAvoid(cur, PK_ROOM_EMPTY_S);
+    PkRoomDone(cur, 'nothing the pull could take');
+    exit;
+  end;
+  // on us, or provoked by our AoE a moment ago (the bot shows their target on us a bit later)
+  if (PkCountAggro() > 0) or (PullCountOurs() > 0) then begin
     if MgOn() then PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us - the mage fights them right here (room ' + RoomName(cur) + ')')
     else PkState('rooms: ' + IntToStr(PkCountAggro()) + ' on us - to the farm spot of room ' + RoomName(cur) + ', fight there');
     PkGather();
@@ -8132,20 +8919,24 @@ begin
     exit;
   end;
   MgBuffTick();                      // own buffs (K mage_buff) before the pull: no mob on us yet
+  if (Length(SelfBuffSkill) > 0) and (PkCountAggro() = 0) then
+    SelfBuffTick();                  // own buffs before the pull (the "only at the farm spot" ones if we stand at one)
   if AoeMustStop() or User.Dead then exit;
   PkState('pack: pulling (pack ' + IntToStr(PkPackSize) + ')');
   PullSetStop(AoeMustStop());        // one thread: nothing else changes it during the pull
+  PullSweepEndsClear();              // (an AoE pull skill: the run ends where its last area is)
+  PkSweepSpot := 0;
   PullRun();                         // the pull: Core\mob_pull.pas
   PkTapRestore();
   if AoeMustStop() then exit;
-  if PkCountAggro() = 0 then begin   // nothing to pull and nobody on us
+  if (PkCountAggro() = 0) and (PullCountOurs() = 0) then begin   // nothing to pull and nobody on us
     PkState('pack: nothing to pull - idle at the safe point / patrol');
     PkIdle();
     Delay(300);
     exit;
   end;
-  if PkCountAggro() > 0 then begin
-    PkState('pack: ' + IntToStr(PkCountAggro()) + ' on us - to the corner, fight');
+  if (PkCountAggro() > 0) or (PullCountOurs() > 0) then begin
+    PkState('pack: ' + IntToStr(PullCountOurs()) + ' on us - to the corner, fight');
     PkGather();
     PkFight();
     PkPickup();
@@ -8523,6 +9314,83 @@ begin
     '; AoE radius ' + IntToStr(MgAoeRadius()));
 end;
 
+// RunFarm (after the mage set-up): the pull skills (AddPullSkill / K pull_skill) go to the pull by skills.json -
+// AoE at the target / round us -> Core\mob_pull.pas PullAddAoeSkill (the pull is one planned run pressing it at
+// each area of mobs, at most every its ms); at the target -> a tap skill: every mob gets it from a bit inside its
+// cast range, no body pull (after the mage pull skills if any); on us -> not a pull skill
+procedure PsSetup();
+var k, j, T, R, Rad: integer;
+  Nm, S: string;
+  Taps: boolean;
+begin
+  if Length(PsID) = 0 then exit;
+  S := '';
+  Taps := false;
+  for k := 0 to Length(PsID) - 1 do begin
+    j := SdFind(PsID[k]);
+    if j >= 0 then begin
+      T := SdT[j];
+      R := SdR[j];
+      Rad := SdA[j];
+      Nm := SdN[j];
+    end else begin
+      T := MG_T_TARGET;
+      R := 0;
+      Rad := 0;
+      Nm := '';
+      Engine.Msg('[Init]', 'Pull skill ' + IntToStr(PsID[k]) + ' is not in ' + MG_SKILL_FILE + ' - taken as a skill at the target from ' +
+        IntToStr(MG_DEFAULT_RANGE), 128);
+    end;
+    if Nm = '' then Nm := 'skill ' + IntToStr(PsID[k]);
+    Nm := Nm + ' (' + IntToStr(PsID[k]) + ')';
+    if R <= 0 then R := MG_DEFAULT_RANGE;
+    if (T = MG_T_AOE) or (T = MG_T_SELF_AOE) then begin
+      if Rad <= 0 then begin
+        Engine.Msg('[Init]', 'Pull skill ' + Nm + ': no AoE radius in ' + MG_SKILL_FILE + ' - not used', 128);
+        continue;
+      end;
+      PullAddAoeSkill(PsID[k], T = MG_T_AOE, R, Rad, PsMin[k], PsEvery[k]);
+      if S <> '' then S := S + '; ';
+      if T = MG_T_AOE then S := S + Nm + ' AoE at a mob within ' + IntToStr(R)
+      else S := S + Nm + ' AoE round us';
+      S := S + ', radius ' + IntToStr(Rad);
+      if PsEvery[k] > 0 then S := S + ', at most every ' + IntToStr(PsEvery[k]) + ' ms';
+    end else if T = MG_T_TARGET then begin
+      PullAddTapSkill(PsID[k], R * 9 div 10);
+      Taps := true;
+      if S <> '' then S := S + '; ';
+      S := S + Nm + ' at every mob from ' + IntToStr(R * 9 div 10);
+    end else
+      Engine.Msg('[Init]', 'Pull skill ' + Nm + ' is cast on us (skills.json) - not a pull skill, not used', 128);
+  end;
+  if Taps then SetPackTapAlways(true);  // every mob gets a pull skill from its range: no body pull
+  if S <> '' then Engine.Msg('[Init]', 'Pull skills: ' + S, 0);
+  if PullAoeOn() then
+    Engine.Msg('[Init]', 'Pull with an AoE skill: one run planned at the start of each pull - the mobs in areas of the skill, ' +
+      'the shortest way through them to the farm spot, pressed on the run at each area, then led to the spot and killed', 0);
+end;
+
+// RunFarm: the own buffs that are not simply kept on us, told - only at the farm spot, in the fight there (off after
+// it), with few mobs on us; toggles
+procedure SbSpotInfo();
+var i, W: integer;
+  S: string;
+begin
+  S := '';
+  for i := 0 to Length(SelfBuffSkill) - 1 do begin
+    W := SbWhen(i);
+    if (W = 0) and (not SbIsToggle(i)) then continue;
+    if S <> '' then S := S + '; ';
+    S := S + IntToStr(SelfBuffSkill[i]);
+    if SbIsToggle(i) then S := S + ' (toggle)';
+    if W = 1 then S := S + ' only at the farm spot'
+    else if W = 2 then S := S + ' in the fight at the spot, off after it'
+    else if W = 3 then S := S + ' in a fight with 1..' + IntToStr(SelfBuffMax[i]) + ' mobs on us, off with more'
+    else S := S + ' kept on';
+  end;
+  if S <> '' then Engine.Msg('[Init]', 'Own buffs: ' + S, 0);
+end;
+
 procedure RunFarm();
 begin
   Engine.Msg('[Init]', 'Spot farm started, zone ' + ZoneName, 128);
@@ -8535,6 +9403,7 @@ begin
     Engine.Msg('[Init]', 'Buff: default ' + IntToStr(BuffID) + ' via the buffer', 128);
   end;
   if not SelfBuffSet then AddSelfBuff(DEFAULT_SELF_BUFF, 0);
+  if not PkChampsLastSet then PkChampsLast := true;   // the usual mobs first, the champions after them
   if not DeathStopSet then DeathStop := true;   // died and up in town: the script stops
   if not PkPauseMinSet then PkPauseMin := DEFAULT_ROOM_PAUSE_MIN;
   if not PkPauseMaxSet then PkPauseMax := DEFAULT_ROOM_PAUSE_MAX;
@@ -8575,6 +9444,11 @@ begin
         ', the pull: running past them - no auto attack, no spoil', 0);
     MgHealSetup();                     // drains / heals ("our HP below") while pulling and running too
   end;
+  FsPrepare();                         // fight skills of melee / bow (K fight_skill): skills.json, told
+  PsSetup();                           // pull skills (K pull_skill): AoE ones / at every mob - after the mage pull
+  SbSpotInfo();
+  if PkChampsLast and (not PkSkipChamps) then
+    Engine.Msg('[Init]', 'Fight order: the usual mobs first, the champions after them (champs_last)', 0);
   if KtOn and MgOn() then
     Engine.Msg('[Init]', 'Bow kite is not used: the mage skills are set (the mage fight wins)', 128)
   else if KtOn then begin

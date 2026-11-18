@@ -22,6 +22,12 @@ uses SysUtils;
 procedure ChatMenuStart(MenuName: string);     // packet hooks on, outgoing chat goes through us
 procedure ChatMenuWords(Words: string);        // words that are commands without "!" ('r p u s')
 procedure ChatMenuOnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+// the same, split for a script whose main loop builds strings: the hook only copies the chat packet as numbers
+// (PaxScript strings made in two threads at once crash the script: "Access violation ... read of address 4"),
+// the main loop reads it and sends the chat on (ChatMenuPoll, every tick, before ChatCommand):
+//   procedure OnCliPacket(...); begin ChatMenuOnCliPacketRaw(ID1, ID2, Data, Size); end;
+procedure ChatMenuOnCliPacketRaw(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+procedure ChatMenuPoll();
 procedure ChatSay(Text: string);               // a fake party message from MenuName (only we see it)
 procedure ChatSayFrom(Name, Text: string);     // a fake party message from Name - no menu needed for it
 function ChatCommand(): string;                // next command typed (lower case, no "!"); '' = none
@@ -31,6 +37,8 @@ implementation
 const
   CM_PARTY = 3;               // chat type: party
   CM_QUEUE = 16;
+  CM_RAW_N = 8;               // ChatMenuOnCliPacketRaw: chat packets waiting for the main loop ...
+  CM_RAW_B = 640;             // ... bytes of each (a chat packet is far shorter)
 
 var
   CmName: string;
@@ -38,6 +46,9 @@ var
   CmQ: array[0..15] of string;
   CmHead, CmTail: integer;
   CmNext: integer;            // offset after the last string read (no var params)
+  CmRawLen: array[0..7] of integer;        // ChatMenuOnCliPacketRaw: the chat packets as numbers
+  CmRawByte: array[0..5119] of integer;    // packet i: CmRawByte[i * CM_RAW_B + b]
+  CmRawHead, CmRawTail: integer;
 
 function CmByte(Data: Pointer; Ofs: integer): integer;
 var P: Pointer;
@@ -151,6 +162,58 @@ begin
     end;
   end;
   Engine.SendToServer('49' + CmHex(Data, Size));      // not ours: out as it was
+end;
+
+// the hook (the packet thread): the outgoing chat packet copied as numbers, nothing else (no strings here)
+procedure ChatMenuOnCliPacketRaw(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var i, n, b: integer;
+  P: Pointer;
+begin
+  if ID1 <> $49 then exit;
+  if CmRawHead - CmRawTail >= CM_RAW_N then exit;    // 8 waiting already: this one is lost (never so fast by hand)
+  n := Size;
+  if n > CM_RAW_B then exit;                         // not a chat packet we can hold: lost
+  i := CmRawHead mod CM_RAW_N;
+  for b := 0 to n - 1 do begin
+    P := Data;
+    Inc(Cardinal(P), b);
+    CmRawByte[i * CM_RAW_B + b] := PByte(P)^;
+  end;
+  CmRawLen[i] := n;
+  CmRawHead := CmRawHead + 1;
+end;
+
+// the main loop: the chat packets the hook took - a command is kept, the rest goes out as it was
+procedure ChatMenuPoll();
+var i, n, b, c, p, T, Base: integer;
+  Text, Low, H: string;
+begin
+  while CmRawTail < CmRawHead do begin
+    i := CmRawTail mod CM_RAW_N;
+    n := CmRawLen[i];
+    Base := i * CM_RAW_B;
+    Text := '';                                      // UTF-16 text up to 0000
+    p := 0;
+    while p + 1 < n do begin
+      c := CmRawByte[Base + p] or (CmRawByte[Base + p + 1] shl 8);
+      p := p + 2;
+      if c = 0 then break;
+      Text := Text + Chr(c);
+    end;
+    T := -1;                                         // the chat type after it
+    if p + 3 < n then
+      T := CmRawByte[Base + p] or (CmRawByte[Base + p + 1] shl 8) or (CmRawByte[Base + p + 2] shl 16) or
+           (CmRawByte[Base + p + 3] shl 24);
+    Low := LowerCase(Trim(Text));
+    if (T = CM_PARTY) and (Length(Low) >= 2) and (Low[1] = '!') then CmPush(Trim(Copy(Low, 2, Length(Low))))
+    else if (T = CM_PARTY) and (Low <> '') and (Pos(' ' + Low + ' ', CmWords) > 0) then CmPush(Low)
+    else begin
+      H := '';
+      for b := 0 to n - 1 do H := H + IntToHex(CmRawByte[Base + b], 2);
+      Engine.SendToServer('49' + H);                 // not ours: out as it was
+    end;
+    CmRawTail := CmRawTail + 1;
+  end;
 end;
 
 end.

@@ -1,0 +1,770 @@
+uses SysUtils, Classes, ChatMenu in '..\Scripts\Core\chat_menu.pas';
+
+// =============================================================================
+// Big target v8: the player you target in the game gets ANOTHER MODEL (a transformation: a pig, Zaken, a dragon...)
+// and, if the client draws it, a bigger body - in your client only (nobody else sees it, the server is not told).
+//
+// How: the server describes every player to the client in CharInfo (31). Near its end stand the transformation
+// he is in (the model the client draws instead of him; 0 = his own) and the list of abnormal visual effects on him
+// (stun, root, BIG_BODY 17...). The script keeps the last CharInfo of every player around and, for the one you
+// target, hands the client a copy with the transformation and the effects we want, as if the server sent it - the
+// same packet the server sends when a player really transforms. Another target -> the old one gets his real
+// CharInfo back. A new CharInfo of him from the server (a buff, gear) -> changed again at once.
+// The copy gets the player's position now (from the bot), not the old one of the kept packet.
+//
+// Two ways to hand the copy over (!re switches):
+//   update  (the default) only the new CharInfo - the client updates the player in place, the target stays
+//   rebuild the player is taken off the screen first (DeleteObject 08: OID + 1 byte, as this server sends it) and
+//           built anew from the copy; he was the target -> deselected and selected again (a plain select, not a
+//           second click on him - that would run to him)
+//
+// A player whose CharInfo did not come since the start (around before it) cannot be changed: walk away and back.
+// The players that left the sight (the server's DeleteObject) are not sent again (no ghosts).
+//
+// NOT used: the "effects changed" update FE:158 (ExUserInfoAbnormalVisualEffect) with the target's OID - the client
+// applies it to OUR character whatever OID it says (v5).
+//
+// The end of CharInfo on this server (protocol 196, checked on 45 real packets), C = where the effect count stands:
+//   C-34 clan reputation | C-30 the transformation (model) | C-26 agathion | C-22 1 byte |
+//   C-21 curCp maxHp curHp maxMp curMp (5 x 4 bytes) | C-1 1 byte | C the effect count (4 bytes) | the effects (2 bytes
+//   each) | 3 bytes (true hero 0/100, hair accessory 0/1, ability points)
+// C is found from the end of the packet (see ListAt); not found -> the packet is left alone.
+//
+// The SNIFF (on at the start, !sniff switches): every packet the server sends to the client and the client to the
+// server goes into the log (its number, size, the first bytes) - go where nobody is, start the script, let a player
+// come into sight, target him: the log shows how the server brings him and what we sent.
+//
+// Commands in the PARTY chat (#!tr 104 ...; only you see the answers):
+//   !tr N      the model of transformation N on the target (!tr alone: a list); !tr 0 - his own model
+//   !big       the body effect (17)   !head  the head (14)   !both  both   !ave N M  any effects   !ave 0  none
+//   !re        update <-> rebuild (see above)
+//   !all       every player in sight changed, not only the target (a test: no targeting needed); again - off
+//   !sniff     the sniff log on / off
+//   !hide      a check that our packets reach the client: the target vanishes for 3 s and comes back
+//   !off       nothing changed (every changed player back as the server sent him)      !on   on again
+//   !dump      the CharInfo of your target into the log
+// Log: Library\Logs\big_target_<time>.log
+// =============================================================================
+
+const
+  RING_N      = 64;         // server packets kept between two looks of the main loop
+  RING_B      = 1024;       // bytes of a packet kept (a CharInfo is ~340-400)
+  CRING_N     = 32;         // client packets kept (the sniff only)
+  CRING_B     = 256;
+  SNIFF_B     = 400;        // bytes of any other packet kept for the sniff log
+  CACHE_N     = 160;        // players whose last CharInfo is kept
+  TICK_MS     = 30;
+  LOG_MAX     = 6000;       // lines in the log at most
+  SAVE_MS     = 2000;       // the log written this often
+  MAX_AVE     = 64;         // more effects than this: not the list (the packet is left alone)
+  TAIL_B      = 3;          // bytes after the list: true hero, hair accessory, ability points
+  TR_BACK     = 30;         // the transformation stands this many bytes before the effect count
+  DEL_QUIET_MS = 1500;      // a DeleteObject of a player we took off ourselves this recently: ours, not the server's
+
+function RdB(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+var
+  // the server ring: the packet hook writes numbers only, the main loop does the rest
+  RgSz, RgLen, RgId1, RgId2: array[0..63] of integer;
+  RgByte: array[0..65535] of integer;       // packet i: RgByte[i * RING_B + b]
+  RgHead, RgTail, RgLost: integer;
+  // the client ring (the sniff)
+  CgSz, CgLen, CgId1, CgId2: array[0..31] of integer;
+  CgByte: array[0..8191] of integer;        // packet i: CgByte[i * CRING_B + b]
+  CgHead, CgTail, CgLost: integer;
+  // the players: their last CharInfo (without its opcode) as the server sent it
+  CaOID, CaLen: array[0..159] of integer;
+  CaByte: array[0..163839] of integer;      // player k: CaByte[k * RING_B + b]
+  CaAt, CaDelAt: array[0..159] of cardinal;
+  CaSent: array[0..159] of boolean;          // our changed copy is on him now
+  CaGone: array[0..159] of boolean;          // the server took him off the screen (out of sight)
+  CaMine: array[0..159] of string;           // our last copy of him (it coming back is not his)
+  // what to change
+  AveIDs: array[0..15] of integer;
+  AveN: integer;
+  TrId: integer;                             // the model (transformation) put on; 0 = his own
+  IsOn, AllOn, Rebuild, SniffOn: boolean;
+  CurOID: integer;                           // the target changed now (0 none)
+  GuardUntil: cardinal;                      // our own deselect / reselect of the target: target changes ignored
+  ToldOID: integer;                          // "no CharInfo of him yet" said for this one
+  MyOID: integer;
+  BadN: integer;                             // CharInfo packets whose list was not found (told now and then)
+  PX, PY, PZ: integer;                       // LivePos
+  HideOID: integer;                          // !hide: this player taken off the screen ...
+  HideAt: cardinal;                          // ... and brought back then
+  // the log
+  LogL: TStringList;
+  LogPath: string;
+  LogDirty, LogFull: boolean;
+  LostSaid: integer;
+
+procedure Lg(S: string);
+begin
+  if LogL.Count >= LOG_MAX then begin
+    if not LogFull then begin
+      LogFull := true;
+      LogL.Add('... the log is full (' + IntToStr(LOG_MAX) + ' lines) - restart the script for a new one');
+      LogDirty := true;
+    end;
+    exit;
+  end;
+  LogL.Add(FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
+  LogDirty := true;
+end;
+
+procedure Say(S: string);
+begin
+  ChatSay(S);
+  Lg('SAY ' + S);
+end;
+
+// ===================== the hooks: numbers only =====================
+// (strings made in the packet thread while the main loop makes its own crash the script)
+
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var i, n, b: integer;
+begin
+  if (ID1 <> $31) and (ID1 <> $08) and (not SniffOn) then exit;   // CharInfo, DeleteObject; all with the sniff
+  if RgHead - RgTail >= RING_N then begin    // the main loop is behind: this one is lost
+    RgLost := RgLost + 1;
+    exit;
+  end;
+  i := RgHead mod RING_N;
+  RgId1[i] := ID1;
+  RgId2[i] := ID2;
+  RgSz[i] := Size;
+  n := Size;
+  if (ID1 <> $31) and (n > SNIFF_B) then n := SNIFF_B;
+  if n > RING_B then n := RING_B;
+  for b := 0 to n - 1 do RgByte[i * RING_B + b] := RdB(Data, b);
+  RgLen[i] := n;
+  RgHead := RgHead + 1;
+end;
+
+// the party chat commands: the chat packet copied as numbers; ChatMenuPoll in the main loop reads it, sends it on
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var i, n, b: integer;
+begin
+  if ID1 = $49 then ChatMenuOnCliPacketRaw(ID1, ID2, Data, Size);
+  if not SniffOn then exit;
+  if CgHead - CgTail >= CRING_N then begin
+    CgLost := CgLost + 1;
+    exit;
+  end;
+  i := CgHead mod CRING_N;
+  CgId1[i] := ID1;
+  CgId2[i] := ID2;
+  CgSz[i] := Size;
+  n := Size;
+  if n > CRING_B then n := CRING_B;
+  for b := 0 to n - 1 do CgByte[i * CRING_B + b] := RdB(Data, b);
+  CgLen[i] := n;
+  CgHead := CgHead + 1;
+end;
+
+// ===================== a kept CharInfo, read as numbers =====================
+
+function CB(k, b: integer): integer;
+begin
+  result := CaByte[k * RING_B + b];
+end;
+
+function CI(k, b: integer): integer;
+begin
+  result := CB(k, b) or (CB(k, b + 1) shl 8) or (CB(k, b + 2) shl 16) or (CB(k, b + 3) shl 24);
+end;
+
+function CW(k, b: integer): integer;
+begin
+  result := CB(k, b) or (CB(k, b + 1) shl 8);
+end;
+
+function HexW(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2);
+end;
+
+function HexI(V: integer): string;
+begin
+  result := HexW(V) + HexW(V shr 16);
+end;
+
+// bytes A..B-1 of player k as hex
+function HexPart(k, A, B: integer): string;
+var j: integer;
+begin
+  result := '';
+  for j := A to B - 1 do result := result + IntToHex(CB(k, j), 2);
+end;
+
+// where the effect count of player k stands: from the end - the TAIL_B last bytes (true hero 0 / 100, hair
+// accessory 0 / 1, ...), before them N effects (1..30000 each), before them the count N; right before it 1 byte and
+// the 5 CP / HP / MP numbers (each 0..1000000; NOT cur <= max: this server breaks that). Exactly one such place ->
+// it; none / more than one -> -1 (the packet is left alone). Checked on 45 real packets
+function ListAt(k: integer): integer;
+var N, C, j, V, Found, L: integer;
+  Ok: boolean;
+begin
+  result := -1;
+  Found := 0;
+  L := CaLen[k];
+  if L < 60 then exit;
+  if (CB(k, L - 3) <> 0) and (CB(k, L - 3) <> 100) then exit;
+  if CB(k, L - 2) > 1 then exit;
+  for N := 0 to MAX_AVE do begin
+    C := CaLen[k] - TAIL_B - N * 2 - 4;
+    if C < 40 then break;
+    if CI(k, C) <> N then continue;
+    Ok := true;
+    for j := 0 to N - 1 do begin
+      V := CW(k, C + 4 + j * 2);
+      if (V < 1) or (V > 30000) then Ok := false;
+    end;
+    if not Ok then continue;
+    for j := 0 to 4 do begin                         // curCp maxHp curHp maxMp curMp: plain numbers
+      V := CI(k, C - 21 + j * 4);
+      if (V < 0) or (V > 1000000) then Ok := false;
+    end;
+    if not Ok then continue;
+    Found := Found + 1;
+    result := C;
+  end;
+  if Found <> 1 then result := -1;
+end;
+
+// ===================== the players =====================
+
+function CacheIdx(OID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  for k := 0 to CACHE_N - 1 do
+    if CaOID[k] = OID then begin
+      result := k;
+      exit;
+    end;
+end;
+
+// the slot for a player: his own, a free one, else the one not seen for the longest (never the target)
+function CacheSlot(OID: integer): integer;
+var k: integer;
+  Old: cardinal;
+begin
+  result := CacheIdx(OID);
+  if result >= 0 then exit;
+  result := 0;
+  Old := $FFFFFFFF;
+  for k := 0 to CACHE_N - 1 do begin
+    if CaOID[k] = 0 then begin
+      result := k;
+      exit;
+    end;
+    if (CaAt[k] < Old) and (CaOID[k] <> CurOID) then begin
+      Old := CaAt[k];
+      result := k;
+    end;
+  end;
+end;
+
+function TargetNow(): integer;
+var T: TL2Live;
+begin
+  result := 0;
+  T := User.Target;
+  if T <> nil then result := T.OID;
+end;
+
+// where the player OID is now (the bot's list) -> PX PY PZ; false: not in the list
+function LivePos(OID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      PX := CharList(i).X;
+      PY := CharList(i).Y;
+      PZ := CharList(i).Z;
+      result := true;
+      exit;
+    end;
+end;
+
+// the first 13 bytes of player k's CharInfo (a byte, x y z) with his position now when the bot knows it
+function HeadHex(k: integer): string;
+begin
+  if LivePos(CaOID[k]) then result := HexPart(k, 0, 1) + HexI(PX) + HexI(PY) + HexI(PZ)
+  else result := HexPart(k, 0, 13);
+end;
+
+// the CharInfo of player k as hex: Changed - with our model and effects ('' = its list not found / nothing to
+// change), else his own (the position made now in both)
+function Built(k: integer; Changed: boolean): string;
+var C, N, i, j, Add, Tr, Want: integer;
+  Extra: string;
+  Have: boolean;
+begin
+  result := '';
+  if not Changed then begin
+    result := HeadHex(k) + HexPart(k, 13, CaLen[k]);
+    exit;
+  end;
+  C := ListAt(k);
+  if C < 0 then exit;
+  N := CI(k, C);
+  Extra := '';
+  Add := 0;
+  for i := 0 to AveN - 1 do begin
+    Have := false;
+    for j := 0 to N - 1 do
+      if CW(k, C + 4 + j * 2) = AveIDs[i] then Have := true;
+    if Have then continue;
+    Extra := Extra + HexW(AveIDs[i]);
+    Add := Add + 1;
+  end;
+  Tr := CI(k, C - TR_BACK);
+  Want := Tr;
+  if TrId > 0 then Want := TrId;
+  if (Add = 0) and (Want = Tr) then exit;
+  result := HeadHex(k) + HexPart(k, 13, C - TR_BACK) + HexI(Want) + HexPart(k, C - TR_BACK + 4, C) + HexI(N + Add) +
+    HexPart(k, C + 4, C + 4 + N * 2) + Extra + HexPart(k, C + 4 + N * 2, CaLen[k]);
+end;
+
+// a packet to the client as if from the server (the sniff log shows it too)
+procedure ToClient(H: string);
+begin
+  Engine.SendToClient(H);
+  if SniffOn then Lg('OUT ' + H);
+end;
+
+// the client gets player k as we want him: our copy (Big) or his real one
+procedure Show(k: integer; Big: boolean);
+var P: string;
+  Was, B: boolean;
+begin
+  if (k < 0) or (CaLen[k] = 0) or CaGone[k] then exit;
+  B := Big;
+  P := '';
+  if B then begin
+    P := Built(k, true);
+    if P = '' then begin
+      Lg('player ' + IntToStr(CaOID[k]) + ': nothing to change (no model set, the effects on him already) or the ' +
+        'list not found (at ' + IntToStr(ListAt(k)) + ', len ' + IntToStr(CaLen[k]) + ')');
+      if not CaSent[k] then exit;
+      B := false;                                    // he has our old copy: his own back
+    end;
+  end;
+  if not B then begin
+    if not CaSent[k] then exit;
+    P := Built(k, false);
+  end;
+  Was := TargetNow() = CaOID[k];
+  CaMine[k] := P;
+  if Rebuild then begin
+    CaDelAt[k] := GetTickCount;
+    GuardUntil := GetTickCount + 1500;               // our own deselect / reselect: not a new target
+    ToClient('08' + HexI(CaOID[k]) + '00');          // off the screen ...
+  end;
+  ToClient('31' + P);                                // ... (and anew) as we want him
+  CaSent[k] := B;
+  if Rebuild and Was then begin                      // the client lost the target: a plain select again
+    Engine.CancelTarget;
+    Engine.SetTarget(CaOID[k]);
+  end;
+  if B then Lg('CHANGED ' + IntToStr(CaOID[k]) + ': model ' + IntToStr(TrId) + ', effects ' + IntToStr(AveN) +
+    ', ' + IntToStr(Length(P) div 2) + ' bytes')
+  else Lg('BACK ' + IntToStr(CaOID[k]));
+end;
+
+// the packet i of the ring is our own copy of player k coming back (the bot may show it to the hook too)
+function IsMine(i, k: integer): boolean;
+var b, n: integer;
+  H: string;
+begin
+  result := false;
+  if (k < 0) or (CaMine[k] = '') then exit;
+  n := RgLen[i];
+  if n * 2 <> Length(CaMine[k]) then exit;
+  H := '';
+  for b := 0 to n - 1 do H := H + IntToHex(RgByte[i * RING_B + b], 2);
+  result := H = CaMine[k];
+end;
+
+// ===================== the sniff log =====================
+
+function OpText(Id1, Id2: integer): string;
+begin
+  result := IntToHex(Id1, 2);
+  if (Id1 = $FE) or (Id1 = $D0) then result := result + ':' + IntToHex(Id2, 4);
+end;
+
+// a sniff line of the server packet i of the ring (Note: what the script made of it)
+procedure SniffSrv(i: integer; Note: string);
+var b, n, Base, j, V: integer;
+  H, Tg: string;
+begin
+  if not SniffOn then exit;
+  n := RgLen[i];
+  Base := i * RING_B;
+  H := '';
+  for b := 0 to n - 1 do H := H + IntToHex(RgByte[Base + b], 2);
+  if n < RgSz[i] then H := H + '..';
+  Tg := '';
+  if CurOID <> 0 then
+    for j := 0 to n - 4 do
+      if j < 48 then begin
+        V := RgByte[Base + j] or (RgByte[Base + j + 1] shl 8) or (RgByte[Base + j + 2] shl 16) or (RgByte[Base + j + 3] shl 24);
+        if V = CurOID then Tg := ' [target at ' + IntToStr(j) + ']';
+      end;
+  Lg('S ' + OpText(RgId1[i], RgId2[i]) + ' ' + IntToStr(RgSz[i]) + Tg + Note + ' ' + H);
+end;
+
+procedure SniffCli(i: integer);
+var b, n: integer;
+  H: string;
+begin
+  n := CgLen[i];
+  H := '';
+  for b := 0 to n - 1 do H := H + IntToHex(CgByte[i * CRING_B + b], 2);
+  if n < CgSz[i] then H := H + '..';
+  Lg('C ' + OpText(CgId1[i], CgId2[i]) + ' ' + IntToStr(CgSz[i]) + ' ' + H);
+end;
+
+// ===================== the main loop's work =====================
+
+// the packets that came: CharInfo kept (the target's -> changed again), DeleteObject marks the player gone
+procedure Drain();
+var i, b, n, OID, k, k0, Base: integer;
+begin
+  while CgTail < CgHead do begin
+    i := CgTail mod CRING_N;
+    if SniffOn then SniffCli(i);
+    CgTail := CgTail + 1;
+  end;
+  while RgTail < RgHead do begin
+    i := RgTail mod RING_N;
+    n := RgLen[i];
+    Base := i * RING_B;
+    if RgId1[i] = $08 then begin                     // DeleteObject: the player out of sight
+      if n >= 4 then begin
+        OID := RgByte[Base] or (RgByte[Base + 1] shl 8) or (RgByte[Base + 2] shl 16) or (RgByte[Base + 3] shl 24);
+        k := CacheIdx(OID);
+        if (k >= 0) and (GetTickCount - CaDelAt[k] > DEL_QUIET_MS) then begin
+          CaGone[k] := true;
+          CaSent[k] := false;
+          CaMine[k] := '';
+          SniffSrv(i, ' (gone: ' + IntToStr(OID) + ')');
+        end else if k >= 0 then SniffSrv(i, ' (ours: ' + IntToStr(OID) + ')')
+        else SniffSrv(i, '');
+      end else SniffSrv(i, '');
+      RgTail := RgTail + 1;
+      continue;
+    end;
+    if RgId1[i] <> $31 then begin                    // the sniff only
+      SniffSrv(i, '');
+      RgTail := RgTail + 1;
+      continue;
+    end;
+    if (n < 21) or (n < RgSz[i]) then begin          // cut (too long for the ring): not ours to touch
+      SniffSrv(i, ' (CharInfo too long - left alone)');
+      RgTail := RgTail + 1;
+      continue;
+    end;
+    OID := RgByte[Base + 17] or (RgByte[Base + 18] shl 8) or (RgByte[Base + 19] shl 16) or (RgByte[Base + 20] shl 24);
+    k0 := CacheIdx(OID);
+    if (OID = 0) or (OID = MyOID) then begin
+      SniffSrv(i, ' (CharInfo of ' + IntToStr(OID) + ')');
+      RgTail := RgTail + 1;
+      continue;
+    end;
+    if IsMine(i, k0) then begin
+      SniffSrv(i, ' (OUR copy of ' + IntToStr(OID) + ' came back)');
+      RgTail := RgTail + 1;
+      continue;
+    end;
+    k := CacheSlot(OID);
+    CaOID[k] := OID;
+    CaLen[k] := n;
+    for b := 0 to n - 1 do CaByte[k * RING_B + b] := RgByte[Base + b];
+    CaAt[k] := GetTickCount;
+    CaSent[k] := false;                              // the server's own is on him now
+    CaGone[k] := false;
+    CaMine[k] := '';
+    SniffSrv(i, ' (CharInfo of ' + IntToStr(OID) + ', list at ' + IntToStr(ListAt(k)) + ')');
+    RgTail := RgTail + 1;
+    if ListAt(k) < 0 then begin
+      BadN := BadN + 1;
+      if (BadN <= 5) or (BadN mod 100 = 0) then
+        Lg('the list of effects not found in the CharInfo of ' + IntToStr(OID) + ' (' + IntToStr(BadN) + ' so far) hex=' +
+          HexPart(k, 0, n));
+    end;
+    if IsOn and ((OID = CurOID) or AllOn) then Show(k, true);   // a new one of our target: changed again
+  end;
+  if (RgLost + CgLost > LostSaid) and SniffOn then begin
+    LostSaid := RgLost + CgLost;
+    Lg('lost (the main loop was behind): ' + IntToStr(RgLost) + ' server, ' + IntToStr(CgLost) + ' client packets');
+  end;
+end;
+
+// all changed players back as the server sent them
+procedure AllBack();
+var k: integer;
+begin
+  for k := 0 to CACHE_N - 1 do
+    if CaSent[k] then Show(k, false);
+end;
+
+// the settings changed: on the target (the main loop does it) or, !all, on everyone in sight now
+procedure Reapply();
+var k: integer;
+begin
+  CurOID := 0;
+  if not (IsOn and AllOn) then exit;
+  for k := 0 to CACHE_N - 1 do
+    if (CaOID[k] <> 0) and (CaLen[k] > 0) and not CaGone[k] then Show(k, true);
+end;
+
+procedure DumpTarget();
+var k: integer;
+begin
+  k := CacheIdx(TargetNow());
+  if k < 0 then begin
+    Say('no CharInfo of the target yet (a player? in sight since the start?)');
+    exit;
+  end;
+  Lg('DUMP ' + IntToStr(CaOID[k]) + ' len ' + IntToStr(CaLen[k]) + ' list at ' + IntToStr(ListAt(k)) + ' hex=' +
+    HexPart(k, 0, CaLen[k]));
+  Say('the target''s CharInfo is in the log (list at byte ' + IntToStr(ListAt(k)) + ')');
+end;
+
+// the effect numbers of a text: '17 14' -> AveIDs
+procedure SetAve(S: string);
+var j, V: integer;
+  W, C: string;
+begin
+  AveN := 0;
+  W := '';
+  S := S + ' ';
+  for j := 1 to Length(S) do begin
+    C := Copy(S, j, 1);
+    if (C >= '0') and (C <= '9') then W := W + C
+    else if W <> '' then begin
+      V := StrToIntDef(W, 0);
+      if (V > 0) and (V < 30000) and (AveN < 16) then begin
+        AveIDs[AveN] := V;
+        AveN := AveN + 1;
+      end;
+      W := '';
+    end;
+  end;
+end;
+
+function AveText(): string;
+var j: integer;
+begin
+  result := '';
+  for j := 0 to AveN - 1 do begin
+    if result <> '' then result := result + ' ';
+    result := result + IntToStr(AveIDs[j]);
+  end;
+  if result = '' then result := 'none';
+end;
+
+function StateText(): string;
+begin
+  if TrId > 0 then result := 'model ' + IntToStr(TrId) else result := 'own model';
+  result := result + ', effects ' + AveText();
+  if Rebuild then result := result + ', rebuild' else result := result + ', update';
+  if AllOn then result := result + ', ALL players';
+  if not IsOn then result := result + ' (OFF)';
+end;
+
+procedure Command(C: string);
+var W, S: string;
+  p, V: integer;
+begin
+  p := Pos(' ', C);
+  if p > 0 then begin
+    W := Copy(C, 1, p - 1);
+    S := Trim(Copy(C, p + 1, Length(C)));
+  end else begin
+    W := C;
+    S := '';
+  end;
+  if (W = 'big') or (W = 'head') or (W = 'both') or (W = 'ave') then begin
+    if W = 'big' then SetAve('17')
+    else if W = 'head' then SetAve('14')
+    else if W = 'both' then SetAve('17 14')
+    else if S = '0' then AveN := 0
+    else begin
+      SetAve(S);
+      if AveN = 0 then begin
+        Say('!ave needs numbers: !ave 17 14 (!ave 0 - none)');
+        exit;
+      end;
+    end;
+    IsOn := true;
+    Reapply();
+    Say(StateText());
+  end else if W = 'tr' then begin
+    if S = '' then begin
+      Say('models: 104 pig, 105 rabbit, 111 frog, 114 snowman, 108 pumpkin, 112 child, 305 zaken, 302 akamanah, ' +
+        '301 zariche, 311 demon prince, 306 anakim, 143 queen ant, 142 orfen, 216 dragon bomber, 213 inferno drake, ' +
+        '1 onyx beast, 2 doom wraith, 20011 GM; !tr 0 - own');
+      exit;
+    end;
+    V := StrToIntDef(S, -1);
+    if (V < 0) or (V > 30000) then begin
+      Say('!tr needs a number: !tr 104');
+      exit;
+    end;
+    TrId := V;
+    IsOn := true;
+    Reapply();
+    Say(StateText());
+  end else if W = 're' then begin
+    AllBack();
+    Rebuild := not Rebuild;
+    Reapply();
+    Say(StateText());
+  end else if W = 'all' then begin
+    AllBack();
+    AllOn := not AllOn;
+    Reapply();
+    Say(StateText());
+  end else if W = 'sniff' then begin
+    SniffOn := not SniffOn;
+    if SniffOn then Say('sniff on - every packet into the log') else Say('sniff off');
+  end else if W = 'off' then begin
+    IsOn := false;
+    AllBack();
+    CurOID := 0;
+    Say('off - everyone as the server sent him');
+  end else if W = 'on' then begin
+    IsOn := true;
+    Reapply();
+    Say(StateText());
+  end else if W = 'dump' then DumpTarget()
+  else if W = 'hide' then begin
+    V := CacheIdx(TargetNow());
+    if (V < 0) or CaGone[V] then begin
+      Say('!hide needs a target whose CharInfo came since the start (else he could not be brought back)');
+      exit;
+    end;
+    HideOID := CaOID[V];
+    HideAt := GetTickCount + 3000;
+    GuardUntil := HideAt + 1500;
+    CaDelAt[V] := GetTickCount;
+    ToClient('08' + HexI(HideOID) + '00');
+    Say('the target taken off the screen: he must VANISH now and come back in 3 s');
+  end else Say('commands: !tr N (!tr - list), !big !head !both !ave N, !re, !all, !sniff, !hide, !off !on, !dump');
+end;
+
+// !hide: 3 s later the player back on the screen (his own CharInfo, then our copy again if he is the target)
+procedure HideBack();
+var k: integer;
+begin
+  if (HideOID = 0) or (GetTickCount < HideAt) then exit;
+  k := CacheIdx(HideOID);
+  HideOID := 0;
+  if (k < 0) or CaGone[k] then exit;
+  CaSent[k] := false;
+  CaMine[k] := Built(k, false);
+  ToClient('31' + CaMine[k]);
+  Lg('HIDE back ' + IntToStr(CaOID[k]));
+  if TargetNow() = CaOID[k] then begin
+    Engine.CancelTarget;                             // a plain select again (not a second click)
+    Engine.SetTarget(CaOID[k]);
+  end;
+  CurOID := 0;                                       // the main loop changes him again if he is the target
+end;
+
+var
+  T, k: integer;
+  C: string;
+  SaveAt: cardinal;
+
+begin
+  RgHead := 0;
+  RgTail := 0;
+  RgLost := 0;
+  CgHead := 0;
+  CgTail := 0;
+  CgLost := 0;
+  LostSaid := 0;
+  CurOID := 0;
+  GuardUntil := 0;
+  ToldOID := 0;
+  HideOID := 0;
+  BadN := 0;
+  IsOn := true;
+  AllOn := false;
+  Rebuild := false;
+  SniffOn := true;
+  TrId := 305;                                       // Zaken
+  SetAve('17');                                      // + the big body
+  for k := 0 to CACHE_N - 1 do begin
+    CaOID[k] := 0;
+    CaLen[k] := 0;
+    CaAt[k] := 0;
+    CaDelAt[k] := 0;
+    CaSent[k] := false;
+    CaGone[k] := false;
+    CaMine[k] := '';
+  end;
+  while User.Name = '' do Delay(500);
+  MyOID := User.OID;
+  LogL := TStringList.Create;
+  LogFull := false;
+  LogPath := Script.Path + '..\Logs\big_target_' + FormatDateTime('mmdd_hhnnss', Now) + '.log';
+  Lg('big target v8 started on ' + User.Name + ', my OID ' + IntToStr(MyOID) + ', target ' + IntToStr(TargetNow()));
+  ChatMenuStart('Big');
+  ChatMenuWords('');
+  Engine.SendActID(2);                               // packet hooks on
+  Engine.Msg('[Big]', 'Big target v8 (model + effects, sniff): ' + StateText() + '; party chat !tr N !big !re !all ' +
+    '!sniff !off !dump; log ' + LogPath, 0);
+  Say('v8 on: ' + StateText() + ', sniff on. Target a player who came into sight after the start. !tr - models');
+  SaveAt := GetTickCount;
+  while Delay(TICK_MS) do begin
+    Drain();
+    ChatMenuPoll();                                   // the chat the hook took: a command kept, the rest sent on
+    C := ChatCommand();
+    if C <> '' then Command(C);
+    HideBack();
+    if IsOn and (GetTickCount >= GuardUntil) then begin
+      T := TargetNow();
+      if (T <> 0) and (T <> MyOID) and (T <> ToldOID) and (CacheIdx(T) < 0) then begin
+        ToldOID := T;                                 // a player around since before the start: nothing to change yet
+        Say('no CharInfo of this one since the start - walk away and back (or wait: new gear / buffs send it)');
+      end;
+      if T <> CurOID then begin
+        Lg('TARGET ' + IntToStr(CurOID) + ' -> ' + IntToStr(T));
+        if not AllOn then Show(CacheIdx(CurOID), false);
+        CurOID := T;
+        if (T <> 0) and (T <> MyOID) then begin
+          k := CacheIdx(T);
+          if (k >= 0) and not (AllOn and CaSent[k]) then Show(k, true);
+        end;
+      end;
+    end;
+    if LogDirty and (GetTickCount - SaveAt >= SAVE_MS) then begin
+      SaveAt := GetTickCount;
+      LogDirty := false;
+      try
+        LogL.SaveToFile(LogPath);
+      except
+      end;
+    end;
+  end;
+  AllBack();
+  try
+    LogL.SaveToFile(LogPath);
+  except
+  end;
+end.

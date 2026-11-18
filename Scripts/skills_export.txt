@@ -1,0 +1,390 @@
+uses SysUtils, Classes;
+
+// Skills export: the skills of the character the bot runs go into Library\Nav\skills.json - the skill list of
+// nav_view.html (Settings > Skills) and of spot_farm_pack_nav.pas (K mage / fight_skill / pull_skill / AoE pull).
+// Run it once per character (in the game, logged in). It adds every active skill / toggle of this character that is
+// not in the list yet; a skill already there stays as it is (a type / range / radius set by hand is never changed).
+// The old file is kept as skills.json.bak.
+//
+// How a new skill is cast comes from Library\Nav\skilldb.txt - every skill of the game, made from the bot's own
+// database (L2DB.dat):
+//   it has a cast range         -> TARGET (at the target), the range at the level this character has
+//   no target, an attack        -> SELF_AOE (hits round us)
+//   no target, a buff / toggle  -> SELF (on us); a Provoke / Aggression / Hate one -> SELF_AOE (round us)
+//   passive                     -> not taken
+// The AoE radius is in no client file (only the server knows it): a new SELF_AOE skill comes with radius 0 - set it
+// in nav_view.html > Settings > Skills (the farm does not use an AoE without its radius). An AoE cast at the target
+// (Tempest...) cannot be told from a single target one by the client: it comes as TARGET - change its type there.
+// Icons: every skill of the list with no icon yet (the ones there before too) gets its picture from
+// Library\Nav\skillicons.txt (the bot's L2ICO.dat, 16x16 PNG) as "icon" - nav_view.html shows it.
+
+const
+  NAV_DIR = '..\Nav\';          // relative to Library\Scripts (Script.Path)
+  SKILL_FILE = 'skills.json';
+  DB_FILE = 'skilldb.txt';
+  ICON_FILE = 'skillicons.txt';
+  DB_MAX_ID = 65535;
+
+var
+  ExID, ExRange, ExRadius: array of integer;   // the list: the skills of skills.json + the new ones
+  ExType, ExName, ExIcon: array of string;     // ... ExIcon: a 16x16 PNG in base64 ('' = none)
+  DbIdx: array of integer;                     // skill ID -> its line of skilldb.txt (-1 = none)
+  Db, Icons: TStringList;                      // skilldb.txt / skillicons.txt
+
+// a value of a {...} of skills.json: "key": "text" / "key": 123
+function JsonVal(Obj, Key: string): string;
+var p: integer;
+  T, C: string;
+begin
+  result := '';
+  p := Pos('"' + Key + '"', Obj);
+  if p <= 0 then exit;
+  T := Copy(Obj, p + Length(Key) + 2, Length(Obj));
+  p := Pos(':', T);
+  if p <= 0 then exit;
+  T := Trim(Copy(T, p + 1, Length(T)));
+  if Copy(T, 1, 1) = '"' then begin
+    T := Copy(T, 2, Length(T));
+    p := Pos('"', T);
+    if p > 0 then result := Copy(T, 1, p - 1);
+    exit;
+  end;
+  p := 1;
+  while p <= Length(T) do begin
+    C := Copy(T, p, 1);
+    if (C = ',') or (C = '}') then break;
+    Inc(p);
+  end;
+  result := Trim(Copy(T, 1, p - 1));
+end;
+
+// the n-th field (from 0) of a skilldb.txt line: id|oper|magic|range|name|lvl:range,...
+function DbField(S: string; n: integer): string;
+var p, k: integer;
+  T: string;
+begin
+  result := '';
+  T := S;
+  for k := 1 to n do begin
+    p := Pos('|', T);
+    if p <= 0 then exit;
+    T := Copy(T, p + 1, Length(T));
+  end;
+  p := Pos('|', T);
+  if p > 0 then result := Copy(T, 1, p - 1) else result := T;
+end;
+
+// the cast range of a skilldb.txt line at skill level Lv: its first range, then each "lvl:range" step up to Lv
+function RangeAt(S: string; Lv: integer): integer;
+var St, P: string;
+  k, c, L, R: integer;
+begin
+  result := StrToIntDef(DbField(S, 3), 0);
+  St := DbField(S, 5);
+  while St <> '' do begin
+    k := Pos(',', St);
+    if k > 0 then begin
+      P := Copy(St, 1, k - 1);
+      St := Copy(St, k + 1, Length(St));
+    end else begin
+      P := St;
+      St := '';
+    end;
+    c := Pos(':', P);
+    if c <= 0 then continue;
+    L := StrToIntDef(Copy(P, 1, c - 1), 0);
+    R := StrToIntDef(Copy(P, c + 1, Length(P)), 0);
+    if L > Lv then break;
+    result := R;
+  end;
+end;
+
+// a skill with no target that pulls the mobs round us (an aggro aura): Provoke, Aggression Aura, Hate Aura...
+function IsAggro(Nm: string): boolean;
+var U: string;
+begin
+  U := UpperCase(Nm);
+  result := (Pos('PROVOKE', U) > 0) or (Pos('AGGRESSION', U) > 0) or (Pos('HATE', U) > 0);
+end;
+
+// a name for skills.json as the page writes it: no " \ { } [ ] and no control chars
+function JsClean(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if (C = '"') or (C = '\') or (C = '{') or (C = '}') or (C = '[') or (C = ']') or (C < ' ') then C := ' ';
+    result := result + C;
+  end;
+  result := Trim(result);
+end;
+
+// skilldb.txt -> Db, DbIdx. false = no file
+function LoadDb(F: string): boolean;
+var i, ID, p: integer;
+  S: string;
+begin
+  result := false;
+  SetLength(DbIdx, DB_MAX_ID + 1);
+  for i := 0 to DB_MAX_ID do DbIdx[i] := -1;
+  if not FileExists(F) then exit;
+  Db.LoadFromFile(F);
+  for i := 0 to Db.Count - 1 do begin
+    S := Db[i];
+    if (S = '') or (Copy(S, 1, 1) = '#') then continue;
+    p := Pos('|', S);
+    if p <= 1 then continue;
+    ID := StrToIntDef(Copy(S, 1, p - 1), 0);
+    if (ID > 0) and (ID <= DB_MAX_ID) then DbIdx[ID] := i;
+  end;
+  result := true;
+end;
+
+procedure ExAdd(ID: integer; T: string; Range, Radius: integer; Nm, Icon: string);
+var n: integer;
+begin
+  n := Length(ExID);
+  SetLength(ExID, n + 1);
+  SetLength(ExType, n + 1);
+  SetLength(ExRange, n + 1);
+  SetLength(ExRadius, n + 1);
+  SetLength(ExName, n + 1);
+  SetLength(ExIcon, n + 1);
+  ExID[n] := ID;
+  ExType[n] := T;
+  ExRange[n] := Range;
+  ExRadius[n] := Radius;
+  ExName[n] := Nm;
+  ExIcon[n] := Icon;
+end;
+
+// base64 only (A-Z a-z 0-9 + / =): an icon read from skills.json that is anything else is dropped
+function IconOk(S: string): boolean;
+var i: integer;
+  C: string;
+begin
+  result := S <> '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if not (((C >= 'A') and (C <= 'Z')) or ((C >= 'a') and (C <= 'z')) or ((C >= '0') and (C <= '9')) or
+       (C = '+') or (C = '/') or (C = '=')) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
+// the icon of skill ID from skillicons.txt (its number: field 6 of its skilldb.txt line); '' = none
+function DbIcon(ID: integer): string;
+var Line, n: integer;
+begin
+  result := '';
+  if (ID <= 0) or (ID > DB_MAX_ID) or (Icons.Count = 0) then exit;
+  Line := DbIdx[ID];
+  if Line < 0 then exit;
+  n := StrToIntDef(DbField(Db[Line], 6), -1);
+  if (n >= 0) and (n < Icons.Count) then result := Trim(Icons[n]);
+end;
+
+function ExHas(ID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to Length(ExID) - 1 do
+    if ExID[k] = ID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// skills.json as it is now -> the list (Old: its lines, for the .bak)
+procedure ReadList(F: string; Old: TStringList);
+var S, Obj, T, Ic: string;
+  i, p, q, ID: integer;
+begin
+  Old.Clear;
+  if not FileExists(F) then exit;
+  Old.LoadFromFile(F);
+  S := '';
+  for i := 0 to Old.Count - 1 do S := S + Old[i] + ' ';
+  p := Pos('"skills"', S);
+  if p > 0 then S := Copy(S, p + 8, Length(S)) else S := '';
+  p := Pos('[', S);
+  if p > 0 then S := Copy(S, p + 1, Length(S)) else S := '';
+  while S <> '' do begin
+    p := Pos('{', S);
+    q := Pos(']', S);
+    if p <= 0 then break;
+    if (q > 0) and (q < p) then break;   // the end of the list
+    S := Copy(S, p + 1, Length(S));
+    q := Pos('}', S);
+    if q <= 0 then break;
+    Obj := Copy(S, 1, q - 1);
+    S := Copy(S, q + 1, Length(S));
+    ID := StrToIntDef(JsonVal(Obj, 'id'), 0);
+    if (ID <= 0) or ExHas(ID) then continue;
+    T := UpperCase(JsonVal(Obj, 'type'));
+    if (T <> 'TARGET') and (T <> 'AOE') and (T <> 'SELF_AOE') and (T <> 'SELF') then T := 'TARGET';
+    Ic := JsonVal(Obj, 'icon');
+    if not IconOk(Ic) then Ic := '';
+    ExAdd(ID, T, StrToIntDef(JsonVal(Obj, 'range'), 0), StrToIntDef(JsonVal(Obj, 'radius'), 0), JsonVal(Obj, 'name'), Ic);
+  end;
+end;
+
+// the list -> skills.json, the way nav_view.html writes it (one skill per line)
+procedure WriteList(F: string);
+var L: TStringList;
+  k: integer;
+  S: string;
+begin
+  L := TStringList.Create;
+  L.Add('{');
+  L.Add('  "about": "Skills of the fight and the pull, one list for every map: skills.json in the Nav folder (next to ' +
+    'nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage / ' +
+    'fight_skill / pull_skill lines of a .navgrid name skills of this list",');
+  L.Add('  "types": {');
+  L.Add('    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",');
+  L.Add('    "AOE": "cast at the target from range, hits every mob within radius of it",');
+  L.Add('    "SELF_AOE": "no target: hits every mob within radius of us",');
+  L.Add('    "SELF": "on us (heal, buff)"');
+  L.Add('  },');
+  L.Add('  "skills": [');
+  for k := 0 to Length(ExID) - 1 do begin
+    S := '    { "id": ' + IntToStr(ExID[k]) + ', "type": "' + ExType[k] + '", "range": ' + IntToStr(ExRange[k]) +
+      ', "radius": ' + IntToStr(ExRadius[k]) + ', "name": "' + JsClean(ExName[k]) + '"';
+    if ExIcon[k] <> '' then S := S + ', "icon": "' + ExIcon[k] + '"';
+    S := S + ' }';
+    if k < Length(ExID) - 1 then S := S + ',';
+    L.Add(S);
+  end;
+  L.Add('  ]');
+  L.Add('}');
+  L.SaveToFile(F);
+  L.Free;
+end;
+
+// the export: the skills of this character not in skills.json yet -> added, the file written again
+procedure ExportSkills();
+var
+  i, ID, Lv, Oper, Range, Line, Kept, Added, PasN, UnkN, w, IconN: integer;
+  Sk: TL2Skill;
+  Old: TStringList;
+  Dir, Nm, T, S, Note, Toggles, NeedRad, Ic: string;
+  HasDb, Pas: boolean;
+begin
+  Dir := Script.Path + NAV_DIR;
+  w := 0;
+  while (SkillList.Count = 0) and (w < 30) do begin   // just logged in: the skill list comes a moment later
+    Delay(1000);
+    Inc(w);
+  end;
+  if SkillList.Count = 0 then begin
+    Engine.Msg('[Skills]', 'The character has no skill list yet - log in and run this script again', 128);
+    exit;
+  end;
+  Db := TStringList.Create;
+  Icons := TStringList.Create;
+  Old := TStringList.Create;
+  HasDb := LoadDb(Dir + DB_FILE);
+  if not HasDb then
+    Engine.Msg('[Skills]', 'No ' + Dir + DB_FILE + ' - new skills come as TARGET with no range (set them in the page)', 128);
+  if FileExists(Dir + ICON_FILE) then Icons.LoadFromFile(Dir + ICON_FILE)
+  else Engine.Msg('[Skills]', 'No ' + Dir + ICON_FILE + ' - no icons', 128);
+  ReadList(Dir + SKILL_FILE, Old);
+  Kept := Length(ExID);
+  Added := 0;
+  PasN := 0;
+  UnkN := 0;
+  Toggles := '';
+  NeedRad := '';
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Sk := SkillList.Items(i);
+    if Sk = nil then continue;
+    ID := Sk.ID;
+    Lv := Sk.Level;
+    Nm := Sk.Name;
+    Pas := Sk.Passive;
+    if (ID <= 0) or ExHas(ID) then continue;
+    Line := -1;
+    if ID <= DB_MAX_ID then Line := DbIdx[ID];
+    Oper := -1;
+    Range := 0;
+    if Line >= 0 then begin
+      S := Db[Line];
+      Oper := StrToIntDef(DbField(S, 1), -1);
+      Range := RangeAt(S, Lv);
+      if Nm = '' then Nm := DbField(S, 4);
+    end;
+    if Pas or (Oper = 2) then begin
+      Inc(PasN);
+      continue;
+    end;
+    Note := '';
+    if Line < 0 then begin
+      T := 'TARGET';
+      Inc(UnkN);
+      Note := ' - not in ' + DB_FILE + ': check its type / range';
+    end else if Range > 0 then T := 'TARGET'
+    else if (Oper = 0) or IsAggro(Nm) then T := 'SELF_AOE'
+    else T := 'SELF';
+    if Range < 0 then Range := 0;
+    if T = 'SELF_AOE' then begin
+      Note := ' - set its radius';
+      if NeedRad <> '' then NeedRad := NeedRad + ', ';
+      NeedRad := NeedRad + Nm + ' (' + IntToStr(ID) + ')';
+    end;
+    if Oper = 3 then begin
+      Note := Note + ' (a toggle)';
+      if Toggles <> '' then Toggles := Toggles + ', ';
+      Toggles := Toggles + Nm + ' (' + IntToStr(ID) + ')';
+    end;
+    ExAdd(ID, T, Range, 0, Nm, '');
+    Inc(Added);
+    if T = 'TARGET' then
+      Engine.Msg('[Skills]', '+ ' + IntToStr(ID) + ' ' + Nm + ' lv ' + IntToStr(Lv) + ': at the target from ' + IntToStr(Range) + Note, 0)
+    else if T = 'SELF_AOE' then
+      Engine.Msg('[Skills]', '+ ' + IntToStr(ID) + ' ' + Nm + ' lv ' + IntToStr(Lv) + ': round us' + Note, 0)
+    else
+      Engine.Msg('[Skills]', '+ ' + IntToStr(ID) + ' ' + Nm + ' lv ' + IntToStr(Lv) + ': on us' + Note, 0);
+  end;
+  // icons: every skill of the list with none yet (the ones that were there too)
+  IconN := 0;
+  for i := 0 to Length(ExID) - 1 do
+    if ExIcon[i] = '' then begin
+      Ic := DbIcon(ExID[i]);
+      if Ic <> '' then begin
+        ExIcon[i] := Ic;
+        Inc(IconN);
+      end;
+    end;
+  if (Added = 0) and (IconN = 0) then begin
+    Engine.Msg('[Skills]', 'Nothing new: every active skill of ' + User.Name + ' is in ' + SKILL_FILE + ' already (' +
+      IntToStr(Kept) + ' skills, ' + IntToStr(PasN) + ' passive not taken)', 0);
+    Old.Free;
+    Icons.Free;
+    Db.Free;
+    exit;
+  end;
+  if Old.Count > 0 then Old.SaveToFile(Dir + SKILL_FILE + '.bak');
+  WriteList(Dir + SKILL_FILE);
+  Engine.Msg('[Skills]', User.Name + ': ' + IntToStr(Added) + ' skills added to ' + Dir + SKILL_FILE + ', ' + IntToStr(Kept) +
+    ' were there and stay as they were, ' + IntToStr(PasN) + ' passive not taken, ' + IntToStr(IconN) + ' icons put in' +
+    ' (the old file: ' + SKILL_FILE + '.bak)', 0);
+  if NeedRad <> '' then
+    Engine.Msg('[Skills]', 'Round us - set the radius in nav_view.html > Settings > Skills: ' + NeedRad, 128);
+  if Toggles <> '' then
+    Engine.Msg('[Skills]', 'Toggles (Own buffs: Kind toggle): ' + Toggles, 0);
+  if UnkN > 0 then
+    Engine.Msg('[Skills]', IntToStr(UnkN) + ' skills are not in ' + DB_FILE + ' (a server''s own?) - added as TARGET with no range', 128);
+  if Added > 0 then
+    Engine.Msg('[Skills]', 'An AoE cast at the target (Tempest...) comes as TARGET: change its type to AOE and set its radius there', 0);
+  Old.Free;
+  Icons.Free;
+  Db.Free;
+end;
+
+begin
+  ExportSkills();
+end.

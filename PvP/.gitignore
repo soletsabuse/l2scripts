@@ -1,0 +1,5 @@
+# written by pvp_server.py (its log) and while it swaps a file in
+pvp_server.log
+pvp_server.log.old
+profiles/*.tmp
+__pycache__/

@@ -6,7 +6,9 @@ unit MobPull;
 // A mob that does not aggro from the run past it is hit once (with the tap weapon if set; a caster:
 // PullSetTapSkill - that skill from its range, no weapon, only with the mob in sight on the nav map;
 // PullAddTapSkill - more skills: the first ready one that reaches the mob goes; with PullSetTapAlways
-// every mob). Our HP low: a drain / heal of PullAddHeal goes first, then the pull goes on. Mobs that
+// every mob). PullAddAoeSkill: an AoE aggro skill - the pull is then ONE run planned at its start (the free mobs
+// grouped into areas of the skill, the areas in the shortest order to the farm spot), the skill pressed on the run
+// at each area, never at mobs it took already. Our HP low: a drain / heal of PullAddHeal goes first, then the pull goes on. Mobs that
 // are on the ignore list (PullIgnoreID: archers that shoot from their place...) are never pulled. Ends: pack full and nothing close, nothing free left,
 // HP low, no new aggro for a while, pull time over, stop asked. The fight is the caller's job.
 //
@@ -41,6 +43,23 @@ procedure PullAddTapSkill(SkillID, Range: integer);
 // goes on after it
 procedure PullAddHeal(SkillID, HPBelow, Range: integer);
 procedure PullClearHeals();
+// an AoE pull skill (a huge aggro round us...): Radius round us (AtTarget false, no target) or round a mob within
+// Range (AtTarget true: cast at that mob), not cast within EveryMs (0 = whenever ready). With one the pull is ONE
+// RUN planned at its start: the free mobs of the pull (a room: all of it; else as many as the pack lacks) grouped
+// into areas of the skill (the most mobs per press), the areas ordered into the shortest way from us to the end
+// point (PullSweepEndAdd: the farm spot - spotted, led there, killed). Point after point the skill is sent ON THE RUN
+// as soon as every mob of the area left is in its reach (no need to get to the point), the run goes on at once (the
+// server moves us after its cast). Every free mob in its area when it went is ours from then (provoked, prv_ms): it
+// is never pressed / run at again - the bot shows its target on us only later. The skill not ready at the point
+// (reuse): through it and back, never standing, at most sweep_wait_ms. Never while a mob of the ignore list / a
+// skipped champion is in its area. Only mobs in sight (no wall of the nav map between). MinMobs: not used
+procedure PullAddAoeSkill(SkillID: integer; AtTarget: boolean; Range, Radius, MinMobs, EveryMs: integer);
+procedure PullClearAoeSkills();
+procedure PullSweepEndsClear();                  // the run of the next pull: no end point (it ends at its last area)
+procedure PullSweepEndAdd(X, Y: integer);        // ... it may end at this point (up to 8): the shortest way is taken
+function PullSweepEndPicked(): integer;          // ... the end point the last run took (index of the adds), -1 none
+function PullCountOurs(): integer;               // on us + hit by our tap + provoked by our AoE (they come)
+function PullAoeOn(): boolean;                   // an AoE pull skill is set: the pull is one planned run
 // the heal / drain of PullAddHeal now if our HP is low (the pull calls it every tick; the caller may call it
 // on its own runs - to the farm spot); we stand for its cast (heal_cast_ms, our HP going up ends it
 // sooner). true = cast
@@ -72,6 +91,8 @@ function PullInArea(X, Y, Z: integer): boolean;  // the point is where we pull
 procedure PullPolyClear();                       // no extra polygon: the whole area
 procedure PullPolyAdd(X, Y: integer);            // pull only inside this polygon too (a room)
 function PullIsFree(i: integer): boolean;        // NpcList(i) is a free mob we may take
+// the same, but anywhere in the area - the polygon of the room we farm now not looked at (each room counts its own)
+function PullIsFreeAnyRoom(i: integer): boolean;
 function PullTapActive(): boolean;               // the tap / farm weapon swap is ours now (disarm guard: wait)
 // one by one (farm mobs where they stand): the free mob nearest by the way to it (nav map), within
 // single_range; 0 = none
@@ -125,6 +146,33 @@ var
   MpTapFireMs: integer;         // tap_fire_ms: the tap skill sent (DUseSkill) must start (its reuse) within this
   MpTapResendMs: integer;       // tap_resend_ms: until it starts it is sent again this often
   MpTapSkillTold: boolean;      // "no such tap skill" said
+  MpAoeSk, MpAoeRng, MpAoeRad, MpAoeEvery: array of integer;   // PullAddAoeSkill: skill, cast range, radius,
+                                  //   at most once in this many ms
+  MpAoeAtMob: array of boolean;   // ... cast at a mob (else round us, no target)
+  MpAoeLast, MpAoeHold: array of cardinal;   // ... went last / did not go: not tried before this
+  MpAoeTold: array of boolean;    // ... "no such skill" said
+  MpAoeRunAt: cardinal;           // ... one went on the run then (its cast may hold us: no "stuck" for a while)
+  MpPrvOID: array[0..127] of integer;   // MpPrvAdd: provoked by our AoE (ours, it comes) ...
+  MpPrvAt: array[0..127] of cardinal;   // ... then
+  MpPrvHead: integer;
+  MpPrvLast: cardinal;            // ... the last one (none within prv_ms: nothing to look at)
+  MpPrvMs: integer;               // prv_ms: a provoked mob is ours this long
+  MpSwWaitMs: integer;            // sweep_wait_ms: at a point of the run the skill not ready this long -> on
+  // the run of a pull with an AoE skill (MpSweep), planned at its start
+  SwMobOID, SwMobX, SwMobY, SwMobZ, SwMobPt: array[0..127] of integer;   // the free mobs of the plan, the point
+  SwMobN: integer;                                   //   that takes each (-1 = none: next to a mob that must not come)
+  SwBadX, SwBadY: array[0..31] of integer;           // mobs that must not come (ignore list / skipped champions)
+  SwBadN: integer;
+  SwPX, SwPY, SwPZ: array[0..31] of integer;         // the points as found (the middle mob of each area)
+  SwX, SwY, SwZ: array[0..31] of integer;            // ... in run order
+  SwN: integer;
+  SwOrd, SwTry, SwBest, SwInv: array[0..31] of integer;   // the order: the best of an end / tried / the best / its inverse
+  SwUsed: array[0..31] of boolean;
+  SwDM: array[0..1155] of double;                    // distances: points 0..31, us 32, the end 33 (34 x 34)
+  SwLOID, SwLX, SwLY: array[0..127] of integer;      // MpSwLook: the mobs of a point still to pull, where they are now
+  SwLN: integer;
+  MpSwEndX, MpSwEndY: array[0..7] of integer;        // PullSweepEndAdd: where the run may end (the farm spots)
+  MpSwEndN, MpSwEndPick: integer;                    // ... how many / the one the last run took (-1 = none)
   MpTapAlways: boolean;
   MpNames: array of string;
   MpNkID: array[0..511] of integer;      // PullNameIgnored: NPC kinds seen ...
@@ -222,6 +270,9 @@ begin
   MpTapFireMs := 1200;     // tap skill sent with DUseSkill: no start (reuse) in this -> out of sight: closer
   MpTapResendMs := 150;    // ... until it starts it is sent again this often (one packet may be dropped)
   MpTapRange := 80;
+  MpSwEndPick := -1;
+  MpPrvMs := 15000;        // AoE pull skill: a mob in its area when it went is ours (it comes) this long
+  MpSwWaitMs := 8000;      // ... the run: at a point the skill not ready (reuse) this long -> on to the next
 end;
 
 // tuning by name; unknown name -> a message
@@ -266,6 +317,8 @@ begin
   else if K = 'heal_cast_ms' then MpHealCastMs := Value
   else if K = 'tap_fire_ms' then MpTapFireMs := Value
   else if K = 'tap_resend_ms' then MpTapResendMs := Value
+  else if K = 'prv_ms' then MpPrvMs := Value
+  else if K = 'sweep_wait_ms' then MpSwWaitMs := Value
   else Engine.Msg('[Pull]', 'PullSet: unknown "' + Key + '"', 255);
 end;
 
@@ -387,6 +440,68 @@ begin
   SetLength(MpHealFail, 0);
 end;
 
+procedure PullAddAoeSkill(SkillID: integer; AtTarget: boolean; Range, Radius, MinMobs, EveryMs: integer);
+var n: integer;
+begin
+  MpInit();
+  if (SkillID <= 0) or (Radius <= 0) then exit;
+  n := Length(MpAoeSk);
+  SetLength(MpAoeSk, n + 1);
+  SetLength(MpAoeRng, n + 1);
+  SetLength(MpAoeRad, n + 1);
+  SetLength(MpAoeEvery, n + 1);
+  SetLength(MpAoeAtMob, n + 1);
+  SetLength(MpAoeLast, n + 1);
+  SetLength(MpAoeHold, n + 1);
+  SetLength(MpAoeTold, n + 1);
+  MpAoeSk[n] := SkillID;
+  MpAoeAtMob[n] := AtTarget;
+  MpAoeRng[n] := Range;
+  if MpAoeRng[n] <= 0 then MpAoeRng[n] := 600;
+  MpAoeRad[n] := Radius;
+  MpAoeEvery[n] := EveryMs;           // (MinMobs: not used - the run plans its presses itself)
+  if MpAoeEvery[n] < 0 then MpAoeEvery[n] := 0;
+  MpAoeLast[n] := 0;
+  MpAoeHold[n] := 0;
+  MpAoeTold[n] := false;
+end;
+
+procedure PullClearAoeSkills();
+begin
+  SetLength(MpAoeSk, 0);
+  SetLength(MpAoeRng, 0);
+  SetLength(MpAoeRad, 0);
+  SetLength(MpAoeEvery, 0);
+  SetLength(MpAoeAtMob, 0);
+  SetLength(MpAoeLast, 0);
+  SetLength(MpAoeHold, 0);
+  SetLength(MpAoeTold, 0);
+end;
+
+procedure PullSweepEndsClear();
+begin
+  MpSwEndN := 0;
+  MpSwEndPick := -1;
+end;
+
+procedure PullSweepEndAdd(X, Y: integer);
+begin
+  if MpSwEndN >= 8 then exit;
+  MpSwEndX[MpSwEndN] := X;
+  MpSwEndY[MpSwEndN] := Y;
+  Inc(MpSwEndN);
+end;
+
+function PullSweepEndPicked(): integer;
+begin
+  result := MpSwEndPick;
+end;
+
+function PullAoeOn(): boolean;
+begin
+  result := Length(MpAoeSk) > 0;
+end;
+
 procedure PullSetTapAlways(Enable: boolean);
 begin
   MpInit();
@@ -475,6 +590,28 @@ begin
   if (MpHitLast = 0) or (GetTickCount - MpHitLast >= MpTapSkipMs) then exit;
   for k := 0 to 31 do
     if (MpHitOID[k] = OID) and (GetTickCount - MpHitAt[k] < MpTapSkipMs) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// a mob in the area of our AoE pull skill when it went: ours from now on (provoked, it comes - the bot may not
+// show its target on us for a while) - not free, never pressed / run at again, counted in the pack for prv_ms
+procedure MpPrvAdd(OID: integer);
+begin
+  MpPrvOID[MpPrvHead] := OID;
+  MpPrvAt[MpPrvHead] := GetTickCount;
+  MpPrvHead := (MpPrvHead + 1) mod 128;
+  MpPrvLast := GetTickCount;
+end;
+
+function MpProvoked(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  if (MpPrvLast = 0) or (GetTickCount - MpPrvLast >= cardinal(MpPrvMs)) then exit;
+  for k := 0 to 127 do
+    if (MpPrvOID[k] = OID) and (GetTickCount - MpPrvAt[k] < cardinal(MpPrvMs)) then begin
       result := true;
       exit;
     end;
@@ -594,15 +731,11 @@ begin
   end;
 end;
 
-function PullInArea(X, Y, Z: integer): boolean;
+// the point is in the area of the pull (the grid / radius / bot zone) - the room polygon not looked at
+function MpInZone(X, Y, Z: integer): boolean;
 var DX, DY: double;
   T: integer;
 begin
-  MpInit();
-  if not MpInPoly(X, Y) then begin     // a room is set: only inside it
-    result := false;
-    exit;
-  end;
   if GgOn then begin
     T := MpGridTol;                    // a mob at the very wall stands on a cell painted as wall
     result := MpGridFree(X, Y) or MpGridFree(X - T, Y) or MpGridFree(X + T, Y) or
@@ -613,6 +746,12 @@ begin
     result := Sqrt(DX * DX + DY * DY) <= MpRR;
   end else
     result := Engine.InZone(X, Y, Z);
+end;
+
+function PullInArea(X, Y, Z: integer): boolean;
+begin
+  MpInit();
+  result := MpInPoly(X, Y) and MpInZone(X, Y, Z);   // a room is set: only inside it
 end;
 
 function MpDist(X, Y: integer): double;
@@ -727,6 +866,13 @@ begin
     MpMovedAt := GetTickCount;
   end;
   result := GetTickCount - MpMovedAt;
+end;
+
+// running without moving for stuck_ms = stuck (a wall) - not within 3 s after an AoE pull skill went on the run
+// (the server holds us for its cast, the move comes after it)
+function MpStuck(): boolean;
+begin
+  result := (MpStillMs() > MpStuckMs) and ((MpAoeRunAt = 0) or (GetTickCount - MpAoeRunAt > 3000));
 end;
 
 // one server path click (mouse click packet), remembered: it is NOT repeated on a timer - a new click
@@ -940,6 +1086,26 @@ begin
   end;
 end;
 
+// mobs our AoE pull skill provoked that do not target us yet (alive, near): the pull counts them as aggro already
+function MpCountPrv(): integer;
+var i, OID: integer;
+begin
+  result := 0;
+  if (MpPrvLast = 0) or (GetTickCount - MpPrvLast >= cardinal(MpPrvMs)) then exit;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    OID := NpcList(i).OID;
+    if (not MpProvoked(OID)) or MpWasHit(OID) or MpSkippedHard(OID) or PullIsAggro(i) then continue;
+    if MpDist(NpcList(i).X, NpcList(i).Y) < MpAggroDist then Inc(result);
+  end;
+end;
+
+function PullCountOurs(): integer;
+begin
+  MpInit();
+  result := PullCountAggro() + MpCountHit() + MpCountPrv();
+end;
+
 // ---------- touch list (mobs we ran past) ----------
 
 procedure MpTouch(OID: integer);
@@ -1001,7 +1167,7 @@ begin
       if not MpWhitelisted(i) then continue;
       if Pass = 0 then Inc(MpCntAll);
       OID := NpcList(i).OID;
-      if MpWasHit(OID) then continue;          // hit by our tap: ours already, it comes
+      if MpWasHit(OID) or MpProvoked(OID) then continue;   // hit by our tap / provoked by our AoE: ours already, it comes
       if MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then begin
         if Pass = 0 then Inc(MpCntSkip);
         continue;
@@ -1066,25 +1232,38 @@ end;
 // ---------- one by one ----------
 
 // a free mob we may take: alive, on the list, not ignored / skipped / on us, in the area, our floor
-function MpFreeOK(i: integer): boolean;
+// a free mob we may take; Poly = only inside the room we farm now (PullPolyAdd), else anywhere in the area
+function MpFreeAt(i: integer; Poly: boolean): boolean;
 var OID, NX, NY, NZ: integer;
 begin
   result := false;
   if NpcList(i).Dead or MpNameIgnored(i) then exit;
   if PullIsAggro(i) or (not MpWhitelisted(i)) then exit;
   OID := NpcList(i).OID;
-  if MpWasHit(OID) or MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
+  if MpWasHit(OID) or MpProvoked(OID) or MpSkipped(OID) or MpSkippedHard(OID) or PullIsShooterAt(i) then exit;
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
-  if not PullInArea(NX, NY, NZ) then exit;
+  if Poly and (not MpInPoly(NX, NY)) then exit;
+  if not MpInZone(NX, NY, NZ) then exit;
   result := MpZOk(NZ);
+end;
+
+function MpFreeOK(i: integer): boolean;
+begin
+  result := MpFreeAt(i, true);
 end;
 
 function PullIsFree(i: integer): boolean;
 begin
   MpInit();
   result := MpFreeOK(i);
+end;
+
+function PullIsFreeAnyRoom(i: integer): boolean;
+begin
+  MpInit();
+  result := MpFreeAt(i, false);
 end;
 
 procedure PullSetPackLive(Enable: boolean);
@@ -1635,6 +1814,513 @@ begin
   end;
 end;
 
+// ---------- the run of a pull with an AoE skill (PullAddAoeSkill) ----------
+
+// the AoE pull skill k may be pressed now: this character has it, not held (it did not go a moment ago), out of
+// its reuse and of its "at most every"
+function MpSwReady(k: integer): boolean;
+var Has: boolean;
+begin
+  result := false;
+  if GetTickCount < MpAoeHold[k] then exit;
+  if (MpAoeLast[k] <> 0) and (GetTickCount - MpAoeLast[k] < cardinal(MpAoeEvery[k])) then exit;
+  if MpSkillLeft(MpAoeSk[k], Has) > 0 then exit;
+  result := Has;
+end;
+
+// the run may be made: an AoE pull skill this character has (one it has not: told once). R = the biggest radius
+// of those it has (the areas of the plan)
+function MpSwOn(var R: integer): boolean;
+var k: integer;
+  Left: cardinal;
+  Has: boolean;
+begin
+  result := false;
+  R := 0;
+  if (Length(MpAoeSk) = 0) or (SkillList.Count = 0) then exit;
+  for k := 0 to Length(MpAoeSk) - 1 do begin
+    Left := MpSkillLeft(MpAoeSk[k], Has);
+    if Has then begin
+      result := true;
+      if MpAoeRad[k] > R then R := MpAoeRad[k];
+    end else if not MpAoeTold[k] then begin
+      MpAoeTold[k] := true;
+      Engine.Msg('[Pull]', 'No pull skill ' + IntToStr(MpAoeSk[k]) + ' on this character - not used', 128);
+    end;
+  end;
+end;
+
+procedure MpSwSwapMob(a, b: integer);
+var T: integer;
+begin
+  T := SwMobOID[a];
+  SwMobOID[a] := SwMobOID[b];
+  SwMobOID[b] := T;
+  T := SwMobX[a];
+  SwMobX[a] := SwMobX[b];
+  SwMobX[b] := T;
+  T := SwMobY[a];
+  SwMobY[a] := SwMobY[b];
+  SwMobY[b] := T;
+  T := SwMobZ[a];
+  SwMobZ[a] := SwMobZ[b];
+  SwMobZ[b] := T;
+end;
+
+// the plan, 1: the free mobs of the pull now - a room: all of it; else the ones within pull_range (2000) of us, the
+// Need nearest (as many as the pack lacks: the rest stay for the next pull) - and the mobs that must not come
+procedure MpSwSnap(Need: integer);
+var i, j, k, NX, NY, FarR: integer;
+begin
+  SwMobN := 0;
+  SwBadN := 0;
+  FarR := MpPullRange;
+  if FarR <= 0 then FarR := 2000;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    if PullIsShooterAt(i) then begin
+      if (SwBadN < 32) and (MpDist(NX, NY) < 5000) then begin
+        SwBadX[SwBadN] := NX;
+        SwBadY[SwBadN] := NY;
+        Inc(SwBadN);
+      end;
+      continue;
+    end;
+    if not MpFreeOK(i) then continue;
+    if (PpN < 3) and (MpDist(NX, NY) > FarR) then continue;
+    if SwMobN >= 128 then continue;
+    SwMobOID[SwMobN] := NpcList(i).OID;
+    SwMobX[SwMobN] := NX;
+    SwMobY[SwMobN] := NY;
+    SwMobZ[SwMobN] := NpcList(i).Z;
+    Inc(SwMobN);
+  end;
+  if (PpN < 3) and (Need > 0) and (SwMobN > Need) then begin
+    for j := 0 to Need - 1 do begin     // the Need nearest to the front
+      k := j;
+      for i := j + 1 to SwMobN - 1 do
+        if MpDist(SwMobX[i], SwMobY[i]) < MpDist(SwMobX[k], SwMobY[k]) then k := i;
+      if k <> j then MpSwSwapMob(j, k);
+    end;
+    SwMobN := Need;
+  end;
+  for i := 0 to SwMobN - 1 do SwMobPt[i] := -1;
+end;
+
+// the plan, 2: the mobs grouped into areas of the skill (radius R with a margin): the area round one of them that
+// takes the most of the ones left first (a mob stands on walkable ground: we can get there); never an area with a
+// mob that must not come near it; a mob behind a wall of the map from its middle goes to another area
+procedure MpSwCover(R: integer);
+var c, j, b, Best, BestC, Cnt: integer;
+  RE, RB: double;
+  Ok, Sight: boolean;
+begin
+  SwN := 0;
+  RE := MpSq(R * 0.8);
+  RB := MpSq(R + 150);
+  Sight := NavIsReady();
+  while SwN < 32 do begin
+    BestC := -1;
+    Best := 0;
+    for c := 0 to SwMobN - 1 do begin
+      if SwMobPt[c] <> -1 then continue;
+      Ok := true;
+      for b := 0 to SwBadN - 1 do
+        if MpSq(SwBadX[b] - SwMobX[c]) + MpSq(SwBadY[b] - SwMobY[c]) <= RB then begin
+          Ok := false;
+          break;
+        end;
+      if not Ok then continue;
+      Cnt := 0;
+      for j := 0 to SwMobN - 1 do
+        if (SwMobPt[j] = -1) and (MpSq(SwMobX[j] - SwMobX[c]) + MpSq(SwMobY[j] - SwMobY[c]) <= RE) then Inc(Cnt);
+      if Cnt > Best then begin
+        Best := Cnt;
+        BestC := c;
+      end;
+    end;
+    if BestC < 0 then break;           // the ones left are next to a mob that must not come
+    SwPX[SwN] := SwMobX[BestC];
+    SwPY[SwN] := SwMobY[BestC];
+    SwPZ[SwN] := SwMobZ[BestC];
+    for j := 0 to SwMobN - 1 do
+      if (SwMobPt[j] = -1) and (MpSq(SwMobX[j] - SwMobX[BestC]) + MpSq(SwMobY[j] - SwMobY[BestC]) <= RE) and
+         ((j = BestC) or (not Sight) or NavSee(SwMobX[BestC], SwMobY[BestC], SwMobX[j], SwMobY[j])) then
+        SwMobPt[j] := SwN;
+    Inc(SwN);
+  end;
+end;
+
+// the way of the order SwTry: from us (32) through the n points, to the end (33) if HasEnd
+function MpSwCost(n: integer; HasEnd: boolean): double;
+var i: integer;
+begin
+  result := SwDM[32 * 34 + SwTry[0]];
+  for i := 1 to n - 1 do result := result + SwDM[SwTry[i - 1] * 34 + SwTry[i]];
+  if HasEnd then result := result + SwDM[SwTry[n - 1] * 34 + 33];
+end;
+
+procedure MpSwRev(a, b: integer);
+var T: integer;
+begin
+  while a < b do begin
+    T := SwTry[a];
+    SwTry[a] := SwTry[b];
+    SwTry[b] := T;
+    Inc(a);
+    Dec(b);
+  end;
+end;
+
+// the plan, 3: the order of the n points - the shortest way from us through all of them (to the end if HasEnd):
+// up to 7 points every order is tried, more - the nearest next, then a piece turned round while it gets shorter.
+// SwOrd = the order, result = its length
+function MpSwOrder(n: integer; HasEnd: boolean): double;
+var i, j, k, T, Pass: integer;
+  C, Best: double;
+  Better: boolean;
+begin
+  for i := 0 to n - 1 do SwTry[i] := i;
+  if n <= 7 then begin
+    Best := MpSwCost(n, HasEnd);
+    for i := 0 to n - 1 do SwOrd[i] := SwTry[i];
+    while true do begin                // the next order (lexicographic)
+      i := n - 2;
+      while (i >= 0) and (SwTry[i] >= SwTry[i + 1]) do Dec(i);
+      if i < 0 then break;
+      j := n - 1;
+      while SwTry[j] <= SwTry[i] do Dec(j);
+      T := SwTry[i];
+      SwTry[i] := SwTry[j];
+      SwTry[j] := T;
+      MpSwRev(i + 1, n - 1);
+      C := MpSwCost(n, HasEnd);
+      if C < Best then begin
+        Best := C;
+        for k := 0 to n - 1 do SwOrd[k] := SwTry[k];
+      end;
+    end;
+    result := Best;
+    exit;
+  end;
+  for i := 0 to n - 1 do SwUsed[i] := false;
+  k := 32;
+  for i := 0 to n - 1 do begin         // the nearest next from us
+    T := -1;
+    for j := 0 to n - 1 do
+      if (not SwUsed[j]) and ((T < 0) or (SwDM[k * 34 + j] < SwDM[k * 34 + T])) then T := j;
+    SwUsed[T] := true;
+    SwTry[i] := T;
+    k := T;
+  end;
+  Best := MpSwCost(n, HasEnd);
+  Better := true;
+  Pass := 0;
+  while Better and (Pass < 6) do begin   // a piece turned round: kept when the way gets shorter
+    Better := false;
+    Inc(Pass);
+    for i := 0 to n - 2 do
+      for j := i + 1 to n - 1 do begin
+        MpSwRev(i, j);
+        C := MpSwCost(n, HasEnd);
+        if C < Best - 1 then begin
+          Best := C;
+          Better := true;
+        end else MpSwRev(i, j);
+      end;
+  end;
+  for i := 0 to n - 1 do SwOrd[i] := SwTry[i];
+  result := Best;
+end;
+
+// the plan, 4: the order for each end point (PullSweepEndAdd) - the one with the shortest whole way is taken
+// (MpSwEndPick); none - the way ends at the last point. SwX / SwY / SwZ = the points in run order, SwMobPt -> them
+procedure MpSwPlan();
+var i, j, e, UX, UY: integer;
+  C, Best: double;
+begin
+  UX := User.X;
+  UY := User.Y;
+  for i := 0 to SwN - 1 do begin
+    for j := 0 to SwN - 1 do SwDM[i * 34 + j] := Sqrt(MpSq(SwPX[i] - SwPX[j]) + MpSq(SwPY[i] - SwPY[j]));
+    SwDM[32 * 34 + i] := Sqrt(MpSq(SwPX[i] - UX) + MpSq(SwPY[i] - UY));
+  end;
+  MpSwEndPick := -1;
+  if MpSwEndN = 0 then begin
+    MpSwOrder(SwN, false);
+    for i := 0 to SwN - 1 do SwBest[i] := SwOrd[i];
+  end else begin
+    Best := 1E18;
+    for e := 0 to MpSwEndN - 1 do begin
+      for i := 0 to SwN - 1 do
+        SwDM[i * 34 + 33] := Sqrt(MpSq(SwPX[i] - MpSwEndX[e]) + MpSq(SwPY[i] - MpSwEndY[e]));
+      C := MpSwOrder(SwN, true);
+      if C < Best then begin
+        Best := C;
+        MpSwEndPick := e;
+        for i := 0 to SwN - 1 do SwBest[i] := SwOrd[i];
+      end;
+    end;
+  end;
+  for i := 0 to SwN - 1 do begin
+    SwX[i] := SwPX[SwBest[i]];
+    SwY[i] := SwPY[SwBest[i]];
+    SwZ[i] := SwPZ[SwBest[i]];
+    SwInv[SwBest[i]] := i;
+  end;
+  for j := 0 to SwMobN - 1 do
+    if SwMobPt[j] >= 0 then SwMobPt[j] := SwInv[SwMobPt[j]];
+end;
+
+// the mobs of point p still to pull (alive, free: not on us, not provoked / hit by us) and where they stand now ->
+// SwLN / SwLX / SwLY / SwLOID; TX, TY, TZ = the one nearest to the point as planned (the run goes at it)
+procedure MpSwLook(p: integer; var TX, TY, TZ: integer);
+var j, Idx, NX, NY: integer;
+  D, Best: double;
+begin
+  SwLN := 0;
+  Best := 1E18;
+  TX := SwX[p];
+  TY := SwY[p];
+  TZ := SwZ[p];
+  for j := 0 to SwMobN - 1 do begin
+    if SwMobPt[j] <> p then continue;
+    Idx := MpIdx(SwMobOID[j]);
+    if Idx < 0 then continue;
+    if not MpFreeOK(Idx) then continue;
+    NX := NpcList(Idx).X;
+    NY := NpcList(Idx).Y;
+    SwLOID[SwLN] := SwMobOID[j];
+    SwLX[SwLN] := NX;
+    SwLY[SwLN] := NY;
+    Inc(SwLN);
+    D := MpSq(NX - SwX[p]) + MpSq(NY - SwY[p]);
+    if D < Best then begin
+      Best := D;
+      TX := NX;
+      TY := NY;
+      TZ := NpcList(Idx).Z;
+    end;
+  end;
+end;
+
+// of the mobs left of the point (MpSwLook): how many are within R of CX, CY and in sight from there
+function MpSwInR(CX, CY, R: integer): integer;
+var j: integer;
+  Sight: boolean;
+begin
+  result := 0;
+  Sight := NavIsReady();
+  for j := 0 to SwLN - 1 do
+    if (MpSq(SwLX[j] - CX) + MpSq(SwLY[j] - CY) <= MpSq(R)) and
+       ((not Sight) or NavSee(CX, CY, SwLX[j], SwLY[j])) then Inc(result);
+end;
+
+// a mob that must not come (the ignore list / a skipped champion) within R of CX, CY
+function MpSwBad(CX, CY, R: integer): boolean;
+var i, NX, NY: integer;
+begin
+  result := false;
+  if (Length(MpIgnIDs) = 0) and (MpChampHP <= 0) then exit;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead or (not PullIsShooterAt(i)) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    if MpSq(NX - CX) + MpSq(NY - CY) <= MpSq(R) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// an AoE at a mob (skill k): the mob left of the point to cast it at - within its cast range of us and in sight,
+// the one whose area takes the most of the ones left (N); its place CX, CY. 0 = none in reach
+function MpSwAtMob(k: integer; var N, CX, CY: integer): integer;
+var j, c, UX, UY: integer;
+begin
+  result := 0;
+  N := 0;
+  UX := User.X;
+  UY := User.Y;
+  for j := 0 to SwLN - 1 do begin
+    if MpSq(SwLX[j] - UX) + MpSq(SwLY[j] - UY) > MpSq(MpAoeRng[k]) then continue;
+    if NavIsReady() and (not NavSee(UX, UY, SwLX[j], SwLY[j])) then continue;
+    c := MpSwInR(SwLX[j], SwLY[j], MpAoeRad[k] * 95 div 100);
+    if c > N then begin
+      N := c;
+      result := SwLOID[j];
+      CX := SwLX[j];
+      CY := SwLY[j];
+    end;
+  end;
+end;
+
+// press the AoE skill k (round us, or at the mob TgtOID standing at CX, CY): sent on the run until it starts (its
+// reuse) - no move order meanwhile (it would take the place of the skill on the server). It went: every free mob
+// in its area (in sight of its middle) is ours from now (provoked) and the run goes on at once; the target stays
+// (dropping it would break the cast). true = it went
+function MpSwPress(k, TgtOID, CX, CY: integer): boolean;
+var T0, SentAt: cardinal;
+  Has: boolean;
+  i, n, NX, NY, R: integer;
+begin
+  result := false;
+  if MpAoeAtMob[k] then Engine.SetTarget(TgtOID);
+  T0 := GetTickCount;
+  SentAt := 0;
+  while (not User.Dead) and (not MpStop) and (GetTickCount - T0 < cardinal(MpTapFireMs)) do begin
+    if MpSkillLeft(MpAoeSk[k], Has) > 0 then begin
+      result := true;
+      break;
+    end;
+    if (SentAt = 0) or (GetTickCount - SentAt >= cardinal(MpTapResendMs)) then begin
+      Engine.DUseSkill(MpAoeSk[k], false, false);
+      SentAt := GetTickCount;
+    end;
+    Delay(30);
+  end;
+  MpMoveReset();                       // no "stuck" from the time it was sent
+  if not result then begin
+    MpAoeHold[k] := GetTickCount + 1000;
+    MpMsg('Pull skill ' + IntToStr(MpAoeSk[k]) + ' did not go (MP? out of sight?) - running on, again in 1 s');
+    exit;
+  end;
+  MpAoeLast[k] := GetTickCount;
+  MpAoeRunAt := GetTickCount;
+  if not MpAoeAtMob[k] then begin      // round us: from where it went
+    CX := User.X;
+    CY := User.Y;
+  end;
+  R := MpAoeRad[k];
+  n := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if not MpFreeOK(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    if MpSq(NX - CX) + MpSq(NY - CY) > MpSq(R) then continue;
+    if NavIsReady() and (not NavSee(CX, CY, NX, NY)) then continue;
+    MpPrvAdd(NpcList(i).OID);
+    Inc(n);
+  end;
+  MpMsg('Pull skill ' + IntToStr(MpAoeSk[k]) + ' went ' + IntToStr(GetTickCount - T0) + ' ms after the first send: ' +
+    IntToStr(n) + ' free mobs in its area are ours now - running on');
+end;
+
+// the run: the whole pull is one run planned at its start (MpSwSnap / MpSwCover / MpSwPlan) - point after point the
+// AoE skill is pressed on the run as soon as every mob of the point left is in its reach (the earliest place: no need
+// to get to the point), then at once on to the next. Mobs that came by themselves / an earlier press took: the point
+// is skipped. At the point and the skill not ready yet: through it and back (never standing) until it is, at most
+// sweep_wait_ms, then on. Ends at the last point - the caller leads the pack to the spot (the end the plan took,
+// PullSweepEndPicked). false = nothing to plan (the usual pull goes on: it ends at once)
+function MpSweep(): boolean;
+var p, k, j, R, Need, TX, TY, TZ, CX, CY, UX, UY, TgtOID, N, BestK, Presses: integer;
+  T0, AtAt, Started: cardinal;
+  First: boolean;
+  S: string;
+begin
+  result := false;
+  MpSwEndPick := -1;
+  if not MpSwOn(R) then exit;
+  Need := 0;
+  if PpN < 3 then begin                // not a room: as many as the pack lacks
+    Need := MpPack - PullCountOurs();
+    if Need < 1 then exit;
+  end;
+  MpSwSnap(Need);
+  if SwMobN = 0 then exit;
+  MpSwCover(R);
+  if SwN = 0 then begin
+    MpMsg('Pull run: ' + IntToStr(SwMobN) + ' free mobs, every one next to an ignored mob / a skipped champion - no run');
+    exit;
+  end;
+  MpSwPlan();
+  result := true;
+  N := 0;
+  for j := 0 to SwMobN - 1 do if SwMobPt[j] >= 0 then Inc(N);
+  S := 'Pull run: ' + IntToStr(N) + ' free mobs in ' + IntToStr(SwN) + ' areas of the skill (radius ' + IntToStr(R) + ')';
+  if MpSwEndPick >= 0 then S := S + ', ends at end point ' + IntToStr(MpSwEndPick + 1);
+  if N < SwMobN then S := S + '; ' + IntToStr(SwMobN - N) + ' left (next to an ignored mob / a champion)';
+  MpMsg(S);
+  if DbgOn() then
+    for p := 0 to SwN - 1 do begin
+      N := 0;
+      for j := 0 to SwMobN - 1 do if SwMobPt[j] = p then Inc(N);
+      Dbg('[Pull]', 'run point ' + IntToStr(p + 1) + ' at ' + IntToStr(SwX[p]) + ',' + IntToStr(SwY[p]) + ': ' + IntToStr(N) + ' mobs');
+    end;
+  Presses := 0;
+  Started := GetTickCount;
+  for p := 0 to SwN - 1 do begin
+    First := true;
+    T0 := GetTickCount;
+    AtAt := 0;
+    while true do begin
+      if MpMustStop() then exit;
+      DbgTick();
+      if GetTickCount - Started > cardinal(MpMaxMs) then begin
+        MpMsg('Pull run: the pull time is over');
+        exit;
+      end;
+      if (User.HP < MpMinHP) and (PullCountAggro() > 0) then begin
+        MpMsg('Pull run: HP ' + IntToStr(User.HP) + '% - to the fight');
+        exit;
+      end;
+      if PullHealTick() then begin     // our HP low: a heal / drain of PullAddHeal, then on
+        First := true;
+        continue;
+      end;
+      MpSwLook(p, TX, TY, TZ);
+      if SwLN = 0 then break;          // all of them ours already: the next point
+      UX := User.X;
+      UY := User.Y;
+      if (AtAt = 0) and (MpDist(TX, TY) < 150) then AtAt := GetTickCount;
+      // a ready skill whose area from here takes every one left (at the point: whatever it takes)
+      BestK := -1;
+      TgtOID := 0;
+      for k := 0 to Length(MpAoeSk) - 1 do begin
+        if not MpSwReady(k) then continue;
+        if MpAoeAtMob[k] then begin
+          TgtOID := MpSwAtMob(k, N, CX, CY);
+          if (TgtOID <> 0) and ((N >= SwLN) or (AtAt <> 0)) and (not MpSwBad(CX, CY, MpAoeRad[k] + 50)) then BestK := k;
+        end else begin
+          N := MpSwInR(UX, UY, MpAoeRad[k] * 95 div 100);
+          CX := UX;
+          CY := UY;
+          if (N > 0) and ((N >= SwLN) or (AtAt <> 0)) and (not MpSwBad(UX, UY, MpAoeRad[k] + 50)) then BestK := k;
+        end;
+        if BestK >= 0 then break;
+      end;
+      if BestK >= 0 then begin
+        if MpSwPress(BestK, TgtOID, CX, CY) then Inc(Presses);
+        First := true;                 // the next click at once
+        AtAt := 0;                     // some left there (out of its reach): their wait starts anew
+        T0 := GetTickCount;
+        continue;
+      end;
+      if (AtAt <> 0) and (GetTickCount - AtAt > cardinal(MpSwWaitMs)) then begin
+        MpMsg('Pull run: point ' + IntToStr(p + 1) + ' - the skill not ready / not in reach for ' +
+          IntToStr(MpSwWaitMs div 1000) + ' s, on (' + IntToStr(SwLN) + ' left there)');
+        break;
+      end;
+      if GetTickCount - T0 > 30000 then begin
+        MpMsg('Pull run: point ' + IntToStr(p + 1) + ' not reached in 30 s, on');
+        break;
+      end;
+      if First then MpMoveReset();     // a new run: the "stuck" clock afresh
+      MpChase(TX, TY, TZ, First);      // through it, never stopping (waiting there: through it and back)
+      First := false;
+      if MpStuck() then begin
+        MpMsg('Pull run: stuck on the way to point ' + IntToStr(p + 1) + ', on');
+        MpMoveReset();
+        break;
+      end;
+      Delay(MpTickMs);
+    end;
+  end;
+  MpMsg('Pull run done: ' + IntToStr(Presses) + ' presses, ' + IntToStr(PullCountOurs()) + ' ours');
+end;
+
 function PullRun(): integer;
 var OID, Idx, MX, MY, MZ, Cnt, Prev, Limit, HP, TapHP0: integer;
   Started, LastGain, NearSince, LastSend, ApproachSince, TapStart, TapArmedAt, TapCloseUntil: cardinal;
@@ -1684,19 +2370,28 @@ begin
   MpDirX := User.X;
   MpDirY := User.Y;
   MpWaiting := false;                  // a new pull: no waiting carried over
+  MpAoeRunAt := 0;
   PackMax := MpPack;
   DbgAt := 0;
   Dbg('[Pull]', 'start: pack ' + IntToStr(MpPack) + ' live ' + IntToStr(Ord(MpPackLive)) + ' leash ' + IntToStr(MpLeash) +
     ' tap ' + IntToStr(MpTapWeapon) + ' skill ' + IntToStr(MpTapSkill) + ' range ' + IntToStr(MpTapRange) + ' always ' +
-    IntToStr(Ord(MpTapAlways)) + ' room pts ' + IntToStr(PpN) + ' tap skills ' + IntToStr(Length(MpTapSks)));
+    IntToStr(Ord(MpTapAlways)) + ' room pts ' + IntToStr(PpN) + ' tap skills ' + IntToStr(Length(MpTapSks)) +
+    ' aoe skills ' + IntToStr(Length(MpAoeSk)));
   // tap skills this character does not have (the skill list is loaded) leave the list; none left -> pulled
   // by running past them
   if (MpTapSkill > 0) and (SkillList.Count > 0) then MpTapDropMissing();
   PullDbgMobs('[Pull]');
+  // an AoE pull skill: the whole pull is one run planned now (MpSweep) - it ends with it, no chase after
+  if MpSweep() then begin
+    result := PullCountOurs();
+    MpMsg('Pull end: ' + IntToStr(result) + ' ours (the run is done)');
+    PullDbgMobs('[Pull] end');
+    exit;
+  end;
   while not MpMustStop() do begin
     DbgTick();
     PullCheckShooters();
-    Cnt := PullCountAggro() + MpCountHit();   // + the mobs our tap hit (they come)
+    Cnt := PullCountAggro() + MpCountHit() + MpCountPrv();   // + the mobs our tap hit / our AoE took (they come)
     result := Cnt;
     if MpPackLive then begin             // a mob that came up meanwhile is taken too
       Limit := Cnt + MpCountFreeAll();
@@ -1899,7 +2594,7 @@ begin
         // farther than the tap range - or a tap skill and a wall between us (no cast through walls)
         if (MpDist(MX, MY) > TapRng) or MpTapBlind(MX, MY) then begin
           if LastSend = 0 then MpMoveReset();
-          if MpStillMs() > MpStuckMs then begin
+          if MpStuck() then begin
             MpMsg('Cannot get to ' + PullNpcName(Idx) + ' (stuck on the way), skipping it');
             PullIgnore(OID, MpSkipMs);
             OID := 0;
@@ -2114,7 +2809,7 @@ begin
     if MpDist(MX, MY) > MpTouchDist then begin
       NearSince := 0;
       if LastSend = 0 then MpMoveReset();
-      if (GetTickCount - ApproachSince > MpApproachMs) or (MpStillMs() > MpStuckMs) then begin
+      if (GetTickCount - ApproachSince > MpApproachMs) or MpStuck() then begin
         MpMsg('Cannot get to ' + PullNpcName(Idx) + ' (wall?), skipping it');
         PullIgnore(OID, MpSkipMs);
         OID := 0;

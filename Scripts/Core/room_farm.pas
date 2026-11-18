@@ -292,12 +292,14 @@ begin
   result := RoomInside(i, UX, UY) or (Sqrt(DX * DX + DY * DY) <= RM_SEE);
 end;
 
+// free mobs inside room i - its own polygon, whatever room the pull is set to now (PullIsFree would take only the
+// mobs of that room: a room next to it was counted 0 and taken as empty)
 function RoomFree(i: integer): integer;
 var k, NX, NY: integer;
 begin
   result := 0;
   for k := 0 to NpcList.Count - 1 do if k < NpcList.Count then begin
-    if not PullIsFree(k) then continue;
+    if not PullIsFreeAnyRoom(k) then continue;
     NX := NpcList(k).X;
     NY := NpcList(k).Y;
     if RoomInside(i, NX, NY) then Inc(result);
@@ -310,7 +312,7 @@ var k, NX, NY: integer;
 begin
   result := 0;
   for k := 0 to NpcList.Count - 1 do if k < NpcList.Count then begin
-    if not (PullIsFree(k) or PullIsChampion(k)) then continue;
+    if not (PullIsFreeAnyRoom(k) or PullIsChampion(k)) then continue;
     NX := NpcList(k).X;
     NY := NpcList(k).Y;
     if RoomInside(i, NX, NY) then Inc(result);

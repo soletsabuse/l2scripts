@@ -1,0 +1,1674 @@
+uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
+
+// =============================================================================
+// PvP focus: keys that target enemy players. Everything of it lives in its own folder Library\PvP:
+//   pvp_focus.txt      this script (run it in the bot on every character)
+//   pvp.html           the page - opened through the PvP server: http://127.0.0.1:7790
+//   pvp_server.py      the PvP server (pvp_server.bat starts it with no window and opens the page)
+//   profiles\<id>.pvp  the profiles, any number of them
+//   pvp.ini            active=<id>: the profile EVERY character uses (no profile per character)
+// The script reads the profile files itself (a change counts within a second, no restart) - the keys work with
+// the server down too. With the server up it is told at once (RELOAD) when the page saves, and it sends what it
+// sees (STATE: the profile it uses and what it made of it, the players around - clan, class, place, cast, revive,
+// the skills cast nearby, our own skills) ~3 times a second: the page is live.
+//
+// A group of a profile: a key (none: auto only) and a mode:
+//   class   - enemies of the classes of the group, by the class priority (1 first), then the nearest
+//   reskill - enemies up from the dead not longer than <window> s ago (the classes: optional)
+//   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
+//             who=target - the one it is cast on (the one being charged: the most casters first),
+//             who=caster - the caster (the classes: optional, of the one taken)
+//   names   - the priority players of the list, in its order (any class / clan)
+// Every mode: the priority players of the list first (prio_first=1), the skipped ones never; never a party
+// member / our clan / our alliance; within the group's range and height. An enemy: his clan OR alliance is
+// on the clans list (any case; the list empty -> anyone), or he is a priority player.
+// Pressed again while on its last pick -> the next one by the same order (a cycle: it ends cycle_ms after the
+// last press or when the target is changed by other means). Only the target now can be taken -> its after
+// action again.
+// auto=1 (reskill / cast): the group fires by itself on a new revive / a new cast of its skills (not more
+// often than auto_ms, not while the target is one of the group already).
+// A pick: the target; mark=1..4 -> that token on him (RequestActionUse $4E..$51, sniffed with token_sniffer);
+// after=attack -> the auto attack, after=skill:<ID> -> that skill (sent every RESEND_MS till it starts, up to
+// FIRE_MS); ctrl=1 -> both as with Ctrl held. Said in the bot window and (chat=1) as a fake party chat
+// message only we see. A key works only while the game window of THIS character is the active one.
+// The casts are read as force_sounds does (CharList(i).Cast / .Target every CAST_SCAN_MS); the revives:
+// a player seen dead, then alive.
+// =============================================================================
+
+const
+  KEY_POLL_MS   = 30;       // the keys are looked at this often
+  MOD_GRACE_MS  = 300;      // a look: Ctrl / Shift / Alt let go this little before the key still count
+  REPEAT_MS     = 400;      // key events: a held key repeats - a new press only after this long without one
+  SAME_MS       = 150;      // the look and a key event catching a press this close to each other = one press
+  CFG_CHECK_MS  = 1000;     // the selector / the profile are read this often (changed -> read anew)
+  STATE_MS      = 300;      // what we see goes to the PvP server (the page) this often
+  SRV_HOST      = '127.0.0.1';
+  SRV_PORT      = '7791';   // the PvP server, the bots' port (pvp_server.py)
+  SRV_PAGE      = 'http://127.0.0.1:7790';
+  SRV_RETRY_MS  = 3000;     // no server: tried again this often
+  CAST_SCAN_MS  = 100;      // who casts what: looked at this often
+  CAST_KEEP_MS  = 600;      // a cast seen this lately still counts (a channel flickers between the looks)
+  REV_SCAN_MS   = 200;      // who is dead / up again: looked at this often
+  RESEND_MS     = 150;      // after=skill: sent again this often ...
+  FIRE_MS       = 1500;     // ... till it starts, at most this long
+  MAX_GROUPS    = 16;
+  MAX_CLS       = 64;       // classes of one group
+  MAX_SK        = 16;       // skills of one cast group
+  MAX_PL        = 64;       // players on the list
+  MAX_CYCLE     = 32;       // a cycle remembers this many picks
+  MAX_NEAR      = 150;      // players into the state for the page ...
+  NEAR_RANGE    = 4000;     // ... this close
+  MAX_CS        = 128;      // casts going on at once
+  DEAD_SLOTS    = 128;
+  REV_SLOTS     = 64;
+  SEEN_MAX      = 40;       // the skills cast nearby, for the page
+  PROF_DIR      = 'profiles\';    // in the folder of the script (Library\PvP): the profiles
+  SEL_NAME      = 'pvp.ini';        // ... the active one
+  MODE_CLASS    = 0;
+  MODE_RES      = 1;
+  MODE_CAST     = 2;
+  MODE_NAMES    = 3;
+
+function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
+function GetForegroundWindow: cardinal; stdcall; external 'user32.dll';
+
+var
+  // the groups. The key thread reads GroupN / GKey / GWas / EvAt only (numbers); the rest is the main thread's
+  GroupN: integer;
+  GKey: array[0..15] of integer;                     // VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = auto only
+  GWas: array[0..15] of boolean;                     // a look: the key was down the last time
+  EvAt: array[0..15] of cardinal;                    // the last key event of the group key
+  ModAt: array[0..2] of cardinal;                    // Ctrl / Shift / Alt last seen down
+  NextG: integer;                                    // a group key pressed, to be done (-1 none)
+  LastG, LastSrc: integer;                           // the last press taken: its group, by 1 a key event / 2 a look
+  LastAt: cardinal;
+  GOn, GCtrl, GAuto, GPrio: array[0..15] of boolean;
+  GName, GKeyText: array[0..15] of string;
+  GMode, GRange, GHeight, GMark, GAfter, GAfterSk, GAutoMs, GWindow, GWho, GClsN, GSkN: array[0..15] of integer;
+  GCls, GTier: array[0..1023] of integer;            // group g: GCls[g * MAX_CLS + k], its priority GTier (1 first)
+  GSk: array[0..255] of integer;                     // group g: GSk[g * MAX_SK + k]
+  AutoWant: array[0..15] of boolean;                 // a new revive / cast for an auto group
+  AutoAt: array[0..15] of cardinal;                  // ... it fired then
+  // the profile
+  ProfName, ClanKey, ClanText, ChatName: string;     // ClanKey: ',clan one,clan two,' in lower case ('' = anyone)
+  ChatOn: boolean;
+  CycleMs: integer;
+  PlName: array[0..63] of string;                    // the players list, names in lower case
+  PlTag, PlRank: array[0..63] of integer;            // 1 priority (PlRank: its place among them), 2 never
+  PlN: integer;
+  // the cycle
+  CycG, CycN: integer;
+  CycAt: cardinal;
+  CycOID: array[0..31] of integer;
+  // ours
+  MyOID, MyClanID, MyAllyID: integer;
+  // the casts going on: caster, skill, its target, the caster's class, last seen
+  CsOID, CsSk, CsTgt, CsCls: array[0..127] of integer;
+  CsAt: array[0..127] of cardinal;
+  CsN: integer;
+  // the skills cast nearby (not by ours) since the start, for the page
+  SnSk, SnCnt, SnCls: array[0..39] of integer;
+  SnAt: array[0..39] of cardinal;
+  SnN: integer;
+  // revives: the players seen dead; the ones seen getting up and when
+  DeadOID: array[0..127] of integer;
+  DeadHead: integer;
+  RevOID: array[0..63] of integer;
+  RevAt: array[0..63] of cardinal;
+  RevHead: integer;
+  // after a pick: a skill being sent
+  PendSk, PendTgt, PendL0: integer;
+  PendCtrl: boolean;
+  PendSent, PendStart: cardinal;
+  // the files
+  CharName, SelPath, ProfId, ProfPath, SelHow: string;
+  ProfText, CfgReadAt, CfgErrJson, SkJson: string;
+  SkSig: integer;
+  ProfMissTold, SelTold: boolean;
+  // the PvP server (pvp_server.py): the page live
+  Srv: TTCPBlockSocket;
+  SrvOn, SrvTold: boolean;
+  SrvAt: cardinal;
+  CfgAt: cardinal;                                   // the files were read then (0: read them now)
+  StOut: string;                                     // the state being built
+
+// ===================== text =====================
+
+procedure SplitTo(S, Sep: string; L: TStringList);
+var p: integer;
+begin
+  L.Clear;
+  if S = '' then exit;
+  while true do begin
+    p := Pos(Sep, S);
+    if p = 0 then begin L.Add(S); break; end;
+    L.Add(Copy(S, 1, p - 1));
+    Delete(S, 1, p);
+  end;
+end;
+
+function JsonStr(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '"';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if (C = '"') or (C = '\') then result := result + '\' + C
+    else if Ord(S[i]) < 32 then result := result + ' '
+    else result := result + C;
+  end;
+  result := result + '"';
+end;
+
+// into the bot's window and (chat=1) the party chat as a fake message only we see
+procedure Say(Txt: string);
+begin
+  Engine.Msg('[PvP]', Txt, 128);
+  if ChatOn then ChatSayFrom(ChatName, Copy(Txt, 1, 200));
+end;
+
+function HexLE32(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) +
+            IntToHex((V shr 16) and $FF, 2) + IntToHex((V shr 24) and $FF, 2);
+end;
+
+// the character name / a profile id -> a file name (letters, digits, _ and - only)
+function FileTag(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if ((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or
+       (C = '_') or (C = '-') then result := result + C
+    else result := result + '_';
+  end;
+  if result = '' then result := 'char';
+end;
+
+// ===================== keys (as equip_binds) =====================
+
+function KeyVK(S: string): integer;
+var n: integer;
+begin
+  result := 0;
+  S := UpperCase(Trim(S));
+  if S = '' then exit;
+  if (Length(S) = 1) and (((S[1] >= 'A') and (S[1] <= 'Z')) or ((S[1] >= '0') and (S[1] <= '9'))) then begin
+    result := Ord(S[1]);
+    exit;
+  end;
+  if (Length(S) >= 2) and (S[1] = 'F') then begin
+    n := StrToIntDef(Copy(S, 2, 2), 0);
+    if (n >= 1) and (n <= 24) then begin result := $6F + n; exit; end;
+  end;
+  if Copy(S, 1, 3) = 'NUM' then begin
+    n := StrToIntDef(Copy(S, 4, 1), -1);
+    if (n >= 0) and (Length(S) = 4) then begin result := $60 + n; exit; end;
+  end;
+  if S = 'SPACE' then result := $20
+  else if S = 'TAB' then result := $09
+  else if S = 'ENTER' then result := $0D
+  else if S = 'ESC' then result := $1B
+  else if S = 'BACKSPACE' then result := $08
+  else if S = 'INSERT' then result := $2D
+  else if S = 'DELETE' then result := $2E
+  else if S = 'HOME' then result := $24
+  else if S = 'END' then result := $23
+  else if S = 'PAGEUP' then result := $21
+  else if S = 'PAGEDOWN' then result := $22
+  else if S = 'UP' then result := $26
+  else if S = 'DOWN' then result := $28
+  else if S = 'LEFT' then result := $25
+  else if S = 'RIGHT' then result := $27
+  else if S = 'MOUSE3' then result := $04
+  else if S = 'MOUSE4' then result := $05
+  else if S = 'MOUSE5' then result := $06
+  else if S = '~' then result := $C0
+  else if S = 'MINUS' then result := $BD
+  else if S = 'EQUAL' then result := $BB
+  else if S = 'LBRACKET' then result := $DB
+  else if S = 'RBRACKET' then result := $DD
+  else if S = 'SEMICOLON' then result := $BA
+  else if S = 'QUOTE' then result := $DE
+  else if S = 'COMMA' then result := $BC
+  else if S = 'PERIOD' then result := $BE
+  else if S = 'SLASH' then result := $BF
+  else if S = 'BACKSLASH' then result := $DC
+  else if S = 'NUMMUL' then result := $6A
+  else if S = 'NUMADD' then result := $6B
+  else if S = 'NUMSUB' then result := $6D
+  else if S = 'NUMDOT' then result := $6E
+  else if S = 'NUMDIV' then result := $6F;
+end;
+
+// "Ctrl+Shift+Z" -> VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = cannot read it
+function ParseKey(S: string): integer;
+var L: TStringList;
+  i, Md, VK: integer;
+  P: string;
+begin
+  result := 0;
+  Md := 0;
+  VK := 0;
+  L := TStringList.Create;
+  SplitTo(Trim(S), '+', L);
+  for i := 0 to L.Count - 1 do begin
+    P := UpperCase(Trim(L[i]));
+    if P = 'CTRL' then Md := Md or 1
+    else if P = 'SHIFT' then Md := Md or 2
+    else if P = 'ALT' then Md := Md or 4
+    else VK := KeyVK(P);
+  end;
+  L.Free;
+  if VK <> 0 then result := VK + 256 * Md;
+end;
+
+function KeyDown(VK: integer): boolean;
+begin
+  result := (GetAsyncKeyState(VK) and $8000) <> 0;
+end;
+
+// modifier m: 0 Ctrl, 1 Shift, 2 Alt
+function ModVK(m: integer): integer;
+begin
+  if m = 0 then result := $11
+  else if m = 1 then result := $10
+  else result := $12;
+end;
+
+// the modifiers of a group key (Md: 1 Ctrl, 2 Shift, 4 Alt): the needed ones down (Grace: or seen down
+// within MOD_GRACE_MS - let go a moment before the key), the others up
+function ModsOk(Md: integer; Grace: boolean): boolean;
+var m: integer;
+  DownNow, Recent: boolean;
+begin
+  result := false;
+  for m := 0 to 2 do begin
+    DownNow := KeyDown(ModVK(m));
+    if (Md and (1 shl m)) <> 0 then begin
+      Recent := Grace and (ModAt[m] <> 0) and (GetTickCount - ModAt[m] <= MOD_GRACE_MS);
+      if not (DownNow or Recent) then exit;
+    end else if DownNow then exit;
+  end;
+  result := true;
+end;
+
+// a group key pressed (Src: 1 a game key event, 2 a look). The same press caught by both ways is one;
+// two presses caught the same way are two (a quick double press cycles twice). Numbers only (both threads)
+procedure Trigger(g, Src: integer);
+begin
+  if (g = LastG) and (Src <> LastSrc) and (GetTickCount - LastAt < SAME_MS) then exit;
+  LastG := g;
+  LastSrc := Src;
+  LastAt := GetTickCount;
+  NextG := g;
+end;
+
+// a look at the keys (main loop): a group key down now and not the last time, or tapped between two looks
+procedure PollKeys();
+var g, m, VK, St: integer;
+  Focused, DownNow, Tapped: boolean;
+begin
+  for m := 0 to 2 do
+    if KeyDown(ModVK(m)) then ModAt[m] := GetTickCount;
+  Focused := GetForegroundWindow() = Engine.GameWindow;   // only in the game window of this character
+  for g := 0 to GroupN - 1 do begin
+    if GKey[g] = 0 then continue;   // auto only
+    VK := GKey[g] mod 256;
+    St := GetAsyncKeyState(VK);
+    DownNow := (St and $8000) <> 0;
+    Tapped := (St and 1) <> 0;
+    if Focused and (not GWas[g]) and (DownNow or Tapped) and ModsOk(GKey[g] div 256, true) then
+      Trigger(g, 2);
+    GWas[g] := DownNow;
+  end;
+end;
+
+// the key events of the game window (the bot's laKey, p1 = the key): a group key -> its group, if that
+// key is really down / was just tapped (an event once came with the code of another key). A held key
+// repeats: a new press only after REPEAT_MS without its events. Numbers only here (no strings: two
+// threads building strings at once crash PaxScript)
+procedure KeyEvents_Thread();
+var KeyCode, P2, g, Code, St: integer;
+begin
+  while true do begin
+    KeyCode := 0;
+    if Engine.WaitAction([laKey], KeyCode, P2, 1000) <> laKey then continue;
+    if GetForegroundWindow() <> Engine.GameWindow then continue;
+    for g := 0 to GroupN - 1 do begin
+      Code := GKey[g];
+      if Code = 0 then continue;
+      if KeyCode <> Code mod 256 then continue;
+      St := GetAsyncKeyState(Code mod 256);
+      if (St and $8001) = 0 then continue;   // not down, not tapped: not a press of this key
+      if GetTickCount - EvAt[g] > REPEAT_MS then
+        if ModsOk(Code div 256, false) then Trigger(g, 1);
+      EvAt[g] := GetTickCount;
+    end;
+  end;
+end;
+
+// ===================== who is who =====================
+
+procedure RefreshMe();
+begin
+  MyOID := User.OID;
+  MyClanID := User.ClanID;
+  MyAllyID := User.AllyID;
+end;
+
+// OID of the target now, 0 = none
+function TargetOID(): integer;
+begin
+  result := 0;
+  if User.Target <> nil then result := User.Target.OID;
+end;
+
+function TargetName(): string;
+begin
+  result := '?';
+  if User.Target <> nil then result := User.Target.Name;
+end;
+
+// player i is of our side: a party member, our clan, our alliance
+function IsOurs(i: integer): boolean;
+var C, A: integer;
+begin
+  result := true;
+  if CharList(i).IsMember then exit;
+  C := CharList(i).ClanID;
+  A := CharList(i).AllyID;
+  if (MyClanID <> 0) and (C = MyClanID) then exit;
+  if (MyAllyID <> 0) and (A = MyAllyID) then exit;
+  result := false;
+end;
+
+// player i is of an enemy clan (or alliance) of the list; the list empty -> anyone
+function IsFoeClan(i: integer): boolean;
+var S: string;
+begin
+  result := true;
+  if ClanKey = '' then exit;
+  S := LowerCase(Trim(CharList(i).Clan));
+  if (S <> '') and (Pos(',' + S + ',', ClanKey) > 0) then exit;
+  S := LowerCase(Trim(CharList(i).Ally));
+  if (S <> '') and (Pos(',' + S + ',', ClanKey) > 0) then exit;
+  result := false;
+end;
+
+// the list tag of a player (Nm in lower case): 1 priority (Rank: its place among them), 2 never, 0 none
+function PlayerTag(Nm: string; var Rank: integer): integer;
+var k: integer;
+begin
+  result := 0;
+  Rank := 99;
+  for k := 0 to PlN - 1 do
+    if PlName[k] = Nm then begin
+      result := PlTag[k];
+      if result = 1 then Rank := PlRank[k];
+      exit;
+    end;
+end;
+
+// the class priority of Cls in group g (1 first), 0 = not of the group
+function TierOf(g, Cls: integer): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to GClsN[g] - 1 do
+    if GCls[g * MAX_CLS + k] = Cls then begin
+      result := GTier[g * MAX_CLS + k];
+      exit;
+    end;
+end;
+
+function SkInGroup(g, Sk: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to GSkN[g] - 1 do
+    if GSk[g * MAX_SK + k] = Sk then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// ===================== revives =====================
+
+function WasDead(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to DEAD_SLOTS - 1 do
+    if DeadOID[k] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+procedure ForgetDead(OID: integer);
+var k: integer;
+begin
+  for k := 0 to DEAD_SLOTS - 1 do
+    if DeadOID[k] = OID then DeadOID[k] := 0;
+end;
+
+procedure RememberDead(OID: integer);
+begin
+  if WasDead(OID) then exit;
+  DeadOID[DeadHead] := OID;
+  DeadHead := (DeadHead + 1) mod DEAD_SLOTS;
+end;
+
+// OID got up: noted; the auto res-kill groups fire
+procedure RememberRevive(OID: integer);
+var g: integer;
+begin
+  RevOID[RevHead] := OID;
+  RevAt[RevHead] := GetTickCount;
+  RevHead := (RevHead + 1) mod REV_SLOTS;
+  for g := 0 to GroupN - 1 do
+    if GAuto[g] and (GMode[g] = MODE_RES) then AutoWant[g] := true;
+end;
+
+// ms since OID got up from the dead (the last time); 999999999 = not seen
+function RevivedAgo(OID: integer): cardinal;
+var k: integer;
+begin
+  result := 999999999;
+  for k := 0 to REV_SLOTS - 1 do
+    if (RevOID[k] = OID) and (GetTickCount - RevAt[k] < result) then result := GetTickCount - RevAt[k];
+end;
+
+// who is dead now, who got up since the last look (numbers only)
+procedure ScanRevives();
+var i, OID: integer;
+begin
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    OID := CharList(i).OID;
+    if OID = 0 then continue;
+    if CharList(i).Dead then RememberDead(OID)
+    else if WasDead(OID) then begin
+      ForgetDead(OID);
+      RememberRevive(OID);
+    end;
+  end;
+end;
+
+// ===================== casts =====================
+
+// the record of the cast of OID (-1 none)
+function CastIdx(OID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to CsN - 1 do
+    if CsOID[k] = OID then begin
+      result := k;
+      exit;
+    end;
+end;
+
+// OID casts a skill of group g now
+function CastingFor(g, OID: integer): boolean;
+var k: integer;
+begin
+  k := CastIdx(OID);
+  result := false;
+  if k >= 0 then result := SkInGroup(g, CsSk[k]);
+end;
+
+// how many cast a skill of group g on OID now (the forces on him)
+function ChargeCount(g, OID: integer): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to CsN - 1 do
+    if CsTgt[k] = OID then
+      if SkInGroup(g, CsSk[k]) then result := result + 1;
+end;
+
+// a skill cast nearby (for the page's list to pick from)
+procedure NoteSeen(Sk, Cls: integer);
+var k, j: integer;
+begin
+  for k := 0 to SnN - 1 do
+    if SnSk[k] = Sk then begin
+      SnCnt[k] := SnCnt[k] + 1;
+      SnCls[k] := Cls;
+      SnAt[k] := GetTickCount;
+      exit;
+    end;
+  if SnN < SEEN_MAX then begin
+    k := SnN;
+    SnN := SnN + 1;
+  end else begin   // full: the one seen the longest ago goes
+    k := 0;
+    for j := 1 to SEEN_MAX - 1 do
+      if SnAt[j] < SnAt[k] then k := j;
+  end;
+  SnSk[k] := Sk;
+  SnCnt[k] := 1;
+  SnCls[k] := Cls;
+  SnAt[k] := GetTickCount;
+end;
+
+// who casts what now (as force_sounds reads it): a cast seen within CAST_KEEP_MS still counts. A new one (a
+// caster not casting that skill before) of a skill of an auto cast group -> that group fires
+procedure CastScan();
+var i, k, g, n, OID, Sk, Tg, Cls: integer;
+  IsNew: boolean;
+begin
+  n := 0;
+  for k := 0 to CsN - 1 do
+    if GetTickCount - CsAt[k] <= CAST_KEEP_MS then begin
+      if n <> k then begin
+        CsOID[n] := CsOID[k];
+        CsSk[n] := CsSk[k];
+        CsTgt[n] := CsTgt[k];
+        CsCls[n] := CsCls[k];
+        CsAt[n] := CsAt[k];
+      end;
+      n := n + 1;
+    end;
+  CsN := n;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if CharList(i).Dead then continue;
+    Sk := 0;
+    try
+      if CharList(i).Cast.EndTime > 0 then Sk := CharList(i).Cast.ID;
+    except
+      Sk := 0;
+    end;
+    if Sk <= 0 then continue;
+    OID := CharList(i).OID;
+    if OID = 0 then continue;
+    Tg := 0;
+    if CharList(i).Target <> nil then Tg := CharList(i).Target.OID;
+    Cls := CharList(i).ClassID;
+    k := CastIdx(OID);
+    IsNew := true;
+    if k >= 0 then IsNew := CsSk[k] <> Sk;
+    if k < 0 then begin
+      if CsN >= MAX_CS then continue;
+      k := CsN;
+      CsN := CsN + 1;
+    end;
+    CsOID[k] := OID;
+    CsSk[k] := Sk;
+    CsTgt[k] := Tg;
+    CsCls[k] := Cls;
+    CsAt[k] := GetTickCount;
+    if not IsNew then continue;
+    if not IsOurs(i) then NoteSeen(Sk, Cls);
+    for g := 0 to GroupN - 1 do
+      if GAuto[g] and (GMode[g] = MODE_CAST) then
+        if SkInGroup(g, Sk) then AutoWant[g] := true;
+  end;
+end;
+
+// ===================== picking =====================
+
+function InCycle(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to CycN - 1 do
+    if CycOID[k] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// the group g once over the players. UseCycle: the ones picked in this cycle are skipped; the target now
+// (Cur) is never the pick. Gives the best one left (-1 none; BestOID, BestD). The order: the priority
+// player first (by the list), then the class priority, then (cast, who=target) the most casters on him,
+// then the nearest. InRange: how many can be taken (Cur too), CurIn: Cur is one of them; FarI / FarD: the
+// nearest one of the group out of range / height (-1 none)
+function ScanGroup(g, Cur: integer; UseCycle: boolean; var BestOID: integer; var BestD: double;
+  var InRange: integer; var CurIn: boolean; var FarI: integer; var FarD: double): integer;
+var i, OID, Cls, PX, PY, PZ, T, Rk, Tag, Cnt, Md: integer;
+  D, Sc, BestSc: double;
+begin
+  result := -1;
+  BestOID := 0;
+  BestD := 0;
+  BestSc := 1000000000000.0;
+  InRange := 0;
+  CurIn := false;
+  FarI := -1;
+  FarD := 1000000;
+  Md := GMode[g];
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if CharList(i).Dead then continue;
+    OID := CharList(i).OID;
+    if (OID = 0) or (OID = MyOID) then continue;
+    Cls := CharList(i).ClassID;
+    T := 1;
+    Cnt := 0;
+    if (Md <> MODE_NAMES) and ((Md = MODE_CLASS) or (GClsN[g] > 0)) then begin
+      T := TierOf(g, Cls);
+      if T = 0 then continue;
+    end;
+    if Md = MODE_RES then begin
+      if RevivedAgo(OID) > cardinal(GWindow[g] * 1000) then continue;
+    end else if Md = MODE_CAST then begin
+      if GWho[g] = 1 then begin
+        if not CastingFor(g, OID) then continue;
+      end else begin
+        Cnt := ChargeCount(g, OID);
+        if Cnt = 0 then continue;
+      end;
+    end;
+    if IsOurs(i) then continue;
+    Rk := 99;
+    Tag := 0;
+    if PlN > 0 then Tag := PlayerTag(LowerCase(Trim(CharList(i).Name)), Rk);
+    if Tag = 2 then continue;
+    if Md = MODE_NAMES then begin
+      if Tag <> 1 then continue;
+    end else begin
+      if Tag <> 1 then
+        if not IsFoeClan(i) then continue;
+      if not GPrio[g] then Rk := 0;
+    end;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    D := User.DistTo(PX, PY, PZ);
+    if (D > GRange[g]) or (Abs(PZ - User.Z) > GHeight[g]) then begin
+      if D < FarD then begin
+        FarD := D;
+        FarI := i;
+      end;
+      continue;
+    end;
+    InRange := InRange + 1;
+    if OID = Cur then begin
+      CurIn := true;
+      continue;
+    end;
+    if UseCycle then
+      if InCycle(OID) then continue;
+    if Cnt > 20 then Cnt := 20;
+    Sc := Rk * 100000000.0 + T * 10000000.0 + (20 - Cnt) * 100000.0 + D;
+    if Sc < BestSc then begin
+      BestSc := Sc;
+      BestD := D;
+      BestOID := OID;
+      result := i;
+    end;
+  end;
+end;
+
+// player i (if he is still OID) as "Name [Clan]"
+function WhoText(i, OID: integer): string;
+var C: string;
+begin
+  result := '?';
+  if (i < 0) or (i >= CharList.Count) then exit;
+  if CharList(i).OID <> OID then exit;
+  result := CharList(i).Name;
+  C := CharList(i).Clan;
+  if C <> '' then result := result + ' [' + C + ']';
+end;
+
+// token T (1..4) on the target: RequestActionUse $4E..$51 (sniffed with token_sniffer)
+procedure SendMark(T: integer);
+begin
+  if (T < 1) or (T > 4) then exit;
+  Engine.SendToServer('56' + HexLE32($4D + T) + '00000000' + '00');
+end;
+
+// ms of reuse left of our skill ID (0 = ready / not ours)
+function SkLeft(ID: integer): integer;
+var Sk: TL2Skill;
+begin
+  result := 0;
+  if SkillList.ByID(ID, Sk) then result := Sk.EndTime;
+end;
+
+// our cast of skill ID: ms left of it (0 = not casting it)
+function CastLeft(ID: integer): integer;
+var CID, Left: integer;
+begin
+  result := 0;
+  Left := User.Cast.EndTime;
+  if Left <= 0 then exit;
+  CID := User.Cast.ID;
+  if CID = ID then result := Left;
+end;
+
+// the after skill being sent: started (its reuse grew / our cast of it) -> done; the time is up / the target
+// switched (not right at the start: the target may not be ours yet) / we are dead -> given up
+procedure AfterTick();
+begin
+  if PendSk = 0 then exit;
+  if (SkLeft(PendSk) > PendL0) or (CastLeft(PendSk) > 0) then begin
+    PendSk := 0;
+    exit;
+  end;
+  if (GetTickCount - PendStart > FIRE_MS) or User.Dead then begin
+    Engine.Msg('[PvP]', 'skill ' + IntToStr(PendSk) + ' did not start', 0);
+    PendSk := 0;
+    exit;
+  end;
+  if GetTickCount - PendStart > 400 then
+    if TargetOID() <> PendTgt then begin
+      PendSk := 0;
+      exit;
+    end;
+  if GetTickCount - PendSent >= RESEND_MS then begin
+    Engine.DUseSkill(PendSk, PendCtrl, false);
+    PendSent := GetTickCount;
+  end;
+end;
+
+// the after action of group g at OID (just targeted): ' -> what' for the message
+function DoAfter(g, OID: integer): string;
+var Sk: TL2Skill;
+  Left: integer;
+begin
+  result := '';
+  if GAfter[g] = 1 then begin
+    Engine.Attack(300, GCtrl[g]);
+    result := ' -> attack';
+    exit;
+  end;
+  if (GAfter[g] <> 2) or (GAfterSk[g] <= 0) then exit;
+  if not SkillList.ByID(GAfterSk[g], Sk) then begin
+    result := ' -> no skill ' + IntToStr(GAfterSk[g]);
+    exit;
+  end;
+  Left := Sk.EndTime;
+  if Left > 1000 then begin
+    result := ' -> ' + Sk.Name + ' in reuse ' + IntToStr((Left + 999) div 1000) + ' s';
+    exit;
+  end;
+  PendSk := GAfterSk[g];
+  PendTgt := OID;
+  PendL0 := Left;
+  PendCtrl := GCtrl[g];
+  PendSent := 0;
+  PendStart := GetTickCount;
+  result := ' -> ' + Sk.Name;
+  AfterTick();
+end;
+
+// group g: a key press (IsAuto false) or its auto event. true = somebody was targeted
+function PickGroup(g: integer; IsAuto: boolean): boolean;
+var Best, BestOID, InRange, FarI, FarOID, Cur: integer;
+  BestD, FarD: double;
+  CurIn: boolean;
+  Who, Rest, Pre: string;
+begin
+  result := false;
+  RefreshMe();
+  if GMode[g] = MODE_CAST then CastScan();   // fresh
+  Cur := TargetOID();
+  Pre := GName[g] + ': ';
+  if IsAuto then begin
+    Best := ScanGroup(g, Cur, false, BestOID, BestD, InRange, CurIn, FarI, FarD);
+    if CurIn or (Best < 0) then exit;   // on one of them already / none in range: quiet
+    Pre := GName[g] + ' (auto): ';
+    CycN := 0;
+  end else begin
+    // a new cycle unless this group key was pressed lately and we are still on its last pick
+    if (CycG <> g) or (GetTickCount - CycAt > cardinal(CycleMs)) or (CycN >= MAX_CYCLE) then CycN := 0;
+    if CycN > 0 then
+      if CycOID[CycN - 1] <> Cur then CycN := 0;
+    Best := ScanGroup(g, Cur, true, BestOID, BestD, InRange, CurIn, FarI, FarD);
+    if (Best < 0) and (CycN > 0) then begin   // all of them picked in this cycle: from the first again
+      CycN := 0;
+      Best := ScanGroup(g, Cur, true, BestOID, BestD, InRange, CurIn, FarI, FarD);
+    end;
+    CycG := g;
+    CycAt := GetTickCount;
+    if Best < 0 then begin
+      if CurIn then begin   // only the target now: its after action again
+        if CycN = 0 then begin
+          CycOID[0] := Cur;
+          CycN := 1;
+        end;
+        Rest := DoAfter(g, Cur);
+        Say(Pre + 'on ' + TargetName() + ' already - the only one' + Rest);
+        exit;
+      end;
+      CycN := 0;
+      if FarI >= 0 then begin
+        FarOID := 0;
+        if FarI < CharList.Count then FarOID := CharList(FarI).OID;
+        Rest := '';
+        if FarD <= GRange[g] then Rest := ' (too high / low: more than ' + IntToStr(GHeight[g]) + ')';
+        Say(Pre + 'nobody within ' + IntToStr(GRange[g]) + ' - the nearest is ' + WhoText(FarI, FarOID) +
+          ' at ' + IntToStr(Round(FarD)) + Rest);
+      end else
+        Say(Pre + 'nobody around');
+      exit;
+    end;
+  end;
+
+  Who := WhoText(Best, BestOID);   // before the target: the list may change meanwhile
+  Engine.SetTarget(BestOID);
+  CycG := g;
+  CycAt := GetTickCount;
+  CycOID[CycN] := BestOID;
+  CycN := CycN + 1;
+  if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
+  if GMark[g] > 0 then SendMark(GMark[g]);
+  Rest := '';
+  if GMode[g] = MODE_CAST then begin
+    if GWho[g] = 0 then Rest := ' x' + IntToStr(ChargeCount(g, BestOID))
+    else Rest := ' (casting)';
+  end;
+  Rest := Rest + DoAfter(g, BestOID);
+  if InRange > 1 then Rest := Rest + ', ' + IntToStr(InRange) + ' in range';
+  Say(Pre + Who + ' ' + IntToStr(Round(BestD)) + Rest);
+  result := true;
+end;
+
+// ===================== the files =====================
+
+procedure CfgErr(S: string);
+begin
+  Engine.Msg('[PvP]', S, 128);
+  if CfgErrJson <> '' then CfgErrJson := CfgErrJson + ', ';
+  CfgErrJson := CfgErrJson + JsonStr(S);
+end;
+
+// the whole file, shared with a writer (the page); false = not there / not read
+function ReadText(Path: string; L: TStringList): boolean;
+var FS: TFileStream;
+begin
+  result := false;
+  L.Clear;
+  if not FileExists(Path) then exit;   // no exception for that: the bot prints even a caught one
+  try
+    FS := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+    try
+      L.LoadFromStream(FS);
+      result := true;
+    finally
+      FS.Free;
+    end;
+  except
+    result := false;
+  end;
+end;
+
+// the file, shared with readers (the page reads it every second)
+procedure WriteText(Path: string; L: TStringList; var Told: boolean);
+var FS: TFileStream;
+  Ok: boolean;
+begin
+  Ok := true;
+  try
+    FS := TFileStream.Create(Path, fmCreate or fmShareDenyNone);
+    try
+      L.SaveToStream(FS);
+    finally
+      FS.Free;
+    end;
+  except
+    Ok := false;
+  end;
+  if (not Ok) and (not Told) then begin
+    Told := true;
+    Engine.Msg('[PvP]', 'Cannot write ' + Path + ' - is there the folder Library\PvP\profiles?', 128);
+  end;
+end;
+
+// ===================== a profile =====================
+
+procedure ResetGroup(n: integer);
+begin
+  GOn[n] := true;
+  GName[n] := 'group ' + IntToStr(n + 1);
+  GKeyText[n] := '';
+  GMode[n] := MODE_CLASS;
+  GRange[n] := 1200;
+  GHeight[n] := 400;
+  GMark[n] := 0;
+  GAfter[n] := 0;
+  GAfterSk[n] := 0;
+  GCtrl[n] := true;
+  GAuto[n] := false;
+  GAutoMs[n] := 3000;
+  GWindow[n] := 15;
+  GWho[n] := 0;
+  GPrio[n] := true;
+  GClsN[n] := 0;
+  GSkN[n] := 0;
+end;
+
+// group a into the place of group b (b < a: b is free by then)
+procedure CopyGroup(a, b: integer);
+var k: integer;
+begin
+  GOn[b] := GOn[a];
+  GName[b] := GName[a];
+  GKeyText[b] := GKeyText[a];
+  GMode[b] := GMode[a];
+  GRange[b] := GRange[a];
+  GHeight[b] := GHeight[a];
+  GMark[b] := GMark[a];
+  GAfter[b] := GAfter[a];
+  GAfterSk[b] := GAfterSk[a];
+  GCtrl[b] := GCtrl[a];
+  GAuto[b] := GAuto[a];
+  GAutoMs[b] := GAutoMs[a];
+  GWindow[b] := GWindow[a];
+  GWho[b] := GWho[a];
+  GPrio[b] := GPrio[a];
+  GClsN[b] := GClsN[a];
+  GSkN[b] := GSkN[a];
+  for k := 0 to GClsN[a] - 1 do begin
+    GCls[b * MAX_CLS + k] := GCls[a * MAX_CLS + k];
+    GTier[b * MAX_CLS + k] := GTier[a * MAX_CLS + k];
+  end;
+  for k := 0 to GSkN[a] - 1 do
+    GSk[b * MAX_SK + k] := GSk[a * MAX_SK + k];
+end;
+
+function ModeOf(S: string): integer;
+begin
+  S := LowerCase(Trim(S));
+  if S = 'class' then result := MODE_CLASS
+  else if S = 'reskill' then result := MODE_RES
+  else if S = 'cast' then result := MODE_CAST
+  else if S = 'names' then result := MODE_NAMES
+  else result := -1;
+end;
+
+// 'classes=97:1|16:1|103:2' (class:priority) into group n
+procedure SetClasses(n: integer; Txt: string; P: TStringList);
+var j, c, ID, T: integer;
+  S: string;
+begin
+  GClsN[n] := 0;
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    S := Trim(P[j]);
+    c := Pos(':', S);
+    T := 1;
+    if c > 0 then begin
+      T := StrToIntDef(Copy(S, c + 1, 3), 1);
+      S := Copy(S, 1, c - 1);
+    end;
+    ID := StrToIntDef(S, -1);
+    if (ID < 0) or (GClsN[n] >= MAX_CLS) then continue;
+    if T < 1 then T := 1;
+    if T > 9 then T := 9;
+    GCls[n * MAX_CLS + GClsN[n]] := ID;
+    GTier[n * MAX_CLS + GClsN[n]] := T;
+    GClsN[n] := GClsN[n] + 1;
+  end;
+end;
+
+// 'skills=426|427' into group n
+procedure SetSkills(n: integer; Txt: string; P: TStringList);
+var j, ID: integer;
+begin
+  GSkN[n] := 0;
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    ID := StrToIntDef(Trim(P[j]), 0);
+    if (ID <= 0) or (GSkN[n] >= MAX_SK) then continue;
+    GSk[n * MAX_SK + GSkN[n]] := ID;
+    GSkN[n] := GSkN[n] + 1;
+  end;
+end;
+
+// 'after=' / 'after=attack' / 'after=skill:<ID>'
+procedure SetAfter(n: integer; Val: string);
+begin
+  GAfter[n] := 0;
+  GAfterSk[n] := 0;
+  Val := LowerCase(Trim(Val));
+  if Val = 'attack' then GAfter[n] := 1
+  else if Copy(Val, 1, 6) = 'skill:' then begin
+    GAfter[n] := 2;
+    GAfterSk[n] := StrToIntDef(Copy(Val, 7, 12), 0);
+  end;
+end;
+
+// 'clans=One|Two' -> ClanKey / ClanText
+procedure SetClans(Txt: string; P: TStringList);
+var j: integer;
+  S: string;
+begin
+  ClanKey := '';
+  ClanText := '';
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    S := Trim(P[j]);
+    if S = '' then continue;
+    if ClanKey = '' then ClanKey := ',';
+    ClanKey := ClanKey + LowerCase(S) + ',';
+    if ClanText <> '' then ClanText := ClanText + ', ';
+    ClanText := ClanText + S;
+  end;
+end;
+
+// 'players=+Rhea|+Bourbon|-Friend' (+ priority in this order, - never)
+procedure SetPlayers(Txt: string; P: TStringList);
+var j, R: integer;
+  S, C: string;
+begin
+  PlN := 0;
+  R := 0;
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    S := Trim(P[j]);
+    if (Length(S) < 2) or (PlN >= MAX_PL) then continue;
+    C := Copy(S, 1, 1);
+    if (C <> '+') and (C <> '-') then continue;
+    PlName[PlN] := LowerCase(Trim(Copy(S, 2, Length(S))));
+    if C = '+' then begin
+      PlTag[PlN] := 1;
+      PlRank[PlN] := R;
+      R := R + 1;
+    end else begin
+      PlTag[PlN] := 2;
+      PlRank[PlN] := 99;
+    end;
+    PlN := PlN + 1;
+  end;
+end;
+
+function PrioCount(): integer;
+var k: integer;
+begin
+  result := 0;
+  for k := 0 to PlN - 1 do
+    if PlTag[k] = 1 then result := result + 1;
+end;
+
+// the profile file (its lines in L): the general part, then a [group] block per group
+procedure LoadProfile(L: TStringList);
+var P: TStringList;
+  i, j, n, k, p0, Code, Md: integer;
+  S, Fld, Val, Clans, Players: string;
+  Ok, AutoOk: boolean;
+begin
+  P := TStringList.Create;
+  CfgErrJson := '';
+  GroupN := 0;       // the key thread sees none meanwhile
+  NextG := -1;
+  CycN := 0;
+  PendSk := 0;
+  ProfName := ProfId;
+  ChatOn := true;
+  ChatName := 'PvP';
+  CycleMs := 6000;
+  Clans := '';
+  Players := '';
+  n := -1;   // the group being read; -1: the general part
+  for i := 0 to L.Count - 1 do begin
+    S := Trim(L[i]);
+    if S = '' then continue;
+    if (Copy(S, 1, 1) = ';') or (Copy(S, 1, 1) = '#') then continue;
+    if LowerCase(S) = '[group]' then begin
+      if n + 1 >= MAX_GROUPS then begin
+        CfgErr('More than ' + IntToStr(MAX_GROUPS) + ' groups - the rest skipped');
+        break;
+      end;
+      n := n + 1;
+      ResetGroup(n);
+      continue;
+    end;
+    p0 := Pos('=', S);
+    if p0 = 0 then continue;
+    Fld := LowerCase(Trim(Copy(S, 1, p0 - 1)));
+    Val := Trim(Copy(S, p0 + 1, Length(S)));
+    if n < 0 then begin
+      if (Fld = 'name') and (Val <> '') then ProfName := Val
+      else if Fld = 'clans' then Clans := Val
+      else if Fld = 'players' then Players := Val
+      else if Fld = 'chat' then ChatOn := Val <> '0'
+      else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val
+      else if Fld = 'cycle_ms' then CycleMs := StrToIntDef(Val, 6000);
+      continue;
+    end;
+    if Fld = 'on' then GOn[n] := Val <> '0'
+    else if (Fld = 'name') and (Val <> '') then GName[n] := Val
+    else if Fld = 'key' then GKeyText[n] := Val
+    else if Fld = 'mode' then begin
+      Md := ModeOf(Val);
+      if Md < 0 then CfgErr(GName[n] + ': unknown mode "' + Val + '" - classes taken')
+      else GMode[n] := Md;
+    end
+    else if Fld = 'range' then GRange[n] := StrToIntDef(Val, 1200)
+    else if Fld = 'height' then GHeight[n] := StrToIntDef(Val, 400)
+    else if Fld = 'mark' then GMark[n] := StrToIntDef(Val, 0)
+    else if Fld = 'after' then SetAfter(n, Val)
+    else if Fld = 'ctrl' then GCtrl[n] := Val <> '0'
+    else if Fld = 'auto' then GAuto[n] := Val = '1'
+    else if Fld = 'auto_ms' then GAutoMs[n] := StrToIntDef(Val, 3000)
+    else if Fld = 'window' then GWindow[n] := StrToIntDef(Val, 15)
+    else if Fld = 'who' then begin
+      if LowerCase(Val) = 'caster' then GWho[n] := 1 else GWho[n] := 0;
+    end
+    else if Fld = 'prio_first' then GPrio[n] := Val <> '0'
+    else if Fld = 'classes' then SetClasses(n, Val, P)
+    else if Fld = 'skills' then SetSkills(n, Val, P);
+  end;
+  SetClans(Clans, P);
+  SetPlayers(Players, P);
+  if CycleMs < 1000 then CycleMs := 1000;
+  if CycleMs > 60000 then CycleMs := 60000;
+
+  // the good ones in, one after another
+  k := 0;
+  for i := 0 to n do begin
+    if not GOn[i] then continue;
+    AutoOk := GAuto[i] and ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST));
+    if not ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST)) then GAuto[i] := false;
+    Code := ParseKey(GKeyText[i]);
+    if (Code = 0) and (GKeyText[i] <> '') then begin
+      if AutoOk then CfgErr(GName[i] + ': cannot read the key "' + GKeyText[i] + '" - auto only')
+      else begin
+        CfgErr(GName[i] + ': cannot read the key "' + GKeyText[i] + '" - skipped');
+        continue;
+      end;
+    end;
+    if (Code = 0) and (not AutoOk) then begin
+      CfgErr(GName[i] + ': no key - skipped');
+      continue;
+    end;
+    Ok := true;
+    if Code <> 0 then
+      for j := 0 to k - 1 do
+        if GKey[j] = Code then begin
+          CfgErr(GName[i] + ': the key ' + GKeyText[i] + ' is taken by ' + GName[j] + ' - skipped');
+          Ok := false;
+          break;
+        end;
+    if not Ok then continue;
+    if (GMode[i] = MODE_CLASS) and (GClsN[i] = 0) then begin
+      CfgErr(GName[i] + ': no classes - skipped');
+      continue;
+    end;
+    if (GMode[i] = MODE_CAST) and (GSkN[i] = 0) then begin
+      CfgErr(GName[i] + ': no skills - skipped');
+      continue;
+    end;
+    if (GMode[i] = MODE_NAMES) and (PrioCount() = 0) then begin
+      CfgErr(GName[i] + ': no priority players on the list - skipped');
+      continue;
+    end;
+    if (GAfter[i] = 2) and (GAfterSk[i] <= 0) then GAfter[i] := 0;
+    if GRange[i] < 100 then GRange[i] := 100;
+    if GHeight[i] < 50 then GHeight[i] := 50;
+    if (GMark[i] < 0) or (GMark[i] > 4) then GMark[i] := 0;
+    if GWindow[i] < 1 then GWindow[i] := 1;
+    if GWindow[i] > 600 then GWindow[i] := 600;
+    if GAutoMs[i] < 500 then GAutoMs[i] := 500;
+    if k <> i then CopyGroup(i, k);
+    GKey[k] := Code;
+    GWas[k] := true;   // a key held right now is not a press
+    EvAt[k] := 0;
+    AutoWant[k] := false;
+    AutoAt[k] := 0;
+    k := k + 1;
+  end;
+  GroupN := k;
+  P.Free;
+end;
+
+// no profile yet: 'main' with the healers (X), the mages (Z), res-kill (C) and the forces (V)
+procedure MakeDefaultProfile();
+var L: TStringList;
+  Told: boolean;
+begin
+  L := TStringList.Create;
+  L.Add('; PvP focus profile: made in pvp.html (Library\PvP), read by pvp_focus.txt on the fly');
+  L.Add('name=Main');
+  L.Add('clans=PLAYHARDGOPRO|GhostRiders|DeathSentence|HeavenSent|StayGrounded|Slayers');
+  L.Add('players=');
+  L.Add('chat=1');
+  L.Add('chat_name=PvP');
+  L.Add('cycle_ms=6000');
+  L.Add('');
+  L.Add('[group]');
+  L.Add('on=1');
+  L.Add('name=Healers');
+  L.Add('mode=class');
+  L.Add('key=X');
+  L.Add('range=1200');
+  L.Add('height=400');
+  L.Add('mark=3');
+  L.Add('after=');
+  L.Add('ctrl=1');
+  L.Add('prio_first=1');
+  L.Add('classes=16:1|30:1|43:1|97:1|105:1|112:1');
+  L.Add('');
+  L.Add('[group]');
+  L.Add('on=1');
+  L.Add('name=Mages');
+  L.Add('mode=class');
+  L.Add('key=Z');
+  L.Add('range=1200');
+  L.Add('height=400');
+  L.Add('mark=3');
+  L.Add('after=');
+  L.Add('ctrl=1');
+  L.Add('prio_first=1');
+  L.Add('classes=12:2|13:1|27:1|40:2|94:2|95:1|103:1|110:2');
+  L.Add('');
+  L.Add('[group]');
+  L.Add('on=1');
+  L.Add('name=Res-kill');
+  L.Add('mode=reskill');
+  L.Add('key=C');
+  L.Add('range=1200');
+  L.Add('height=400');
+  L.Add('mark=0');
+  L.Add('after=');
+  L.Add('ctrl=1');
+  L.Add('prio_first=1');
+  L.Add('window=15');
+  L.Add('auto=0');
+  L.Add('auto_ms=3000');
+  L.Add('classes=');
+  L.Add('');
+  L.Add('[group]');
+  L.Add('on=1');
+  L.Add('name=Forces');
+  L.Add('mode=cast');
+  L.Add('key=V');
+  L.Add('range=1200');
+  L.Add('height=400');
+  L.Add('mark=1');
+  L.Add('after=');
+  L.Add('ctrl=1');
+  L.Add('prio_first=1');
+  L.Add('skills=426|427');
+  L.Add('who=target');
+  L.Add('auto=0');
+  L.Add('auto_ms=3000');
+  L.Add('classes=');
+  Told := false;
+  WriteText(ProfPath, L, Told);
+  L.Free;
+  if not Told then Engine.Msg('[PvP]', 'First profile "main" -> ' + ProfPath, 0);
+end;
+
+// which profile: 'active=<id>' of pvp.ini (the same for every character), else 'main'
+function PickProfile(L: TStringList; var How: string): string;
+var i, p0: integer;
+  S, Fld, Val, Act: string;
+begin
+  Act := '';
+  for i := 0 to L.Count - 1 do begin
+    S := Trim(L[i]);
+    if Copy(S, 1, 1) = ';' then continue;
+    p0 := Pos('=', S);
+    if p0 = 0 then continue;
+    Fld := LowerCase(Trim(Copy(S, 1, p0 - 1)));
+    Val := Trim(Copy(S, p0 + 1, Length(S)));
+    if Fld = 'active' then Act := Val;
+  end;
+  if Act <> '' then begin
+    result := FileTag(Act);
+    How := 'active';
+  end else begin
+    result := 'main';
+    How := 'default';
+  end;
+end;
+
+// the selector and the profile: read anew when changed. true = the profile was read anew (or went missing)
+function CheckCfg(): boolean;
+var L: TStringList;
+  Id, How: string;
+begin
+  result := false;
+  L := TStringList.Create;
+  Id := ProfId;   // not read right now (the page writes it): the one used so far
+  How := SelHow;
+  if ReadText(SelPath, L) then Id := PickProfile(L, How)
+  else if not FileExists(SelPath) then begin   // none yet: every character on 'main'
+    L.Clear;
+    L.Add('; PvP focus: the profile every character uses (Library\PvP\profiles\<id>.pvp). Made in pvp.html');
+    L.Add('active=main');
+    WriteText(SelPath, L, SelTold);
+    Id := 'main';
+    How := 'default';
+  end;
+  if Id = '' then begin
+    Id := 'main';
+    How := 'default';
+  end;
+  SelHow := How;
+  if Id <> ProfId then begin
+    ProfId := Id;
+    ProfPath := Script.Path + PROF_DIR + ProfId + '.pvp';
+    ProfText := '';
+    ProfMissTold := false;
+  end;
+  if (ProfId = 'main') and (not FileExists(ProfPath)) then MakeDefaultProfile();
+  if not ReadText(ProfPath, L) then begin
+    L.Free;
+    if FileExists(ProfPath) then exit;   // there, not read right now (the page writes it): the next time
+    if ProfMissTold then exit;
+    ProfMissTold := true;
+    ProfText := '';
+    GroupN := 0;
+    ProfName := ProfId;
+    CfgErrJson := '';
+    CfgErr('The profile "' + ProfId + '" is not there (' + ProfPath + ') - no keys');
+    CfgReadAt := FormatDateTime('hh:nn:ss', Now);
+    result := true;
+    exit;
+  end;
+  if L.Text = ProfText then begin
+    L.Free;
+    exit;
+  end;
+  ProfText := L.Text;
+  ProfMissTold := false;
+  LoadProfile(L);
+  L.Free;
+  CfgReadAt := FormatDateTime('hh:nn:ss', Now);
+  result := true;
+end;
+
+// what was read: into the bot's window and the party chat
+procedure SayCfg(First: boolean);
+var g: integer;
+  Info, K: string;
+begin
+  Info := '';
+  for g := 0 to GroupN - 1 do begin
+    if Info <> '' then Info := Info + ', ';
+    K := GKeyText[g];
+    if GKey[g] = 0 then K := 'auto';
+    Info := Info + K + ' ' + GName[g];
+    if (GKey[g] <> 0) and GAuto[g] then Info := Info + ' (+auto)';
+  end;
+  if Info = '' then Info := 'no keys';
+  if First then Info := 'profile ' + ProfName + ': ' + Info
+  else Info := 'profile ' + ProfName + ' read: ' + Info;
+  Say(Info);
+end;
+
+// ===================== the PvP server (pvp_server.py): the page live =====================
+// One line per message (CRLF). Ours: HELLO|<character>, STATE|<json>, PONG. Its: RELOAD (the page saved: read the
+// files now), PING. No server: tried again every SRV_RETRY_MS - the keys work all the same (the files)
+
+procedure SrvClose();
+begin
+  if Srv <> nil then begin
+    Srv.CloseSocket;
+    Srv.Free;
+    Srv := nil;
+  end;
+  SrvOn := false;
+end;
+
+procedure SrvSend(S: string);
+begin
+  if not SrvOn then exit;
+  Srv.SendString(S + #13#10);
+  if Srv.LastError <> 0 then begin
+    SrvClose();
+    SrvAt := GetTickCount;
+    Engine.Msg('[PvP]', 'PvP server: the link is lost - trying again', 0);
+  end;
+end;
+
+procedure SrvConnect();
+begin
+  SrvAt := GetTickCount;
+  Srv := TTCPBlockSocket.Create;
+  Srv.Connect(SRV_HOST, SRV_PORT);
+  if Srv.LastError <> 0 then begin
+    SrvClose();
+    if not SrvTold then begin
+      SrvTold := true;
+      Engine.Msg('[PvP]', 'No PvP server: the keys work, the page is not live - start Library\PvP\pvp_server.bat ' +
+        '(then ' + SRV_PAGE + ')', 0);
+    end;
+    exit;
+  end;
+  SrvOn := true;
+  SrvSend('HELLO|' + CharName);
+  if SrvOn then begin
+    SrvTold := false;
+    Engine.Msg('[PvP]', 'PvP server: linked - the page ' + SRV_PAGE, 0);
+  end;
+end;
+
+// the server's lines (a few per look, never waiting); no link -> a new try now and then
+procedure SrvPoll();
+var Line: string;
+  n, Er: integer;
+begin
+  if not SrvOn then begin
+    if GetTickCount - SrvAt >= SRV_RETRY_MS then SrvConnect();
+    exit;
+  end;
+  n := 0;
+  while n < 10 do begin
+    Line := Srv.RecvString(1);
+    Er := Srv.LastError;
+    if Er <> 0 then begin
+      if Er <> 10060 then begin          // not "nothing came": the server is gone
+        SrvClose();
+        SrvAt := GetTickCount;
+        Engine.Msg('[PvP]', 'PvP server: the link is lost (' + IntToStr(Er) + ') - trying again', 0);
+      end;
+      exit;
+    end;
+    Inc(n);
+    Line := Trim(Line);
+    if Line = 'RELOAD' then CfgAt := 0  // the page saved: the files read now
+    else if Line = 'PING' then SrvSend('PONG');
+  end;
+end;
+
+procedure JAdd(S: string);
+begin
+  StOut := StOut + S;
+end;
+
+// ===================== for the page =====================
+
+// our skills that are not passive, as JSON (built anew only when they change)
+function SkillsJson(): string;
+var i, n, Sig: integer;
+  Sk: TL2Skill;
+  S: string;
+begin
+  Sig := SkillList.Count;
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Sk := SkillList.Items(i);
+    if Sk = nil then continue;
+    Sig := (Sig * 31 + Sk.ID * 13 + Sk.Level) and $3FFFFFF;
+  end;
+  if (Sig = SkSig) and (SkJson <> '') then begin
+    result := SkJson;
+    exit;
+  end;
+  SkSig := Sig;
+  S := '';
+  n := 0;
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Sk := SkillList.Items(i);
+    if Sk = nil then continue;
+    if Sk.Passive then continue;
+    if n > 0 then S := S + ', ';
+    S := S + '{"id": ' + IntToStr(Sk.ID) + ', "lvl": ' + IntToStr(Sk.Level) + ', "name": ' + JsonStr(Sk.Name) + '}';
+    n := n + 1;
+  end;
+  SkJson := '[' + S + ']';
+  result := SkJson;
+end;
+
+// the state for the page (one JSON line to the PvP server): the profile used and what was made of it, us, our skills, the skills cast nearby,
+// the players around: o OID, n name, c clan, a alliance, k class, d distance, x / y / h from us, f flags (1
+// party, 2 dead, 4 our clan / alliance), s / t the skill being cast and its target, rv ms since he got up
+procedure DumpState();
+var i, k, n, OID, Cls, PX, PY, PZ, UX, UY, UZ, F: integer;
+  D: double;
+  Ago: cardinal;
+  S, Nm, Cl, Al, DeadText: string;
+begin
+  if not SrvOn then exit;              // no server: nobody to tell
+  RefreshMe();
+  DeadText := '0';
+  if User.Dead then DeadText := '1';
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  Cl := User.Clan;
+  Al := User.Ally;
+  StOut := '';
+  JAdd('{"char": ' + JsonStr(CharName) + ', "written": ' + JsonStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)) + ',');
+  JAdd(' "profile": {"id": ' + JsonStr(ProfId) + ', "name": ' + JsonStr(ProfName) + ', "how": ' + JsonStr(SelHow) +
+    ', "read": ' + JsonStr(CfgReadAt) + ', "groups": ' + IntToStr(GroupN) + ', "errors": [' + CfgErrJson + ']},');
+  JAdd(' "me": {"oid": ' + IntToStr(MyOID) + ', "clan": ' + JsonStr(Cl) + ', "ally": ' + JsonStr(Al) +
+    ', "target": ' + IntToStr(TargetOID()) + ', "dead": ' + DeadText + '},');
+  JAdd(' "skills": ' + SkillsJson() + ',');
+  JAdd(' "casts": [');
+  for k := 0 to SnN - 1 do begin
+    if k = 0 then S := '  ' else S := ' ,';
+    JAdd(S + '{"id": ' + IntToStr(SnSk[k]) + ', "n": ' + IntToStr(SnCnt[k]) + ', "k": ' + IntToStr(SnCls[k]) +
+      ', "ago": ' + IntToStr((GetTickCount - SnAt[k]) div 1000) + '}');
+  end;
+  JAdd(' ],');
+  JAdd(' "near": [');
+  n := 0;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if n >= MAX_NEAR then break;
+    OID := CharList(i).OID;
+    if (OID = 0) or (OID = MyOID) then continue;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    D := User.DistTo(PX, PY, PZ);
+    if D > NEAR_RANGE then continue;
+    Cls := CharList(i).ClassID;
+    F := 0;
+    if CharList(i).IsMember then F := 1
+    else if IsOurs(i) then F := 4;
+    if CharList(i).Dead then F := F + 2;
+    Nm := CharList(i).Name;
+    Cl := CharList(i).Clan;
+    Al := CharList(i).Ally;
+    S := '{"o": ' + IntToStr(OID) + ', "n": ' + JsonStr(Nm) + ', "c": ' + JsonStr(Cl) + ', "a": ' + JsonStr(Al) +
+      ', "k": ' + IntToStr(Cls) + ', "d": ' + IntToStr(Round(D)) + ', "x": ' + IntToStr(PX - UX) +
+      ', "y": ' + IntToStr(PY - UY) + ', "h": ' + IntToStr(PZ - UZ) + ', "f": ' + IntToStr(F);
+    k := CastIdx(OID);
+    if k >= 0 then S := S + ', "s": ' + IntToStr(CsSk[k]) + ', "t": ' + IntToStr(CsTgt[k]);
+    Ago := RevivedAgo(OID);
+    if Ago < 120000 then S := S + ', "rv": ' + IntToStr(Ago);
+    if n = 0 then S := '  ' + S else S := ' ,' + S;
+    JAdd(S + '}');
+    n := n + 1;
+  end;
+  JAdd(' ]}');
+  SrvSend('STATE|' + StOut);
+  StOut := '';
+end;
+
+var
+  g: integer;
+  StateAt, CastScanAt, RevScanAt: cardinal;
+
+begin
+  NextG := -1;
+  LastG := -1;
+  LastSrc := 0;
+  LastAt := 0;
+  CycG := -1;
+  CycN := 0;
+  GroupN := 0;
+  PlN := 0;
+  CsN := 0;
+  SnN := 0;
+  DeadHead := 0;
+  RevHead := 0;
+  PendSk := 0;
+  ChatOn := true;
+  ChatName := 'PvP';
+  CycleMs := 6000;
+  ClanKey := '';
+  ClanText := '';
+  ProfId := '';
+  ProfName := '';
+  ProfText := '';
+  CfgReadAt := '';
+  CfgErrJson := '';
+  SkJson := '';
+  SkSig := -1;
+  SelHow := '';
+  Srv := nil;
+  SrvOn := false;
+  SrvTold := false;
+  SrvAt := 0;
+  StOut := '';
+  for g := 0 to 2 do ModAt[g] := 0;
+  while User.Name = '' do Delay(500);   // in the game
+  CharName := User.Name;
+  RefreshMe();
+  SelPath := Script.Path + SEL_NAME;
+  Engine.Msg('[PvP]', 'PvP focus: the profiles are in ' + Script.Path + PROF_DIR + ' (made in pvp.html, ' + SRV_PAGE + ')', 0);
+
+  CheckCfg();
+  SayCfg(true);
+  ScanRevives();
+  CastScan();
+  SrvConnect();
+  DumpState();
+  CfgAt := GetTickCount;
+  StateAt := GetTickCount;
+  CastScanAt := GetTickCount;
+  RevScanAt := GetTickCount;
+
+  Script.NewThread(@KeyEvents_Thread);
+
+  while Delay(KEY_POLL_MS) do begin
+    PollKeys();
+    while NextG >= 0 do begin
+      g := NextG;
+      NextG := -1;
+      if g < GroupN then PickGroup(g, false);
+    end;
+    AfterTick();
+    if GetTickCount - CastScanAt >= CAST_SCAN_MS then begin
+      CastScanAt := GetTickCount;
+      RefreshMe();
+      CastScan();
+    end;
+    if GetTickCount - RevScanAt >= REV_SCAN_MS then begin
+      RevScanAt := GetTickCount;
+      ScanRevives();
+    end;
+    for g := 0 to GroupN - 1 do
+      if AutoWant[g] then begin
+        AutoWant[g] := false;
+        if GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g]) then
+          if PickGroup(g, true) then AutoAt[g] := GetTickCount;
+      end;
+    SrvPoll();                         // the PvP server: RELOAD -> the files read now
+    if (CfgAt = 0) or (GetTickCount - CfgAt >= CFG_CHECK_MS) then begin
+      CfgAt := GetTickCount;
+      if CheckCfg() then begin
+        SayCfg(false);
+        DumpState();
+        StateAt := GetTickCount;
+      end;
+    end;
+    if GetTickCount - StateAt >= STATE_MS then begin
+      StateAt := GetTickCount;
+      DumpState();
+    end;
+  end;
+  SrvClose();
+end.

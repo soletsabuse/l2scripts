@@ -184,6 +184,11 @@
   .tg input:focus-visible + span { box-shadow: 0 0 0 3px rgba(90, 169, 255, .25); }
   .rows { display: flex; flex-direction: column; gap: 6px; }
   .rw { display: grid; gap: 6px; align-items: center; }
+  /* a skill icon (16x16 of the game, skills.json "icon") in front of a skill */
+  img.ski { width: 20px; height: 20px; flex: none; image-rendering: pixelated; border-radius: 4px; box-shadow: 0 0 0 1px var(--line2); }
+  img.ski.none { visibility: hidden; }
+  .skp { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  .skp select, .skp input { flex: 1; min-width: 0; }
   .rw .x { padding: 4px 6px; background: transparent; border-color: transparent; color: var(--dim); }
   .rw .x:hover { color: var(--bad); background: var(--panel3); }
   .addrow { justify-self: start; font-size: 12px; color: var(--accent); background: transparent; border-style: dashed; }
@@ -990,7 +995,7 @@ const PULL_ADV = [
   ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
   ['hit_range', 'Hit range', 80], ['stuck_ms', 'Stuck, ms', 1500], ['aggro_dist', 'Aggro farther than this does not count', 1500],
   ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 50]];
-const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', patrol: '1', skip_champions: '0', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1', kite: '0', pvp: '0', live: '0' };
+const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', patrol: '1', skip_champions: '0', champs_last: '1', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1', kite: '0', pvp: '0', live: '0' };
 const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max', 'kite_step', 'kite_range', 'kite_wait', 'kite_near', 'fight', 'pvp_delay'];
 // the skill list of the mage fight: Library\Nav\skills.json, one for every map (the farm script reads it) - how
@@ -1007,7 +1012,14 @@ function parseSkills(t) {
   if (!a) return null;
   return a.filter(s => s && Math.floor(+s.id) > 0).map(s => { const ty = String(s.type || '').toUpperCase();
     return { id: String(Math.floor(+s.id)), type: SKILL_SHORT[ty] ? ty : 'TARGET', range: String(Math.floor(+s.range) || 0),
-      rad: String(Math.floor(+s.radius) || 0), name: String(s.name || '') }; });
+      rad: String(Math.floor(+s.radius) || 0), name: String(s.name || ''), icon: ICON_OK.test(s.icon || '') ? s.icon : '' }; });
+}
+// the picture of a skill (skills.json "icon": a 16x16 PNG in base64, put there by skills_export.txt from the bot's L2ICO.dat)
+const ICON_OK = /^[A-Za-z0-9+\/]+=*$/;
+function skillIcon(s) {
+  const im = mk('img', { class: 'ski', alt: '' });
+  if (s && s.icon) im.src = 'data:image/png;base64,' + s.icon; else im.classList.add('none');
+  return im;
 }
 let skillDb = [], skillDbDirty = false, skillFile = null;   // the list; edited, not saved; the handle of skills.json
 let skillSeen = null;   // the text of skills.json as this page read / wrote it last (a change made outside it is not overwritten silently)
@@ -1017,6 +1029,15 @@ const skillLabel = s => s.id + ' · ' + (s.name || 'no name') + ' — ' + SKILL_
 const MAGE_CONDS = [['READY', 'Whenever ready'], ['HP_BELOW', 'Our HP % below'], ['MOBS', 'Mobs in its area, at least'],
   ['PER_MOB', 'Again on a mob after, ms'], ['MOB_HP_ABOVE', 'Target MaxHP above'], ['EVERY', 'At most every, ms']];
 const MAGE_PH = { READY: '—', HP_BELOW: '70', MOBS: '3', PER_MOB: '30000 (0 — once)', MOB_HP_ABOVE: '100000', EVERY: '5000' };
+// own buffs: cast anywhere, or only standing at the farm spot (never on the runs / the pull)
+const SPOT_OPTS = [['0', 'anywhere'], ['1', 'only at the farm spot']];
+// own buffs (K selfbuff, 4th): when it is kept on us
+const WHEN_OPTS = [['0', 'always'], ['1', 'only at the farm spot'], ['2', 'in the fight at the spot, off after it'], ['3', 'in a fight with few mobs on us']];
+// fight / pull skills: the page shows seconds, the .navgrid keeps ms
+const ms2s = x => +x > 0 ? String(+x / 1000) : '';
+const s2ms = x => Math.max(0, Math.round((parseFloat(x) || 0) * 1000));
+const skAoe = r => { const s = skillById(r[0]); return !!s && (s.type === 'AOE' || s.type === 'SELF_AOE'); };
+const skAtMob = r => { const s = skillById(r[0]); return !s || s.type === 'TARGET' || s.type === 'AOE'; };
 // cfg.mage: [skill, when, value] in the order of the priority (the upper row first; saved as K mage 1.., 2.., ...)
 // what the farm does: how the mobs are taken (K mode; none - rooms if drawn, an archer one by one, else packs)
 // and how they are hit (K fight; none - Mage if mage skills are set, Bow if K kite 1, else Melee)
@@ -1040,9 +1061,10 @@ function mageAdd(prio, skill, cond, val) {
 function skillsText() {
   const clean = s => String(s || '').replace(/["\\{}\[\]\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
   const rows = skillDb.filter(s => Math.floor(+s.id) > 0).map(s => '    { "id": ' + Math.floor(+s.id) + ', "type": "' + s.type + '", "range": ' +
-    (Math.floor(+s.range) || 0) + ', "radius": ' + (Math.floor(+s.rad) || 0) + ', "name": "' + clean(s.name) + '" }');
+    (Math.floor(+s.range) || 0) + ', "radius": ' + (Math.floor(+s.rad) || 0) + ', "name": "' + clean(s.name) + '"' +
+    (ICON_OK.test(s.icon || '') ? ', "icon": "' + s.icon + '"' : '') + ' }');
   return ['{',
-    '  "about": "Skills of the mage fight, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage lines of a .navgrid name skills of this list",',
+    '  "about": "Skills of the fight and the pull, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage / fight_skill / pull_skill lines of a .navgrid name skills of this list",',
     '  "types": {',
     '    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",',
     '    "AOE": "cast at the target from range, hits every mob within radius of it",',
@@ -1057,7 +1079,7 @@ function skillsText() {
 // the list now is the file: kept in the browser for the next start (with the file's handle: Save writes it again)
 function skillsKeep(h, text) {
   skillDbDirty = false; if (h) skillFile = h; if (text != null) skillSeen = text;
-  const plain = skillDb.map(s => ({ id: s.id, type: s.type, range: s.range, rad: s.rad, name: s.name }));
+  const plain = skillDb.map(s => ({ id: s.id, type: s.type, range: s.range, rad: s.rad, name: s.name, icon: s.icon || '' }));
   idb('readwrite', st => { st.put(plain, 'skills'); if (skillSeen != null) st.put(skillSeen, 'skillsSeen'); if (h) st.put(h, 'skillsFile'); });
 }
 // the start: the kept copy, then the file itself if the browser still lets the page read it
@@ -1106,7 +1128,7 @@ async function saveSkills() {
 }
 // the skill list changed: the fields that pick from it are drawn again (the list itself only when asked)
 function skillsUiRefresh(self) {
-  for (const k of ['mage', 'mage_tap', 'mage_buff', ...(self ? ['_skills'] : [])]) {
+  for (const k of ['mage', 'mage_tap', 'mage_buff', 'fight_skill', 'pull_skill', ...(self ? ['_skills'] : [])]) {
     const el = document.querySelector('#cfg .fld[data-k="' + k + '"]'), f = CARDS.flatMap(c => c.f || []).find(x => x.k === k);
     if (el && f) el.replaceWith(fieldUi(f));
   }
@@ -1131,7 +1153,7 @@ const CARDS = [
     { k: 'login.user', l: 'Login', h: 'empty — no auto-login' },
     { k: 'login.pass', l: 'Password', type: 'pass' },
     { k: 'zone', l: 'Zone .zmap', ph: 'MOS_1.zmap', h: 'Library\\Zones; empty — the zone active in the bot' },
-    { k: 'config', l: 'Profile .xml', ph: 'alarm.xml', h: 'Library\\Configurations. Mode Profile: it farms; the other modes: an alarm one (auto attack off)' }] },
+    { k: 'config', l: 'Profile .xml', ph: 'alarm.xml', h: 'Library\\Configurations, the name with .xml. Mode Profile: it farms; the other modes: an alarm one (auto attack off). A name that is not there: the bot keeps the profile loaded before — the script then leaves the interface off' }] },
   { ic: 'target', c: '#ff8a7a', t: 'Mobs', sub: 'Which mobs, the pack, spoil', f: [
     { k: 'pack.size', show: () => ['PACK', 'AUTO'].includes(modeOf()), l: 'Pack size', type: 'num', ph: '6', h: 'how many mobs to gather before the fight' },
     { k: 'pack.spoil', show: isMelee, l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302 (with Mage skills / Bow kite — none), 0 — no spoil' },
@@ -1139,6 +1161,7 @@ const CARDS = [
     { k: 'pack.sweep', show: isMelee, l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444 (with Mage skills / Bow kite — none), 0 — no sweep' },
     { k: 'pack.mobs', show: notProf, l: 'Mob IDs', type: 'ids', ph: '22126, 22127', h: 'empty — any mob in the zone' },
     { k: 'skip_champions', show: notProf, l: 'Skip champions', type: 'bool', h: 'champions are never pulled or hit — a room with only them left counts as cleared, we move on' },
+    { k: 'champs_last', show: () => notProf() && cv0('skip_champions') !== '1', l: 'Champions last', type: 'bool', h: 'in a fight the usual mobs are killed first, the champions after them (a champion is hit only while no usual mob is in reach)' },
     { k: 'champ_hp', show: notProf, l: 'Champion from MaxHP', type: 'num', ph: '100000', h: 'a mob with MaxHP above this is a champion; empty — the threshold from Alerts' },
     { k: 'pickup', show: notProf, l: 'Pick up drop', type: 'bool', h: 'after a fight pick up the drop nearby (off — leave it, move on at once)' },
     { k: 'patrol', show: notProf, l: 'Patrol when no mobs', type: 'bool', h: 'nothing to hit near — run over the farm spots / patrol points / the map looking for mobs. Off — stand where it is and wait for the respawn (the safe point, if set — there); a mob within the usual reach is still taken' },
@@ -1156,7 +1179,7 @@ const CARDS = [
     { k: 'room_pause_min', show: () => modeOf() === 'ROOMS', l: 'Pause before the next room, ms: from', type: 'num', ph: '1000', h: 'a room done — a random «human» pause, from … to ms, before the run to the next one (mobs on us — no pause); 0 and 0 — none' },
     { k: 'room_pause_max', show: () => modeOf() === 'ROOMS', l: '… to, ms', type: 'num', ph: '3000' },
     { k: 'room_recount', show: () => modeOf() === 'ROOMS', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
-    { k: 'room_ignore_way', show: () => modeOf() === 'ROOMS', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight)' },
+    { k: 'room_ignore_way', show: () => modeOf() === 'ROOMS', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight). At the start (no room farmed yet) this is always so: mobs on us go along to the first room' },
     { k: 'room_players', show: () => modeOf() === 'ROOMS', l: 'Player in the room, s', type: 'num', ph: '60', h: 'a stranger in the room this many seconds — leave (0 — at once, -1 — ignore). A room with a stranger seen from afar is not chosen' },
     { k: 'room_avoid', show: () => modeOf() === 'ROOMS', l: 'Avoid it for, s', type: 'num', ph: '30', h: 'after leaving because of a player the room is avoided this many seconds' },
     { k: '_map', type: 'map' }] },
@@ -1165,6 +1188,13 @@ const CARDS = [
     { k: 'kite_range', l: 'Shoot from', type: 'num', ph: '500', h: 'about the bow range: a target farther than this — run closer first' },
     { k: 'kite_near', l: 'Step when a mob is closer than', type: 'num', ph: '380', h: 'the step goes only while a mob that hits us / has us as its target is closer than this; all farther — stand and shoot. Empty — «Shoot from» minus «Step» (380 with the defaults)' },
     { k: 'kite_wait', l: 'Step after the shot, ms', type: 'num', ph: 'auto', h: 'empty — as soon as the arrow lands (the mob loses HP; a miss — after the usual landing time); a number — this many ms after the shot starts' }] },
+  { ic: 'spark', c: '#ff5d8f', show: () => ['MELEE', 'BOW'].includes(fightOf()) && notProf(), t: 'Fight skills', sub: 'Debuffs and the like pressed in the fight, between the hits / shots', f: [
+    { k: 'fight_skill', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
+      cols: [['Skill', 'skill', null, '3fr'], ['At most every, s', 'num', '0 — when ready', '1.1fr'],
+        ['Same mob again after, s', 'num', r => skAtMob(r) ? '0 — no limit' : '—', '1.2fr'], ['Mobs at least', 'num', '1', '.8fr']],
+      newRow: () => { const used = (cfg.fight_skill || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type !== 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card below: here they are picked from it' }),
+      h: 'pressed in the fight between the hits (bow: between the shots). Every moment the upper row that may go is cast: it is ready, it was not cast within «At most every» (empty — whenever ready), this mob has not had it within «Same mob again after» (a debuff lasting 30 s — 30; empty — no limit), the target is within its cast range, at least «Mobs at least» mobs are in its area (AoE — its radius from the Skills card; else — the mobs on us). While it is being cast no attack order goes (it would cancel it); it did not go in 3 s (out of sight, MP) — held 3 s. A mage has its own rows in the Mage card («At most every», «Again on a mob after»)' }] },
   { ic: 'spark', c: '#b18cff', show: () => fightOf() === 'MAGE' && notProf(), t: 'Mage', sub: 'The pack is killed by skills instead of the auto attack', f: [
     { k: 'mage', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
       cols: [['Skill', 'skill', null, '3fr'], ['Use when', 'sel', MAGE_CONDS, '1.6fr'], ['Value', 'num', r => MAGE_PH[r[1]] || '', '.8fr']],
@@ -1179,11 +1209,12 @@ const CARDS = [
     { k: 'mage_body', l: 'Body pull instead', type: 'bool', h: 'no pull skills: the mage runs past the mobs as the others do (the list above is not used)' },
     { k: 'mage_spam_ms', l: 'Skill spam, ms', type: 'num', ph: '100', h: 'as sh_solo: a skill packet this often, no waiting for the cast — the next nuke is pressed while the reuse ends and goes at once; a skill with a condition (drain, AoE, debuff) is waited for until it goes. The target is counted again every 200 ms: the most mobs round it, then the lowest HP' },
     { k: 'mage_buff', l: 'Own buffs', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add buff',
-      cols: [['Skill', 'skill', s => s.type === 'SELF', '3fr'], ['Buff ID on us', 'num', '= the skill', '1.1fr'], ['Recast, s before its end', 'num', '60', '1.3fr']],
-      newRow: () => { const used = (cfg.mage_buff || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type === 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '']; },
+      cols: [['Skill', 'skill', s => s.type === 'SELF', '3fr'], ['Buff ID on us', 'num', '= the skill', '1.1fr'], ['Recast, s before its end', 'num', '60', '1.3fr'],
+        ['Where', 'sel', SPOT_OPTS, '1.5fr']],
+      newRow: () => { const used = (cfg.mage_buff || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type === 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '', '0']; },
       note: () => skillDb.some(s => s.type === 'SELF') ? null : mk('div', { class: 'h', text: 'no skill «On us» in the skill list — add your buffs in the Skills card below (how it is cast: «On us»): here they are picked from it' }),
-      h: 'a buff is gone or ends within «Recast» seconds — its skill is cast on us at a calm moment: no mob on us (right before the pull of a room, during the pause between the rooms, while waiting), we stand until it is on. Never in the middle of a fight: a buff gone there waits for the end of the fight. Buff ID — only when the effect on us has another ID than the skill (empty — the same). Recast: empty — 60 s, 0 — only when it is gone. A toggle is cast only when it is off. Works in the pack / rooms farm, not in Profile mode' }] },
-  { ic: 'book', c: '#8c9bff', show: () => fightOf() === 'MAGE' && notProf(), t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the Mage card picks from it', db: true, f: [
+      h: 'a buff is gone or ends within «Recast» seconds — its skill is cast on us at a calm moment: no mob on us (right before the pull of a room, during the pause between the rooms, while waiting), we stand until it is on. Never in the middle of a fight: a buff gone there waits for the end of the fight. Buff ID — only when the effect on us has another ID than the skill (empty — the same). Recast: empty — 60 s, 0 — only when it is gone. A toggle is cast only when it is off. «only at the farm spot» — the run between the rooms never stops for it: it waits until we stand at the farm spot (of the room, the fight, the safe point) with no mob on us. Works in the pack / rooms farm, not in Profile mode' }] },
+  { ic: 'book', c: '#8c9bff', show: notProf, t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the skill fields of the cards pick from it', db: true, f: [
     { k: '_skills', l: 'Skill list', type: 'skilldb',
       h: 'how each skill is cast, its cast range and AoE radius. Saved by its own button into skills.json (the farm script reads it there), not with the .navgrid; the page remembers the file it opened / saved' }] },
   { ic: 'target', c: '#ffb454', t: 'Weapon', sub: 'Farm weapon and the tap for the pull', f: [
@@ -1193,10 +1224,18 @@ const CARDS = [
     { k: 'tap_always', show: isPull, l: 'Tap every mob', type: 'bool', h: 'pull every mob with a hit, no run-by' },
     { k: 'dagger.id', show: isMelee, l: 'Dagger for a fat mob', type: 'num', h: 'one fat mob left — the dagger' },
     { k: 'dagger.hp', show: isMelee, l: 'Fat from MaxHP', type: 'num', ph: '0', h: '0 — the champion threshold' }] },
+  { ic: 'magnet', c: '#2ec4b6', show: () => isPull() && notProf(), t: 'Pull skills', sub: 'An AoE that aggroes everything round, or a skill cast at every mob', f: [
+    { k: 'pull_skill', l: 'Skills of the pull', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add pull skill',
+      cols: [['Skill', 'skill', s => s.type !== 'SELF', '3fr'],
+        ['At most every, s', 'num', r => skAoe(r) || !skillById(r[0]) ? '0 — when ready' : '—', '1.2fr']],
+      newRow: () => { const used = (cfg.pull_skill || []).map(r => r[0]), free = s => +s.id && !used.includes(s.id);
+        const s = skillDb.find(s => free(s) && (s.type === 'SELF_AOE' || s.type === 'AOE')) || skillDb.find(s => free(s) && s.type === 'TARGET'); return [s ? s.id : '', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card: here they are picked from it' }),
+      h: 'AoE (round us / at the target — how it is cast and its radius: the Skills card): the pull is ONE run planned at its start. The free mobs of the room (no rooms: as many as the pack lacks) are grouped into areas of its radius — the most mobs per press — and the areas are put in the shortest order from the entry to a farm spot of the room (the spot that makes the whole way shortest; no spot — it ends at the last area). On the run it is pressed as soon as every mob of the next area is in its reach and «At most every» allows — no stop, at once on to the next area; the mobs it took are ours and never pressed / run at again. Not ready yet at an area (reuse): through it and back, never standing. Then the pack is led to that farm spot and killed. Never while an ignored mob / a skipped champion is in its area; only mobs in sight (no wall of the map between). «At the target» — every mob of the pull gets it from its cast range instead of the run-by (as the pull skills of a mage); «At most every» is not used then' }] },
   { ic: 'spark', c: '#ffd166', t: 'Buffs', sub: 'Buffer service and own buffs', f: [
     { k: 'buff.id', l: 'Buff ID (watched)', type: 'num', ph: '1204', h: 'empty — 1204 with the bypasses below (as on all our chars); 0 — no buff' },
     { k: 'buff.bypass', l: 'Buff bypasses', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'one per line, in this order' },
-    { k: 'selfbuff', l: 'Own buffs', type: 'rows', cols: [['Skill', 'num', '421'], ['Buff ID', 'num', '0 = same as skill'], ['Cast', 'sel', [['0', 'on self'], ['1', 'target me first']]]], h: 'no buff on us — the skill is cast on self. «target me first» — a skill cast at a target (1323): the bot targets itself, casts, then the mob back. Empty — 421; skill 0 — no own buffs' }] },
+    { k: 'selfbuff', l: 'Own buffs', type: 'rows', wide: true, titled: true, hdr: true, cols: [['Skill', 'num', '421', '1.1fr', 'skillid'], ['Buff ID', 'num', '0 = same as skill', '1fr'], ['Cast', 'sel', [['0', 'on self'], ['1', 'target me first']], '1.2fr'], ['When', 'sel', WHEN_OPTS, '2.2fr'], ['Kind', 'sel', [['0', 'buff'], ['1', 'toggle']], '0.9fr'], ['Mobs on us ≤', 'num', r => r[3] === '3' ? '1' : '—', '0.8fr']], h: 'no buff on us — the skill is cast on self. «target me first» — a skill cast at a target (1323): the bot targets itself, casts, then the mob back. When: «always» — kept on; «only at the farm spot» — never on the runs and the pull: it waits until we stand at the farm spot (the spot / corner of the fight, a farm spot of the map, the safe point; a map with none of them — in a fight), right before the pull of a room too; «in the fight at the spot, off after it» — cast in the fight there and taken off as soon as the fight is over (a buff that cuts the run speed: the run to the next pull goes at full speed); «in a fight with few mobs on us» — on while 1..«Mobs on us ≤» mobs are on us, off with more and after the fight (a toggle that hits one target hard: a polearm then hits only one). Kind «toggle» — on is on whatever its time, its skill once more turns it off (it is never pressed while on). A buff is taken off by the bot (as a click on its icon). Empty — 421; skill 0 — no own buffs' }] },
   { ic: 'magnet', c: '#4dd4ac', show: notProf, t: 'Pull', sub: 'Core\\mob_pull.pas — empty = the default (grey)', pull: true },
   { ic: 'flask', c: '#7ee787', t: 'Supplies', sub: 'Below the minimum — buy up to the maximum', f: [
     { k: 'supply', l: 'Supplies', type: 'rows', wide: true, cols: [['Item', 'item'], ['Min', 'num', '100'], ['Max', 'num', '400']] }] },
@@ -1239,10 +1278,14 @@ function cfgParse(line) {
     case 'dagger': cfg['dagger.id'] = f[0] || ''; cfg['dagger.hp'] = f[1] || ''; break;
     case 'ignore': cfg.ignore = ids(rest); break;
     case 'pull': if (f[0]) cfg['pull.' + f[0].toLowerCase()] = f[1] || ''; break;
-    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0', f[2] === '1' ? '1' : '0']); break;
+    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0', f[2] === '1' ? '1' : '0', ['1', '2', '3'].includes(f[3]) ? f[3] : '0',
+      f[4] === '1' ? '1' : '0', +f[5] > 1 ? f[5] : '']); break;   // skill buff onme when toggle max
     case 'mage': mageAdd(f[0], f[1], f[2], f[3]); break;   // by priority: the rows are kept in its order
     case 'mage_tap': if (f[0] === '0') cfg.mage_body = '1'; else for (const id of f) if (+id) list('mage_tap', [id]); break;   // the pull skills in order
-    case 'mage_buff': list('mage_buff', [f[0] || '', +f[1] ? f[1] : '', f[2] || '']); break;   // skill, buff on us (0 = the skill's), recast s before its end
+    // skill, buff on us (0 = the skill's), recast s before its end (-1 = the default), 1 = only at the farm spot
+    case 'mage_buff': list('mage_buff', [f[0] || '', +f[1] ? f[1] : '', f[2] && f[2] !== '-1' ? f[2] : '', f[3] === '1' ? '1' : '0']); break;
+    case 'fight_skill': list('fight_skill', [f[0] || '', ms2s(f[1]), ms2s(f[2]), +f[3] > 1 ? f[3] : '']); break;   // skill every_ms permob_ms min
+    case 'pull_skill': list('pull_skill', [f[0] || '', ms2s(f[2])]); break;   // skill min(not used) every_ms
     case 'supply': list('supply', [f[0] || '', f[1] || '', f[2] || '']); break;
     default: if (SIMPLE.includes(key) || key in BOOLS) cfg[key] = rest; else cfgExtra.push(line.trim());
   }
@@ -1259,15 +1302,25 @@ function cfgLines() {
   else if (v('buff.id')) put('buff', v('buff.id'), (v('buff.bypass') || '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
   if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
-  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) {
-    if (r[2] === '1') put('selfbuff', +r[0] || 0, +r[1] || 0, 1); else put('selfbuff', +r[0] || 0, +r[1] || 0); }
+  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) {   // skill buff [target me first] [when] [toggle] [max mobs]
+    const a = [+r[0] || 0, +r[1] || 0, r[2] === '1' ? 1 : 0, +r[3] || 0, r[4] === '1' ? 1 : 0, r[3] === '3' && +r[5] > 1 ? Math.floor(+r[5]) : 0];
+    while (a.length > 2 && !a[a.length - 1]) a.pop();   // the defaults at the end are not written
+    put('selfbuff', ...a); }
   // the priority = the row; an empty value = the grey default of its condition (HP below 70, 3 mobs...)
   (cfg.mage || []).filter(r => +r[0]).forEach((r, i) => put('mage', i + 1, +r[0], r[1] || 'READY',
     String(r[2] || '').trim() === '' ? parseInt(MAGE_PH[r[1] || 'READY']) || 0 : +r[2] || 0));
   const taps = (cfg.mage_tap || []).map(r => +r[0]).filter(Boolean);   // the pull skills in order (body pull: K mage_body 1 below)
   if (taps.length && v('mage_body') !== '1') put('mage_tap', ...taps);
-  // own buffs: skill, buff ID on us (0 = the skill's), recast s before its end (empty — the default 60: not written)
-  for (const r of cfg.mage_buff || []) if (+r[0]) put('mage_buff', +r[0], +r[1] || 0, ...(String(r[2] ?? '').trim() === '' ? [] : [+r[2] || 0]));
+  // own buffs: skill, buff ID on us (0 = the skill's), recast s before its end (empty — the default 60: not written,
+  // -1 when the 4th follows), 1 = only at the farm spot
+  for (const r of cfg.mage_buff || []) if (+r[0]) {
+    const rc = String(r[2] ?? '').trim() === '' ? null : +r[2] || 0, a = [+r[0], +r[1] || 0];
+    if (r[3] === '1') a.push(rc === null ? -1 : rc, 1); else if (rc !== null) a.push(rc);
+    put('mage_buff', ...a); }
+  // fight skills of melee / bow: skill, at most every ms, the same mob again after ms, mobs at least (the page: seconds)
+  for (const r of cfg.fight_skill || []) if (+r[0]) put('fight_skill', +r[0], s2ms(r[1]), s2ms(r[2]), +r[3] > 1 ? Math.floor(+r[3]) : 1);
+  // pull skills: skill, free mobs in its area at least (0 = the default 3), at most every ms
+  for (const r of cfg.pull_skill || []) if (+r[0]) put('pull_skill', +r[0], 0, s2ms(r[1]));
   // a mage / an archer has no spoil / sweep: empty fields mean 0 then, not 302 / 444. The pack line goes in every mode
   // but Profile (the script farm starts by it, the mob IDs are in it): no pack size - 6 (used by Packs / Auto only)
   const mg = fightOf() !== 'MELEE';
@@ -1318,8 +1371,18 @@ function importScript(text) {
     call(fn, a => { const p = nums(a); if (p.length) set(k, p[0]); });
   call('SetPull', a => { const s = strs(a), p = nums(a.replace(/'[^']*'/g, '')); if (s[0] && p.length) set('pull.' + s[0].toLowerCase(), p[0]); });
   let sb = false, su = false, ms = false;
-  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0']); n++; });
-  call('AddSelfBuffOnMe', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '1']); n++; });
+  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0', '0', '0', '']); n++; });
+  call('AddSelfBuffOnMe', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '1', '0', '0', '']); n++; });
+  call('AddSpotBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0', '1', '0', '']); n++; });
+  call('AddOwnBuff', a => { const p = nums(a); if (!+p[0]) return; if (!sb) { cfg.selfbuff = []; sb = true; }   // skill buff onme when toggle max
+    cfg.selfbuff.push([String(p[0]), String(p[1] || 0), +p[2] === 1 ? '1' : '0', ['1', '2', '3'].includes(String(p[3])) ? String(p[3]) : '0',
+      +p[4] === 1 ? '1' : '0', +p[5] > 1 ? String(p[5]) : '']); n++; });
+  call('SetChampionsLast', a => { cfg.champs_last = /true/i.test(a) ? '1' : '0'; if (cfg.champs_last === BOOLS.champs_last) delete cfg.champs_last; n++; });
+  let fsk = false, psk = false;   // AddFightSkill(skill, every ms, the same mob again after ms, mobs at least); AddPullSkill(skill, min, every ms)
+  call('AddFightSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!fsk) { cfg.fight_skill = []; fsk = true; }
+    cfg.fight_skill.push([String(p[0]), ms2s(p[1]), ms2s(p[2]), +p[3] > 1 ? String(p[3]) : '']); n++; });
+  call('AddPullSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!psk) { cfg.pull_skill = []; psk = true; }
+    cfg.pull_skill.push([String(p[0]), ms2s(p[2])]); n++; });
   call('AddMageSkill', a => { const m = a.match(/^\s*(-?\d+)\s*,\s*(\d+)\s*,\s*'(\w*)'\s*,\s*(-?\d+)/); if (!m) return;
     if (!ms) { cfg.mage = []; ms = true; } mageAdd(m[1], m[2], m[3], m[4]); n++; });
   let mt = false;   // SetMageTap(0) = body pull; SetMageTap(x) + AddMageTap(y)... = the pull skills in order
@@ -1328,7 +1391,7 @@ function importScript(text) {
   call('AddMageTap', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!mt) { cfg.mage_tap = []; mt = true; } cfg.mage_tap.push([String(p[0])]); n++; });
   let mb = false;   // AddMageBuff(skill, buff ID, recast s before its end; -1 = the default)
   call('AddMageBuff', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!mb) { cfg.mage_buff = []; mb = true; }
-    cfg.mage_buff.push([String(p[0]), +p[1] > 0 ? String(p[1]) : '', p[2] !== undefined && +p[2] >= 0 ? String(p[2]) : '']); n++; });
+    cfg.mage_buff.push([String(p[0]), +p[1] > 0 ? String(p[1]) : '', p[2] !== undefined && +p[2] >= 0 ? String(p[2]) : '', '0']); n++; });
   call('AddSupply', a => { const m = a.match(/^\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)/); if (!m) return; if (!su) { cfg.supply = []; su = true; }
     cfg.supply.push([String(ITEM_CONST[m[1].toUpperCase()] || +m[1] || ''), m[2], m[3]]); n++; });
   call('SetSafePoint', a => { const p = nums(a); if (p.length >= 3) safe = { x: +p[0], y: +p[1], z: +p[2] }; });
@@ -1417,11 +1480,16 @@ function fieldUi(f) {
             for (const s of skillDb) if (+s.id && (typeof c[2] !== 'function' || c[2](s))) e.append(mk('option', { value: s.id, text: skillLabel(s) }));
             if (r[j] && ![...e.options].some(o => o.value === String(r[j]))) { const s = skillById(r[j]);
               e.append(mk('option', { value: r[j], text: s ? skillLabel(s) : 'ID ' + r[j] + ' — not in the skill list' })); }
-            e.value = r[j] || ''; e.onchange = () => { r[j] = e.value; dirty(); }; }
+            const sk = e; sk.value = r[j] || ''; sk.onchange = () => { r[j] = sk.value; dirty(); draw(); };   // redraw: the hints follow its kind
+            e = mk('span', { class: 'skp' }, skillIcon(skillById(r[j])), sk); }
           else if (c[1] === 'sel') { e = mk('select', { title: c[0] }); for (const [v, t] of c[2]) e.append(mk('option', { value: v, text: t }));
             e.value = r[j] || c[2][0][0]; e.onchange = () => { r[j] = e.value; dirty(); draw(); }; }   // redraw: the hints of the other columns follow
           else { const ph = typeof c[2] === 'function' ? c[2](r) : c[2];
-            e = mk('input', { type: 'number', placeholder: ph || c[0], title: c[0] + (ph ? ': ' + ph : '') }); e.value = r[j] || ''; e.oninput = () => { r[j] = e.value.trim(); dirty(); }; }
+            const inp0 = mk('input', { type: 'number', placeholder: ph || c[0], title: c[0] + (ph ? ': ' + ph : '') }); inp0.value = r[j] || '';
+            inp0.oninput = () => { r[j] = inp0.value.trim(); dirty(); }; e = inp0;
+            if (c[4] === 'skillid') { const im = skillIcon(skillById(r[j]));   // a skill ID: its icon in front, it follows the number
+              inp0.addEventListener('input', () => { const s = skillById(r[j]); im.classList.toggle('none', !(s && s.icon)); if (s && s.icon) im.src = 'data:image/png;base64,' + s.icon; });
+              e = mk('span', { class: 'skp' }, im, inp0); } }
           line.append(e);
         });
         const x = mk('button', { class: 'x', title: 'remove', onclick: () => { cfg[f.k].splice(i, 1); if (!cfg[f.k].length) delete cfg[f.k]; draw(); mark(); dirty(); } });
@@ -1456,7 +1524,7 @@ function fieldUi(f) {
 function skillDbUi(f) {
   const row = mk('div', { class: 'fld wide' }); row.dataset.k = f.k;
   row.dataset.s = [f.l, f.h, SKILL_FILE, 'skills', ...skillDb.map(s => s.name)].join(' ').toLowerCase();
-  const list = mk('div', { class: 'rows' }), cols = '.9fr 1.7fr .9fr .9fr 2.2fr auto';
+  const list = mk('div', { class: 'rows' }), cols = '24px .9fr 1.7fr .9fr .9fr 2.2fr auto';
   const sv = btn('save', 'Save ' + SKILL_FILE, saveSkills, skillDbDirty ? 'primary dirty' : '');
   const st = mk('span', { class: 'muted' });
   const status = () => { st.textContent = skillDbDirty ? 'changed — not saved yet' : !skillDb.length ? '' :
@@ -1466,7 +1534,7 @@ function skillDbUi(f) {
     if (!skillDb.length) list.append(mk('div', { class: 'h', text: 'No skills yet: press Open ' + SKILL_FILE + ' and pick Library\\Nav\\' + SKILL_FILE +
       ' (once — the page remembers it), or add the skills here and save them there' }));
     else { const hd = mk('div', { class: 'rw hd' }); hd.style.gridTemplateColumns = cols;
-      for (const t of ['ID', 'Cast', 'Range', 'AoE radius', 'Name', '']) hd.append(mk('span', { text: t })); list.append(hd); }
+      for (const t of ['', 'ID', 'Cast', 'Range', 'AoE radius', 'Name', '']) hd.append(mk('span', { text: t })); list.append(hd); }
     skillDb.forEach((s, i) => {
       const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
       const num = (k, ph) => { const e = mk('input', { type: 'number', placeholder: ph, title: ph }); e.value = s[k];
@@ -1477,7 +1545,7 @@ function skillDbUi(f) {
       nm.oninput = () => { s.name = nm.value; touched(); }; nm.onchange = () => skillsUiRefresh();
       const x = mk('button', { class: 'x', title: 'remove', onclick: () => { skillDb.splice(i, 1); touched(); draw(); skillsUiRefresh(); } });
       x.innerHTML = icon('close');
-      line.append(num('id', 'skill ID'), ty, num('range', 'cast range'), num('rad', 'AoE radius'), nm, x); list.append(line);
+      line.append(skillIcon(s), num('id', 'skill ID'), ty, num('range', 'cast range'), num('rad', 'AoE radius'), nm, x); list.append(line);
     });
     list.append(mk('button', { class: 'addrow', text: '+ Add skill', onclick: () => {
       skillDb.push({ id: '', type: 'TARGET', range: '600', rad: '0', name: '' }); touched(); draw(); } }));
@@ -1505,6 +1573,9 @@ function farmSummary() {
     s += ' ' + (ft === 'BOW' ? 'Shoots from up to ' + R + '; after every shot a step of ' + S + ' away while a mob on it is closer than ' + (+v('kite_near') || R - S) + '.'
       : ft === 'MAGE' ? 'Kills with the ' + (cfg.mage || []).filter(r => +r[0]).length + ' skills of the Mage card, no auto attack.'
       : 'Hits with the auto attack' + (v('pack.spoil') === '0' ? '' : ', mass spoil ' + (v('pack.spoil') || 302) + ' and sweep ' + (v('pack.sweep') || 444)) + '.');
+    const fsk = (cfg.fight_skill || []).filter(r => +r[0]).length, psk = (cfg.pull_skill || []).filter(r => +r[0]).length;
+    if (fsk && ft !== 'MAGE') s += ' Presses ' + fsk + ' fight skill' + (fsk > 1 ? 's' : '') + ' (debuffs…) between the ' + (ft === 'BOW' ? 'shots' : 'hits') + '.';
+    if (psk && isPull()) s += ' Pulls with ' + psk + ' skill' + (psk > 1 ? 's' : '') + ' of the Pull skills card.';
   }
   if (m === 'ROOMS' && !rooms.length) W.push('Rooms picked, but no rooms on the map — draw them with the Room tool');
   if (m === 'ROOMS' && ft === 'BOW') { const pk = rooms.filter(r => r.mode !== 'SINGLE').map(r => r.name);
@@ -1520,6 +1591,8 @@ function cfgChips() {
   const MODE = { PACK: 'packs to a corner', SINGLE: 'single', AUTO: 'auto', ROOMS: 'rooms', PROFILE: 'profile — the interface farms' };
   const mobs = v('pack.mobs') ? 'mobs ' + v('pack.mobs') : 'any mobs';
   chip(v('login.user') ? 'login ' + v('login.user') : 'no auto-login', v('login.user') ? 'ok' : '');
+  // a profile that is not an .xml is not there: the bot keeps the profile loaded before (a spoiler attacks by itself)
+  if (v('config') && !/\.xml$/i.test(v('config'))) chip('Profile ' + v('config') + ': the bot profiles are .xml files — it will not load', 'warn');
   if (cfgProfile()) chip(v('config') ? 'profile ' + v('config') : 'Profile mode, but no Profile .xml', v('config') ? 'ok' : 'warn');
   else if (cfgRooms()) chip('pack = the whole room · ' + mobs, 'ok');
   else if (mode === 'PACK' || mode === 'AUTO') chip('pack of ' + (v('pack.size') || '6') + ' · ' + mobs, 'ok');
@@ -1527,9 +1600,13 @@ function cfgChips() {
   chip('mode: ' + (MODE[mode] || mode) + (cfgProfile() ? '' : ' · ' + FIGHT_NAME[fightOf()]), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
   const mg = (cfg.mage || []).filter(r => +r[0]);
   const mb = (cfg.mage_buff || []).filter(r => +r[0]);
-  const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb].map(r => r[0]).filter(x => +x && !skillById(x)))];
+  const fsk = (cfg.fight_skill || []).filter(r => +r[0]), psk = (cfg.pull_skill || []).filter(r => +r[0]);
+  const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb, ...fsk, ...psk].map(r => r[0]).filter(x => +x && !skillById(x)))];
   if (mg.length) chip(cfgProfile() ? 'mage skills: not used in Profile mode' : 'mage: ' + mg.length + ' skills, no auto attack', cfgProfile() ? 'warn' : 'ok');
-  if (mg.length && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
+  if (fsk.length && !cfgProfile()) chip(fightOf() === 'MAGE' ? 'fight skills: not used by a mage (its own rows in the Mage card)' : 'fight skills: ' + fsk.length,
+    fightOf() === 'MAGE' ? 'warn' : 'ok');
+  if (psk.length && !cfgProfile()) chip(isPull() ? 'pull skills: ' + psk.length : 'pull skills: not used one by one (no pull)', isPull() ? 'ok' : 'warn');
+  if ((mg.length || fsk.length || psk.length) && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
   else if (miss.length) chip('not in ' + SKILL_FILE + ': ' + miss.join(', ') + ' — cast at the target from 600', 'warn');
   if (mb.length) chip(cfgProfile() ? 'own buffs of the Mage card: not used in Profile mode' : 'own buffs: ' + mb.length + ' (with no mob on us)', cfgProfile() ? 'warn' : 'ok');
   if (mg.length && !cfgProfile() && !mg.some(r => r[1] === 'HP_BELOW'))

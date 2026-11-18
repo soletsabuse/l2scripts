@@ -1,0 +1,194 @@
+Transformations of the client (system\TransformData.dat + NpcName-e.dat): !tr <number> in the party chat
+
+     1  Onyx Beast
+     2  Doom Wraith
+   201  Grail Apostle
+   202  Grail Apostle
+   203  Grail Apostle
+   204  Unicorn
+   205  Unicorn
+   206  Unicorn
+   207  Lilim Knight
+   208  Lilim Knight
+   209  Lilim Knight
+   210  Golem Guardian
+   211  Golem Guardian
+   212  Golem Guardian
+   213  Inferno Drake
+   214  Inferno Drake
+   215  Inferno Drake
+   216  Dragon Bomber
+   217  Dragon Bomber
+   218  Dragon Bomber
+   251  Final Form
+   301  Zariche
+   302  Akamanah
+   303  Zombie
+   101  Native
+   102  Yeti
+   103  Buffalo
+   104  Pig
+   304  Pixy
+   105  Rabbit
+     3  Heretic Female / Heretic Male
+     4  Veil Master
+     5  Saber Tooth Tiger
+     6  Ol Mahum
+     7  Doll Blader
+   252  Divine Knight
+   253  Divine Warrior
+   254  Divine Rogue
+   255  Divine Healer
+   256  Divine Wizard
+   257  Divine Enchanter
+   258  Divine Summoner
+   305  Zaken
+   306  Anakim
+   307  Venom
+   308  Gordon
+   309  Ranku
+   310  Kiyachi
+   311  Demon Prince
+   259  Dwarf Golem
+   319  Teleporter
+   106  Light Purple Maned Horse
+   320  Grizzly Bear
+   321  Timitran
+   322  Lava Golem
+   323  Yeti
+   107  Teleporter
+   108  Pumpkin Ghost
+   260  Final Form
+     8  Aurabird-Falcon
+     9  Aurabird-Owl
+   219  Myo Race
+   220  Unicorniun
+   221  Demon Race
+   109  Tawny-Maned Lion
+   110  Steam Sledge
+   111  Frog
+   112  Young Child
+   113  Guards of the Dawn / Mercenary
+   114  Snowman
+   115  Scarecrow
+   116  Tin Plate Golem
+   117  Tow
+   118  Lure Tow
+   119  Heavy Tow
+   120  Wing Tow
+   121  Main Role A
+   122  Main Role B
+    10  Human Male Mercenary
+    11  Male Elf Mercenary
+    12  Dark Elf Female Mercenary
+    13  Orc Male Mercenary
+    14  Dwarf Male Mercenary
+    15  Kamael Male Mercenary
+    16  Knight Level Mercenary
+    17  Archer Level Mercenary
+    18  Wizard Level Mercenary
+    19  Trooper Level Mercenary
+    20  Knight Leader Elite Mercenary
+    21  Commander Elite Mercenary
+   123  Guardian's Strider
+   124  Native
+   125  Harmonia
+   126  Treykan
+    22  Game Manager
+    23  HM Pona
+    24  Tin Plate Golem
+ 20000  Kadomas
+ 20001  Jetbike
+ 20002  Trejuo
+ 20003  Sujin
+   127  Block Checker Blue
+ 20004  Shiny Platform
+ 20005  Dragon Master Lee
+ 20006  Dragon Master Karin
+ 20007  Wood Horse
+   500  Pig
+   501  Pixy
+   502  Rabbit
+   503  Frog
+   504  Pumpkin Ghost
+   505  Enchanting Stone
+   506  Final Form
+   507  Final Form
+   508  For direction 6
+   509  Naviarope
+   510  For direction 8
+   511  For direction 9
+   512  For direction 7
+   513  For direction 10
+   514  For direction 11
+   515  For direction 12
+   516  For direction 13
+   128  Orbis' Curse
+   129  Awakened Knight's Mount
+   130  Awakened Warrior's Mount
+   131  Awakened Rogue's Mount
+   132  Awakened Archer's Mount
+   133  Awakened Wizard's Mount
+   134  Awakened Summoner's Mount
+   135  Awakened Enchanter's Mount
+   136  Awakened Healer's Mount
+   137  Kukuru
+   138  Kukurin
+   139  Black Bear Mount
+   140  Deadly Rose
+   141  Rosy Rose
+   142  Orfen
+   143  Queen Ant
+   144  Lilith
+   145  Anakim
+ 20008  Tame Princess Ant
+ 20009  Black Bear
+ 20010  Halloween Witch's Broomstick
+ 20011  Game Master
+ 20012  Jermann
+ 20013  Jermann
+ 20014  Jermann
+ 20015  Fairweather Borna
+ 20016  Unicorn
+ 20017  Infected Zombie
+ 20018  Pirate Captain Uthanka
+ 20019  Giant Rat
+ 20020  Tsubaki
+ 20021  Great Wolf
+   701  Transformed: Greater Arcana Lord
+   702  Transformed: Greater Elemental Master
+   703  Transformed: Greater Spectral Master
+   146  Air Bike
+   147  Lind Rider
+   148  Transformed: Siege Golem
+   149  Transformed: Part-time Seller Cat
+   150  Transformed: Part-time Seller Cat
+   151  Transformed: Part-time Seller Cat
+   152  Transformed: Part-time Seller Cat
+   153  Transformed: Part-time Seller Cat
+   154  Warrior Fox
+   155  Wizard Fox
+   156  L2B2
+   157  Blue Dynasty Unicorn
+   158  Tame Hell Hound
+   159  Pegasus
+   160  Tame Wing Hound
+   161  War Horse
+   162  Griffin
+   163  Halloween Witch's Broomstick
+   164  White Dog
+   165  Pink Dog
+   166  Golden Dog
+   167  Tin Plate Golem
+   168  Snowman
+   169  Scarecrow
+   170  Tow
+   171  Lure Tow
+   172  Heavy Tow
+   173  Wing Tow
+   174  White Dog
+   175  Pink Dog
+   176  Golden Dog
+ 20022  Elk
+ 20023  Transformed: Kat the Cat
+ 20024  Snow Fenrir
