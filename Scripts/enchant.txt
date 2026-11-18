@@ -1,0 +1,1777 @@
+uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
+
+// =============================================================================
+// Enchant: enchants the items of the bag picked in the page Library\Binds\enchant.html (open it in Chrome /
+// Edge). Started and stopped from the page.
+//
+// Library\Binds\<character>.ench - written by the page, read here every CFG_MS (a change counts at once):
+//   run=1 + run_id=<n>: a start (only a run_id not seen before: the one in the file when the script starts
+//   does not count, so a restart of the script never starts enchanting by itself); run=0: a stop.
+//   delay_ms (a result -> this long -> the next "enchant"), put_ms (a new item put into the window -> this
+//   long -> its first "enchant"), order (seq: one item to the end, round: one try per item in turn),
+//   max_scrolls (a run uses this many at most, 0 = no limit), stop_on_break, chat (the results as fake party
+//   chat messages), sound, debug (the packet log);
+//   then a [job] block per range: on, name, from, to, scroll (item ID), stone_on, stone (item ID),
+//   kind=<item ID>|<name> per kind of item (every one of that item ID in the bag, any level, not worn: mass
+//   enchanting), item=<OID>|<item ID>|<name> per single item (a worn one), cryst (after the run: none / done
+//   (the items at their target or over) / left (under it) / all - never a worn one).
+//   cryst_id=<n>: a new number = crystallize now by the jobs' cryst (not while a run goes).
+// A job takes its items with from <= +level < to: one scroll (+ one stone) per try, till the item reaches
+// <to> (another job may go on with it: the next range), breaks, or the scrolls / stones run out. A blessed
+// fail (back to +0) puts the item back into a job of +0, if there is one. order=seq: the jobs in their order,
+// the single items first, then the kinds in the bag's order (one item to the end); order=round: the item
+// tried longest ago.
+// Library\Binds\<character>.ench.json - written here every STATE_MS and after every try: the run (state,
+// counts, the try now), the tries (LOG_N last), counts per item, the bag (gear; the rest with counts).
+//
+// The packets, as this server's client does it (enchant_sniffer.txt, 2026-11-18):
+//   19 UseItem(scroll) -> 7C ChooseInventoryItem: the enchant window is open with that scroll;
+//   D0:49 + item OID (put it in) -> FE:82 [1: taken, 0: does not fit]; then D0:E4 (empty, the client does it);
+//   5F + item OID + stone OID (0) "enchant" -> 87 EnchantResult [0: the result, 0 = success][28: the new
+//   level], 21 InventoryUpdate (the item: level / gone, the scroll: its count);
+//   the window stays open: the next "enchant" is only 5F again (a new item: D0:49 again first);
+//   D0:4B (empty) cancel: closes the window (87 with 2). After a break the server closes the window itself.
+//   2F + item OID + count (int64, 1): crystallize (the game's crystallize window sends these back to back;
+//   the answers: system messages 1258 / 53 and 21 with the item removed, the crystals added). A stone: D0:4A + stone OID + item OID - NOT seen in
+//   a sniff yet (from the order 49 / 4A / 4B).
+// RequestItemList (14) - the whole bag from the server, it opens the inventory in the game - only at a run
+// start / end and when the page asks (<character>.ench.req). During a run the levels and counts come from
+// 87 / 21 (kept in an own table: the bot's copy of the bag misses changes on this server).
+// An outcome: the level up (ok), the same with a result (failed, kept), +0 (blessed fail), lower (failed,
+// dropped), the item gone (broke). No result / an error (2) = refused: NONE_MAX in a row on one item -> it
+// is skipped; NONE_RUN_MAX in a row -> the run stops.
+// debug=1: Library\Logs\enchant_<character>_<time>.log - our steps, the outcomes, the packets around the
+// first DBG_TRIES tries of a run, and the enchant packets of the game client.
+// =============================================================================
+
+const
+  LOOP_MS       = 20;       // the main loop
+  CFG_MS        = 300;      // the .ench is read this often
+  STATE_MS      = 1000;     // the .ench.json is written this often (and after every try)
+  CANCEL_MS     = 100;      // after a cancel: then the scroll
+  CHOOSE_MS     = 1500;     // the server's 7C after the scroll: awaited at most this long
+  PUT_MS        = 1500;     // its answer to the item / the stone put in: at most this long
+  RES_MS        = 3000;     // the result (87): at most this long
+  INV_MS        = 300;      // after the result: its InventoryUpdate (21) at most this long
+  LIST_MS       = 1500;     // the whole bag asked for (14): awaited at most this long ...
+  LIST_SETTLE_MS = 300;     // ... or this long after its ItemList (11) came (the bot takes it in)
+  MAX_DELAY_MS  = 60000;
+  MAX_JOBS      = 16;
+  MAX_JI        = 64;       // single items of one job
+  MAX_JK        = 32;       // kinds of one job
+  LOG_N         = 100;      // tries kept for the page
+  MAX_SKIP      = 64;
+  MAX_STAT      = 256;      // items counted per run
+  MAX_OV        = 256;      // items whose level a run knows better than the bot
+  MAX_CV        = 16;       // stacks (scrolls / stones) whose count a run knows better than the bot
+  NONE_MAX      = 3;        // one item: refused this many times in a row -> skipped
+  NONE_RUN_MAX  = 6;        // any items: this many in a row -> the run stops
+  PK_N          = 128;      // packets kept for the debug log ...
+  PK_B          = 48;       // ... their first bytes
+  DBG_TRIES     = 10;       // the packets around this many tries of a run go to the debug log
+  DBG_MAX       = 6000;     // lines of the debug log at most
+  CLI_WATCH_MS  = 8000;     // an enchant packet of the game client: the server's answers this long after it
+  BINDS_DIR     = '..\Binds\';   // from Library\Scripts: the page and its files
+  LOGS_DIR      = '..\Logs\';
+  SOUND_DIR     = '..\Sounds\';
+  SND_TARGET    = 'notification.wav';     // an item reached its target
+  SND_BROKE     = 'error.wav';            // an item broke
+  SND_DONE      = 'task completed.wav';   // the run is over: nothing left to do
+  PH_IDLE       = 0;
+  PH_CANCEL     = 1;        // the window closed: then the scroll
+  PH_USE        = 2;        // the scroll used: 7C awaited
+  PH_PUT        = 3;        // the item put in: FE:82 awaited
+  PH_SUP        = 4;        // the stone put in: its answer awaited
+  PH_WAIT       = 5;        // put_ms / delay_ms awaited, then "enchant"
+  PH_RES        = 6;        // "enchant" sent: 87 (+ 21) awaited
+  PH_BOOT       = 8;        // a run starts: the whole bag awaited
+  PH_CRYST      = 9;        // crystallizing: one item every CRYST_GAP_MS
+  CRYST_GAP_MS  = 60;
+  CRYST_END_MS  = 800;      // after the last one: the server's answers awaited
+  MAX_CR        = 512;
+  R_OK          = 1;
+  R_SAFE        = 2;        // failed, the level kept
+  R_ZERO        = 3;        // failed, back to +0
+  R_DROP        = 4;        // failed, a lower level
+  R_BROKE       = 5;        // failed, the item is gone
+  R_NONE        = 6;        // nothing happened
+
+var
+  // the settings (main thread)
+  CfgRun, FirstCfg, CfgMissTold: boolean;
+  CfgRunId, SeenRunId, CfgText, CfgReadAt, CfgErrJson, CfgErrOld: string;
+  DelayMs, PutDelayMs, OrderMode, MaxScrolls: integer;  // OrderMode: 0 one item to the end, 1 in turn
+  StopOnBreak, ChatOn, SoundOn, DebugOn: boolean;
+  JobN: integer;
+  JOn, JStoneOn, JWant: array[0..15] of boolean;       // JWant: on in the page (JOn: also usable)
+  JCryst: array[0..15] of integer;                      // after the run: 0 none, 1 done, 2 left, 3 all
+  JName: array[0..15] of string;
+  JFrom, JTo, JScroll, JStone, JItemN, JKindN: array[0..15] of integer;
+  JItem: array[0..1023] of integer;                     // job j: JItem[j * MAX_JI + k] = a single item's OID
+  JKind: array[0..511] of integer;                      // job j: JKind[j * MAX_JK + k] = an item ID (all of them)
+  // the run
+  Running, StopWanted: boolean;
+  RunState, RunEnd, RunId, RunStarted: string;          // RunState: idle / running / done / stopped
+  RunEndId, RunSecs: integer;
+  RunAt: cardinal;
+  Tries, OkN, FailN, BrokeN, NoneN, ScrollsN, StonesN, DbgTries: integer;
+  NoneOID, NoneCnt, NoneRun, UseFails, PutFails: integer;
+  // skipped this run: an item (SkOID, any job) or an item ID in a job (SkOID 0: the scroll / stone of that
+  // job does not fit it)
+  SkOID, SkIDv, SkJob: array[0..63] of integer;
+  SkWhy: array[0..63] of string;
+  SkN: integer;
+  StOID, StID, StTry, StOk, StFail, StBroke, StMax: array[0..255] of integer;   // counts per item this run
+  StAt: array[0..255] of cardinal;                      // its last try (order=round)
+  StN: integer;
+  // what a run knows better than the bot's copy of the bag: an item's level (-1: gone), a stack's count
+  OvOID, OvLv: array[0..255] of integer;
+  OvN: integer;
+  CvID, CvCnt: array[0..15] of integer;
+  CvN, OvSeq: integer;
+  // PickNext: the best one so far and why none
+  BestOID, BestJ, BestLv, BestID, CnSkipped, CnNoSc, CnNoSt: integer;
+  BestAt: cardinal;
+  CnScOk, CnStOk: boolean;
+  // the whole bag asked for (RequestItemList)
+  AskAt: cardinal;
+  ReqPath, ReqSeen: string;
+  FirstReq, ClearPend: boolean;                         // ClearPend: what a run learned goes once it is in
+  // crystallizing: the items, the next one, how many this run; the run's end waiting for it
+  CrOID: array[0..511] of integer;
+  CrN, CrIdx, CrystN, CrId: integer;
+  CrCode, CrTxt, CfgCrystId, SeenCrystId: string;
+  CrPending: boolean;                                   // crystallize once the whole bag is in (cryst_id)
+  // the enchant window as we left it: its scroll (item ID, 0: closed / not known), the item in it
+  WinScroll, WinItem: integer;
+  WinPutAt, LastResAt, ResSeenAt: cardinal;
+  PutFresh: boolean;                                    // the item put right after the scroll opened the window
+  // the try now
+  Phase: integer;
+  PhAt: cardinal;
+  CurJ, CurOID, CurItemID, CurLvl0, CurTo, CurScroll, CurScOID, CurStone, CurStoneOID, CurSc0, CurSt0: integer;
+  CurName: string;
+  // set by the packet hooks (numbers only: they may run beside the main loop)
+  Watch, ResArmed, ChooseGot, ResGot, PkOn, PkCapture, ListGot: boolean;
+  InvGot, InvGone, InvScGot: boolean;                   // 21 InventoryUpdate after "enchant": our item / scroll
+  PutRes, SupRes, ResCode, ResLv, InvLv, InvScCnt: integer;   // -1: no answer yet
+  CliWatchAt, ListAt: cardinal;                         // ListAt: the last ItemList (0: none yet)
+  PkDir, PkOp, PkOp2, PkSz, PkLen: array[0..127] of integer;
+  PkByte: array[0..6143] of integer;                    // packet i: PkByte[i * PK_B + b]
+  PkHead, PkTail: integer;
+  // the tries for the page (a ring)
+  LgT, LgName: array[0..99] of string;
+  LgSeq, LgOID, LgID, LgJob, LgFrom, LgLv, LgRes, LgCode, LgSc, LgSt: array[0..99] of integer;
+  LgN, LgSeqN: integer;
+  // the files
+  CharName, CfgPath, StatePath, DbgPath: string;
+  StateTold, DbgTold, DbgDirty, Dirty: boolean;
+  DbgL: TStringList;
+  DbgN: integer;
+  DbgAt: cardinal;
+  BagSig: integer;
+  ItemsJson, StuffJson: string;
+
+// ===================== text =====================
+
+function JsonStr(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '"';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if (C = '"') or (C = '\') then result := result + '\' + C
+    else if Ord(S[i]) < 32 then result := result + ' '
+    else result := result + C;
+  end;
+  result := result + '"';
+end;
+
+function HexLE32(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) +
+            IntToHex((V shr 16) and $FF, 2) + IntToHex((V shr 24) and $FF, 2);
+end;
+
+// the character name -> a file name (letters, digits, _ and - only)
+function FileTag(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if ((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or
+       (C = '_') or (C = '-') then result := result + C
+    else result := result + '_';
+  end;
+  if result = '' then result := 'char';
+end;
+
+// ===================== the files =====================
+
+// the whole file, shared with a writer (the page); false = not there / not read
+function ReadText(Path: string; L: TStringList): boolean;
+var FS: TFileStream;
+begin
+  result := false;
+  L.Clear;
+  if not FileExists(Path) then exit;   // no exception for that: the bot prints even a caught one
+  try
+    FS := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+    try
+      L.LoadFromStream(FS);
+      result := true;
+    finally
+      FS.Free;
+    end;
+  except
+    result := false;
+  end;
+end;
+
+// the file, shared with readers (the page reads it all the time)
+procedure WriteText(Path: string; L: TStringList; var Told: boolean);
+var FS: TFileStream;
+  Ok: boolean;
+begin
+  Ok := true;
+  try
+    FS := TFileStream.Create(Path, fmCreate or fmShareDenyNone);
+    try
+      L.SaveToStream(FS);
+    finally
+      FS.Free;
+    end;
+  except
+    Ok := false;
+  end;
+  if (not Ok) and (not Told) then begin
+    Told := true;
+    Engine.Msg('[Ench]', 'Cannot write ' + Path, 128);
+  end;
+end;
+
+// ===================== the debug log =====================
+
+procedure Dbg(S: string);
+begin
+  if not DebugOn then exit;
+  if DbgN >= DBG_MAX then exit;
+  if DbgPath = '' then
+    DbgPath := Script.Path + LOGS_DIR + 'enchant_' + FileTag(CharName) + '_' + FormatDateTime('mmdd_hhnnss', Now) + '.log';
+  DbgN := DbgN + 1;
+  if DbgN = DBG_MAX then S := '... the log is full';
+  DbgL.Add(FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
+  DbgDirty := true;
+end;
+
+procedure FlushDbg();
+begin
+  DbgDirty := false;
+  DbgAt := GetTickCount;
+  if DbgPath = '' then exit;
+  WriteText(DbgPath, DbgL, DbgTold);
+end;
+
+// ===================== the packet hooks =====================
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+// a packet into the ring for the debug log (numbers only)
+procedure PkPush(Dir: integer; ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var i, n, b: integer;
+begin
+  i := PkHead mod PK_N;
+  PkDir[i] := Dir;
+  PkOp[i] := ID1;
+  PkOp2[i] := ID2;
+  PkSz[i] := Size;
+  n := Size;
+  if n > PK_B then n := PK_B;
+  PkLen[i] := n;
+  for b := 0 to n - 1 do PkByte[i * PK_B + b] := RdByte(Data, b);
+  PkHead := PkHead + 1;
+end;
+
+// InventoryUpdate (21) after "enchant": our item and scroll in it. Per item (seen 2026-11-18):
+// [change: word, 3 = removed][mask: byte][OID][item ID][loc: byte][count: int64][type2][custom1][worn: word]
+// [body part: int64][+level: word]... -> from the OID at p: the change at p - 3, the count at p + 9, the level
+// at p + 29. Found by OID + item ID (numbers only)
+procedure ReadInvUpdate(Data: Pointer; Size: Word);
+var p, n, Chg: integer;
+begin
+  n := Size;
+  for p := 3 to n - 8 do begin
+    if RdInt(Data, p) = CurOID then
+      if RdInt(Data, p + 4) = CurItemID then begin
+        Chg := RdByte(Data, p - 3) + RdByte(Data, p - 2) * 256;
+        if Chg = 3 then InvGone := true
+        else if p + 30 < n then InvLv := RdByte(Data, p + 29) + RdByte(Data, p + 30) * 256;
+        InvGot := true;
+      end;
+    if RdInt(Data, p) = CurScOID then
+      if RdInt(Data, p + 4) = CurScroll then begin
+        Chg := RdByte(Data, p - 3) + RdByte(Data, p - 2) * 256;
+        if Chg = 3 then InvScCnt := 0
+        else if p + 12 < n then InvScCnt := RdInt(Data, p + 9);
+        InvScGot := true;
+      end;
+  end;
+end;
+
+// the server's packets: the answers of the try going on (+ the debug log)
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if ID1 = $11 then begin   // ItemList: the whole bag
+    ListAt := GetTickCount;
+    ListGot := true;
+  end;
+  if Watch then begin
+    if ID1 = $7C then ChooseGot := true                     // ChooseInventoryItem: the window is open
+    else if ID1 = $87 then begin                            // EnchantResult: [0] the result, [28] the new level
+      if ResArmed then begin
+        ResLv := -1;
+        if Size >= 32 then ResLv := RdInt(Data, 28);
+        ResCode := 99;
+        if Size >= 4 then ResCode := RdInt(Data, 0);
+        ResGot := true;
+      end;
+    end else if ID1 = $21 then begin                        // InventoryUpdate
+      if ResArmed then ReadInvUpdate(Data, Size);
+    end else if ID1 = $FE then begin
+      if (ID2 = $82) and (Size >= 4) then PutRes := RdInt(Data, 0)        // the item put in: 1 taken, 0 not
+      else if (ID2 = $83) and (Size >= 4) then SupRes := RdInt(Data, 0);  // the stone (a guess: not sniffed)
+    end;
+  end;
+  if not PkOn then exit;
+  if ID1 = $2F then exit;   // movement
+  if PkCapture then begin
+    PkPush(0, ID1, ID2, Data, Size);
+    exit;
+  end;
+  if GetTickCount - CliWatchAt >= CLI_WATCH_MS then exit;
+  if (ID1 = $7C) or (ID1 = $87) or (ID1 = $62) or (ID1 = $21) or (ID1 = $FE) then PkPush(0, ID1, ID2, Data, Size);
+end;
+
+// the game client's packets: enchanting by hand into the debug log (UseItem, RequestEnchantItem, D0:..)
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if not PkOn then exit;
+  if (ID1 = $19) or (ID1 = $5F) then begin
+    CliWatchAt := GetTickCount;
+    PkPush(1, ID1, ID2, Data, Size);
+    exit;
+  end;
+  if ID1 <> $D0 then exit;
+  if (ID2 >= $49) and (ID2 <= $4B) then CliWatchAt := GetTickCount;
+  if GetTickCount - CliWatchAt < CLI_WATCH_MS then PkPush(1, ID1, ID2, Data, Size);
+end;
+
+// the ring into the debug log (main thread)
+procedure DrainPk();
+var i, b, h: integer;
+  S: string;
+begin
+  h := PkHead;
+  if PkTail < h - PK_N then PkTail := h - PK_N;
+  while PkTail < h do begin
+    i := PkTail mod PK_N;
+    if PkDir[i] = 1 then S := 'CLI ' else S := '    SRV ';
+    S := S + IntToHex(PkOp[i], 2);
+    if (PkOp[i] = $FE) or (PkOp[i] = $D0) then S := S + ':' + IntToHex(PkOp2[i], 2);
+    S := S + ' size=' + IntToStr(PkSz[i]) + ' hex=';
+    for b := 0 to PkLen[i] - 1 do S := S + IntToHex(PkByte[i * PK_B + b], 2);
+    if PkSz[i] > PkLen[i] then S := S + '..';
+    if (PkDir[i] = 0) and (PkOp[i] = $62) and (PkLen[i] >= 2) then
+      S := S + '  (system message ' + IntToStr(PkByte[i * PK_B] + PkByte[i * PK_B + 1] * 256) + ')';
+    Dbg(S);
+    PkTail := PkTail + 1;
+  end;
+end;
+
+// ===================== the bag =====================
+
+// what a run learned from 87 / 21 (the bot's copy of the bag may not follow): an item's level, -1 gone
+function OvFind(OID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to OvN - 1 do
+    if OvOID[k] = OID then begin
+      result := k;
+      exit;
+    end;
+end;
+
+procedure OvSet(OID, Lv: integer);
+var k: integer;
+begin
+  k := OvFind(OID);
+  if k < 0 then begin
+    if OvN >= MAX_OV then exit;
+    k := OvN;
+    OvN := OvN + 1;
+    OvOID[k] := OID;
+  end;
+  OvLv[k] := Lv;
+  OvSeq := OvSeq + 1;
+end;
+
+// a stack's count learned from 21 (-1: not known)
+function CvGet(ID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to CvN - 1 do
+    if CvID[k] = ID then begin
+      result := CvCnt[k];
+      exit;
+    end;
+end;
+
+procedure CvSet(ID, Cnt: integer);
+var k: integer;
+begin
+  for k := 0 to CvN - 1 do
+    if CvID[k] = ID then begin
+      CvCnt[k] := Cnt;
+      OvSeq := OvSeq + 1;
+      exit;
+    end;
+  if CvN >= MAX_CV then exit;
+  CvID[CvN] := ID;
+  CvCnt[CvN] := Cnt;
+  CvN := CvN + 1;
+  OvSeq := OvSeq + 1;
+end;
+
+// the bag fresh from the server: nothing known better any more
+procedure OvClear();
+begin
+  OvN := 0;
+  CvN := 0;
+  OvSeq := OvSeq + 1;
+end;
+
+// an item's level as a run knows it: from 87 / 21 if it learned one, else the bot's (-1: gone)
+function LvOf(OID, BagLv: integer): integer;
+var k: integer;
+begin
+  result := BagLv;
+  k := OvFind(OID);
+  if k >= 0 then result := OvLv[k];
+end;
+
+// the item with this OID: true + its level and item ID
+function FindItem(OID: integer; var Lv, ID: integer): boolean;
+var i, O: integer;
+  It: TL2Item;
+begin
+  result := false;
+  Lv := -1;
+  ID := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    if O <> OID then continue;
+    Lv := LvOf(OID, It.EnchantLevel);
+    ID := It.ID;
+    result := Lv >= 0;
+    exit;
+  end;
+end;
+
+function ItemNameOf(OID: integer): string;
+var i, O: integer;
+  It: TL2Item;
+begin
+  result := 'item ' + IntToStr(OID);
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    if O <> OID then continue;
+    result := It.Name;
+    exit;
+  end;
+end;
+
+// the stacks of an item ID: the OID of one (0: none) and the count of them all (a count a run learned from
+// 21 counts first)
+function StackOf(ID: integer; var Cnt: integer): integer;
+var i, n, Known: integer;
+  C: Int64;
+  It: TL2Item;
+begin
+  result := 0;
+  Cnt := 0;
+  if ID <= 0 then exit;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    n := It.ID;
+    if n <> ID then continue;
+    C := It.Count;
+    if C <= 0 then continue;
+    if C > 100000000 then C := 100000000;
+    n := C;
+    Cnt := Cnt + n;
+    if result = 0 then result := It.OID;
+  end;
+  Known := CvGet(ID);
+  if Known < 0 then exit;
+  Cnt := Known;
+  if Known = 0 then result := 0;
+end;
+
+// ===================== the run =====================
+
+// into the bot's window and (chat=1) the party chat as a fake message only we see
+procedure Say(Txt: string);
+begin
+  Engine.Msg('[Ench]', Txt, 128);
+  if ChatOn then ChatSayFrom('Enchant', Copy(Txt, 1, 200));
+end;
+
+procedure PlaySnd(F: string);
+begin
+  if SoundOn then PlaySound(Script.Path + SOUND_DIR + F);
+end;
+
+// the enchant window closed, whatever is in it (D0:4B, as the client's Cancel; the server answers 87 with 2)
+procedure SendCancel();
+begin
+  Engine.SendToServer('D04B00');
+  Dbg('SEND D0:4B cancel');
+end;
+
+function B01(V: boolean): string;
+begin
+  if V then result := '1' else result := '0';
+end;
+
+// skipped this run: the item itself (any job), or its item ID in this job (that job's scroll / stone does
+// not fit that kind of item)
+function IsSkipped(OID, ID, j: integer): boolean;
+var k: integer;
+begin
+  result := true;
+  for k := 0 to SkN - 1 do begin
+    if (SkOID[k] <> 0) and (SkOID[k] = OID) then exit;
+    if (SkOID[k] = 0) and (SkIDv[k] = ID) and (SkJob[k] = j) then exit;
+  end;
+  result := false;
+end;
+
+// Why: refused (the item, any job) / scroll / stone (its item ID in job j)
+procedure SkipItem(OID, ID, j: integer; Why, Txt: string);
+begin
+  if IsSkipped(OID, ID, j) then exit;
+  if SkN >= MAX_SKIP then exit;
+  if Why = 'refused' then begin
+    SkOID[SkN] := OID;
+    SkJob[SkN] := -1;
+  end else begin
+    SkOID[SkN] := 0;
+    SkJob[SkN] := j;
+  end;
+  SkIDv[SkN] := ID;
+  SkWhy[SkN] := Why;
+  SkN := SkN + 1;
+  Say(Txt);
+  Dbg('SKIP OID ' + IntToStr(OID) + ' ID ' + IntToStr(ID) + ' range ' + IntToStr(j + 1) + ': ' + Why);
+end;
+
+// the counts of an item this run: its index, -1 none
+function StatFind(OID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to StN - 1 do
+    if StOID[k] = OID then begin
+      result := k;
+      exit;
+    end;
+end;
+
+// ... made when not there yet (-1: no room)
+function StatIdx(OID, ID: integer): integer;
+begin
+  result := StatFind(OID);
+  if result >= 0 then exit;
+  if StN >= MAX_STAT then exit;
+  result := StN;
+  StOID[StN] := OID;
+  StID[StN] := ID;
+  StTry[StN] := 0;
+  StOk[StN] := 0;
+  StFail[StN] := 0;
+  StBroke[StN] := 0;
+  StMax[StN] := 0;
+  StAt[StN] := 0;
+  StN := StN + 1;
+end;
+
+// RequestItemList: the server sends the whole bag again (the bot's copy misses changes on this server)
+procedure AskBag();
+begin
+  ClearPend := true;
+  ListGot := false;
+  AskAt := GetTickCount;
+  Engine.SendToServer('14');
+  Dbg('SEND 14 RequestItemList');
+end;
+
+// the bag asked for is in (its ItemList + LIST_SETTLE_MS), or LIST_MS passed without it
+function BagFresh(): boolean;
+begin
+  result := true;
+  if ListGot and (GetTickCount - ListAt >= LIST_SETTLE_MS) then exit;
+  if GetTickCount - AskAt >= LIST_MS then exit;
+  result := false;
+end;
+
+procedure StartRun();
+begin
+  Running := true;
+  StopWanted := false;
+  RunState := 'running';
+  RunEnd := '';
+  RunEndId := 0;
+  RunId := SeenRunId;
+  RunStarted := FormatDateTime('hh:nn:ss', Now);
+  RunAt := GetTickCount;
+  RunSecs := 0;
+  Tries := 0;
+  OkN := 0;
+  FailN := 0;
+  BrokeN := 0;
+  NoneN := 0;
+  ScrollsN := 0;
+  StonesN := 0;
+  SkN := 0;
+  StN := 0;
+  NoneOID := 0;
+  NoneCnt := 0;
+  NoneRun := 0;
+  DbgTries := 0;
+  UseFails := 0;
+  PutFails := 0;
+  LastResAt := 0;
+  CrystN := 0;
+  CrN := 0;
+  CrIdx := 0;
+  CrPending := false;
+  Say('Enchanting: started (' + IntToStr(JobN) + ' ranges, delay ' + IntToStr(DelayMs) + ' ms, after a new item ' +
+    IntToStr(PutDelayMs) + ' ms)');
+  Dbg('RUN START id ' + RunId + ', delay ' + IntToStr(DelayMs) + ' ms, put ' + IntToStr(PutDelayMs) + ' ms');
+  SendCancel();         // a clean window: whatever was open is closed
+  WinScroll := 0;
+  WinItem := 0;
+  AskBag();             // the first pick from the whole bag
+  Phase := PH_BOOT;
+  PhAt := GetTickCount;
+  Dirty := true;
+end;
+
+// the run ends (StopRun: after crystallizing, if the jobs want it)
+procedure FinishRun(Code: string; Id: integer; Txt: string);
+begin
+  if (WinScroll <> 0) or ((Phase <> PH_IDLE) and (Phase <> PH_CRYST)) then SendCancel();   // the enchant window closed
+  WinScroll := 0;
+  WinItem := 0;
+  if Code <> 'offline' then AskBag();   // the whole bag once at the end (it opens the inventory in the game)
+  Phase := PH_IDLE;
+  Watch := false;
+  ResArmed := false;
+  PkCapture := false;
+  Running := false;
+  StopWanted := false;
+  RunSecs := (GetTickCount - RunAt) div 1000;
+  if (Code = 'done') or (Code = 'crystal') then RunState := 'done' else RunState := 'stopped';
+  RunEnd := Code;
+  RunEndId := Id;
+  if Code = 'crystal' then Say(Txt + ' - ' + IntToStr(CrystN) + ' crystallized')
+  else if CrystN > 0 then Say(Txt + ' - ' + IntToStr(Tries) + ' tries: ' + IntToStr(OkN) + ' ok, ' + IntToStr(FailN) +
+    ' failed, ' + IntToStr(BrokeN) + ' broke; ' + IntToStr(CrystN) + ' crystallized')
+  else Say(Txt + ' - ' + IntToStr(Tries) + ' tries: ' + IntToStr(OkN) + ' ok, ' + IntToStr(FailN) + ' failed, ' +
+    IntToStr(BrokeN) + ' broke');
+  if (Code = 'done') or (Code = 'crystal') then PlaySnd(SND_DONE);
+  Dbg('RUN END ' + Code + ': ' + Txt);
+  Dirty := true;
+end;
+
+function EndText(Why: string; Id: integer): string;
+begin
+  if Why = 'noscroll' then begin
+    if Id = 0 then result := 'Enchanting: a range has no scroll chosen'
+    else result := 'Enchanting: out of scrolls (item ID ' + IntToStr(Id) + ')';
+  end else if Why = 'nostone' then begin
+    if Id = 0 then result := 'Enchanting: a range has no stone chosen'
+    else result := 'Enchanting: out of stones (item ID ' + IntToStr(Id) + ')';
+  end else if Why = 'skipped' then result := 'Enchanting: nothing left but skipped items'
+  else if Why = 'empty' then result := 'Enchanting: no items picked (enchant.html)'
+  else result := 'Enchanting: done, every item is at its target';
+end;
+
+// item ID one of the kinds of job j
+function KindIn(j, ID: integer): boolean;
+var k: integer;
+begin
+  result := true;
+  for k := 0 to JKindN[j] - 1 do
+    if JKind[j * MAX_JK + k] = ID then exit;
+  result := false;
+end;
+
+// the items to crystallize: of the jobs (on in the page) with cryst set, not worn, by the job's choice
+// (1 at / over its target, 2 under it, 3 all), none twice; the levels as the run knows them
+procedure BuildCryst();
+var i, j, k, m, OID, Lv, ID: integer;
+  It: TL2Item;
+  Ok, Dup: boolean;
+begin
+  CrN := 0;
+  for j := 0 to JobN - 1 do begin
+    if not JWant[j] then continue;
+    if JCryst[j] = 0 then continue;
+    for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+      if CrN >= MAX_CR then break;
+      It := Inventory.User.Items(i);
+      if It = nil then continue;
+      if It.Equipped then continue;
+      OID := It.OID;
+      ID := It.ID;
+      Ok := KindIn(j, ID);
+      if not Ok then
+        for k := 0 to JItemN[j] - 1 do
+          if JItem[j * MAX_JI + k] = OID then Ok := true;
+      if not Ok then continue;
+      Lv := LvOf(OID, It.EnchantLevel);
+      if Lv < 0 then continue;   // gone this run
+      if (JCryst[j] = 1) and (Lv < JTo[j]) then continue;
+      if (JCryst[j] = 2) and (Lv >= JTo[j]) then continue;
+      Dup := false;
+      for m := 0 to CrN - 1 do
+        if CrOID[m] = OID then Dup := true;
+      if Dup then continue;
+      CrOID[CrN] := OID;
+      CrN := CrN + 1;
+    end;
+  end;
+end;
+
+// crystallizing starts (the run's end Code / Id / Txt comes after it)
+procedure StartCryst(Code: string; Id: integer; Txt: string);
+begin
+  if (WinScroll <> 0) or ((Phase <> PH_IDLE) and (Phase <> PH_BOOT)) then SendCancel();   // the enchant window closed
+  WinScroll := 0;
+  WinItem := 0;
+  Watch := false;
+  ResArmed := false;
+  PkCapture := false;
+  BuildCryst();
+  CrCode := Code;
+  CrId := Id;
+  CrTxt := Txt;
+  CrIdx := 0;
+  Say('Crystallizing ' + IntToStr(CrN) + ' items');
+  Dbg('CRYST start: ' + IntToStr(CrN) + ' items, then ' + Code);
+  Phase := PH_CRYST;
+  PhAt := GetTickCount;
+  Dirty := true;
+end;
+
+// the run ends: first the crystallizing the jobs want (a run that ran out of work, not a stop / an error)
+procedure StopRun(Code: string; Id: integer; Txt: string);
+var j: integer;
+  Want: boolean;
+begin
+  Want := false;
+  if (Code = 'done') or (Code = 'noscroll') or (Code = 'nostone') or (Code = 'skipped') or (Code = 'limit') then
+    for j := 0 to JobN - 1 do
+      if JWant[j] and (JCryst[j] > 0) then Want := true;
+  if Want and (Phase <> PH_CRYST) then begin
+    StartCryst(Code, Id, Txt);
+    exit;
+  end;
+  FinishRun(Code, Id, Txt);
+end;
+
+// crystallize now (the page's cryst_id): the whole bag first, then the jobs' cryst
+procedure StartCrystOnly();
+begin
+  Running := true;
+  StopWanted := false;
+  RunState := 'running';
+  RunEnd := '';
+  RunEndId := 0;
+  RunStarted := FormatDateTime('hh:nn:ss', Now);
+  RunAt := GetTickCount;
+  CrystN := 0;
+  CrN := 0;
+  CrIdx := 0;
+  CrPending := true;
+  AskBag();
+  Phase := PH_BOOT;
+  PhAt := GetTickCount;
+  Dbg('CRYST ONLY asked by the page');
+  Dirty := true;
+end;
+
+// one step of crystallizing
+procedure CrystStep();
+begin
+  if StopWanted then begin
+    FinishRun('page', 0, 'Crystallizing: stopped (' + IntToStr(CrIdx) + ' of ' + IntToStr(CrN) + ')');
+    exit;
+  end;
+  if CrIdx < CrN then begin
+    if (CrIdx > 0) and (GetTickCount - PhAt < CRYST_GAP_MS) then exit;
+    Engine.SendToServer('2F' + HexLE32(CrOID[CrIdx]) + '0100000000000000');   // RequestCrystallizeItem
+    Dbg('SEND 2F crystallize OID ' + IntToStr(CrOID[CrIdx]));
+    OvSet(CrOID[CrIdx], -1);
+    CrystN := CrystN + 1;
+    CrIdx := CrIdx + 1;
+    PhAt := GetTickCount;
+    if (CrIdx mod 10) = 0 then Dirty := true;
+    exit;
+  end;
+  if GetTickCount - PhAt < CRYST_END_MS then exit;   // the server's answers
+  FinishRun(CrCode, CrId, CrTxt);
+end;
+
+// an item for job j: in its range, not skipped, the job has its scroll (+ stone) -> the best one so far?
+// order=seq: the first one found; round: the one tried longest ago (never: 0)
+procedure Consider(j, OID, Lv, ID: integer);
+var s: integer;
+  LastAt: cardinal;
+begin
+  if (Lv < JFrom[j]) or (Lv >= JTo[j]) then exit;
+  if IsSkipped(OID, ID, j) then begin
+    CnSkipped := CnSkipped + 1;
+    exit;
+  end;
+  if not CnScOk then begin
+    if CnNoSc < 0 then CnNoSc := JScroll[j];
+    exit;
+  end;
+  if not CnStOk then begin
+    if CnNoSt < 0 then CnNoSt := JStone[j];
+    exit;
+  end;
+  LastAt := 0;
+  s := StatFind(OID);
+  if s >= 0 then LastAt := StAt[s];
+  if BestOID <> 0 then begin
+    if OrderMode = 0 then exit;
+    if LastAt >= BestAt then exit;
+  end;
+  BestOID := OID;
+  BestJ := j;
+  BestLv := Lv;
+  BestID := ID;
+  BestAt := LastAt;
+end;
+
+// the next try: true + Cur*; false + why not (done / noscroll / nostone / skipped / empty)
+function PickNext(var Why: string; var WhyId: integer): boolean;
+var i, j, k, OID, Lv, ID, Cnt, Sc, Conf: integer;
+  It: TL2Item;
+begin
+  result := false;
+  Why := 'done';
+  WhyId := 0;
+  BestOID := 0;
+  BestAt := 0;
+  CnSkipped := 0;
+  CnNoSc := -1;
+  CnNoSt := -1;
+  Conf := 0;
+  for j := 0 to JobN - 1 do begin
+    if not JOn[j] then continue;
+    Conf := Conf + JItemN[j] + JKindN[j];
+    Sc := StackOf(JScroll[j], Cnt);
+    CnScOk := (Sc <> 0);
+    CnStOk := true;
+    if JStoneOn[j] then begin
+      Sc := StackOf(JStone[j], Cnt);
+      CnStOk := (Sc <> 0);
+    end;
+    for k := 0 to JItemN[j] - 1 do begin   // the single items (a worn one too)
+      OID := JItem[j * MAX_JI + k];
+      if FindItem(OID, Lv, ID) then Consider(j, OID, Lv, ID);
+    end;
+    if JKindN[j] > 0 then                  // every item of the kinds, not worn
+      for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+        It := Inventory.User.Items(i);
+        if It = nil then continue;
+        ID := It.ID;
+        if not KindIn(j, ID) then continue;
+        if It.Equipped then continue;
+        OID := It.OID;
+        Lv := LvOf(OID, It.EnchantLevel);
+        if Lv < 0 then continue;             // gone (broke this run)
+        Consider(j, OID, Lv, ID);
+      end;
+    if (OrderMode = 0) and (BestOID <> 0) then break;
+  end;
+  if BestOID <> 0 then begin
+    CurJ := BestJ;
+    CurOID := BestOID;
+    CurItemID := BestID;
+    CurLvl0 := BestLv;
+    CurTo := JTo[BestJ];
+    CurScroll := JScroll[BestJ];
+    CurStone := 0;
+    if JStoneOn[BestJ] then CurStone := JStone[BestJ];
+    result := true;
+    exit;
+  end;
+  if CnNoSc >= 0 then begin
+    Why := 'noscroll';
+    WhyId := CnNoSc;
+  end else if CnNoSt >= 0 then begin
+    Why := 'nostone';
+    WhyId := CnNoSt;
+  end else if CnSkipped > 0 then Why := 'skipped'
+  else if Conf = 0 then Why := 'empty';
+end;
+
+// a try starts: what the window needs first (its scroll, the item in it), the rest in EnchStep
+procedure BeginTry();
+var n: integer;
+begin
+  CurName := ItemNameOf(CurOID);
+  n := StatIdx(CurOID, CurItemID);
+  if n >= 0 then StAt[n] := GetTickCount;   // order=round: tried now
+  CurScOID := StackOf(CurScroll, CurSc0);
+  CurSt0 := 0;
+  if CurStone > 0 then n := StackOf(CurStone, CurSt0);
+  CurStoneOID := 0;
+  PkCapture := PkOn and (DbgTries < DBG_TRIES);
+  DbgTries := DbgTries + 1;
+  Watch := true;
+  Dbg('TRY ' + CurName + ' +' + IntToStr(CurLvl0) + ' (OID ' + IntToStr(CurOID) + ', range ' + IntToStr(CurJ + 1) +
+    ', to +' + IntToStr(CurTo) + '), scroll ' + IntToStr(CurScroll) + ' x' + IntToStr(CurSc0) + ', stone ' +
+    IntToStr(CurStone) + ' x' + IntToStr(CurSt0) + ', window: scroll ' + IntToStr(WinScroll) + ' item ' + IntToStr(WinItem));
+  if WinScroll <> CurScroll then begin   // another scroll / none: (close it,) then the scroll
+    if WinScroll <> 0 then SendCancel();
+    WinScroll := 0;
+    WinItem := 0;
+    Phase := PH_CANCEL;
+  end else if WinItem <> CurOID then begin
+    PutRes := -1;
+    PutFresh := false;
+    Engine.SendToServer('D04900' + HexLE32(CurOID));   // the item into the window
+    Dbg('SEND D0:49 put item OID ' + IntToStr(CurOID));
+    Phase := PH_PUT;
+  end else Phase := PH_WAIT;             // it is in there: "enchant" again
+  PhAt := GetTickCount;
+  Dirty := true;
+end;
+
+procedure AddLog(R, Lv: integer);
+var i: integer;
+begin
+  i := LgSeqN mod LOG_N;
+  LgSeqN := LgSeqN + 1;
+  if LgN < LOG_N then LgN := LgN + 1;
+  LgSeq[i] := LgSeqN;
+  LgT[i] := FormatDateTime('hh:nn:ss', Now);
+  LgName[i] := CurName;
+  LgOID[i] := CurOID;
+  LgID[i] := CurItemID;
+  LgJob[i] := CurJ;
+  LgFrom[i] := CurLvl0;
+  LgLv[i] := Lv;
+  LgRes[i] := R;
+  LgCode[i] := ResCode;
+  LgSc[i] := CurScroll;
+  LgSt[i] := CurStone;
+end;
+
+function ResWord(R: integer): string;
+begin
+  if R = R_OK then result := 'ok'
+  else if R = R_SAFE then result := 'safe'
+  else if R = R_ZERO then result := 'zero'
+  else if R = R_DROP then result := 'drop'
+  else if R = R_BROKE then result := 'broke'
+  else result := 'none';
+end;
+
+// the outcome of the try: from 87 (the result, the new level) and 21 (the item's level / gone, the scroll's
+// count), the bot's bag only when neither said it
+procedure Judge();
+var Lv, BagLv, ID, ScNow, StNow, n, R, s: integer;
+  Found: boolean;
+  T: string;
+begin
+  ResArmed := false;
+  Watch := false;
+  PkCapture := false;
+  Found := FindItem(CurOID, BagLv, ID);
+  Lv := -1;
+  if InvGone then Lv := -1
+  else if InvGot and (InvLv >= 0) and (InvLv < 1000) then Lv := InvLv
+  else if ResGot and (ResCode = 0) and (ResLv >= 0) and (ResLv < 1000) then Lv := ResLv
+  else if Found then Lv := BagLv;
+  if (not ResGot) or (ResCode = 2) then begin   // no result / an error: nothing happened
+    R := R_NONE;
+    if Found then Lv := BagLv else Lv := CurLvl0;
+  end
+  else if InvGone or (Lv < 0) then R := R_BROKE
+  else if Lv > CurLvl0 then R := R_OK
+  else if (Lv = 0) and (CurLvl0 > 0) then R := R_ZERO
+  else if Lv < CurLvl0 then R := R_DROP
+  else R := R_SAFE;
+  if R = R_BROKE then Lv := -1;
+  // what we know now, the bot's copy of the bag may not
+  if R <> R_NONE then OvSet(CurOID, Lv);
+  if InvScGot and (InvScCnt >= 0) then CvSet(CurScroll, InvScCnt)
+  else if (R <> R_NONE) and (CurSc0 > 0) then CvSet(CurScroll, CurSc0 - 1);
+  n := StackOf(CurScroll, ScNow);
+  StNow := 0;
+  if CurStone > 0 then begin
+    if R <> R_NONE then CvSet(CurStone, CurSt0 - 1);
+    n := StackOf(CurStone, StNow);
+  end;
+
+  s := StatIdx(CurOID, CurItemID);
+  if R = R_NONE then begin
+    NoneN := NoneN + 1;
+    NoneRun := NoneRun + 1;
+    if NoneOID = CurOID then NoneCnt := NoneCnt + 1
+    else begin
+      NoneOID := CurOID;
+      NoneCnt := 1;
+    end;
+  end else begin
+    NoneRun := 0;
+    NoneCnt := 0;
+    NoneOID := 0;
+    Tries := Tries + 1;
+    ScrollsN := ScrollsN + 1;
+    if CurStone > 0 then StonesN := StonesN + 1;
+    if R = R_OK then OkN := OkN + 1
+    else if R = R_BROKE then BrokeN := BrokeN + 1
+    else FailN := FailN + 1;
+    if s >= 0 then begin
+      StTry[s] := StTry[s] + 1;
+      if R = R_OK then StOk[s] := StOk[s] + 1
+      else if R = R_BROKE then StBroke[s] := StBroke[s] + 1
+      else StFail[s] := StFail[s] + 1;
+      if Lv > StMax[s] then StMax[s] := Lv;
+    end;
+  end;
+  AddLog(R, Lv);
+
+  T := CurName + ' +' + IntToStr(CurLvl0);
+  if R = R_OK then begin
+    T := T + ' -> +' + IntToStr(Lv);
+    if Lv >= CurTo then T := T + ' - target reached';
+  end else if R = R_SAFE then T := T + ': failed, still +' + IntToStr(Lv)
+  else if R = R_ZERO then T := T + ': failed -> +0'
+  else if R = R_DROP then T := T + ': failed -> +' + IntToStr(Lv)
+  else if R = R_BROKE then T := T + ': failed, the item is gone'
+  else T := T + ': nothing happened (answer ' + IntToStr(ResCode) + ')';
+  Say(T);
+  Dbg('RESULT ' + ResWord(R) + ': ' + T + ' | 87 code=' + IntToStr(ResCode) + ' lv=' + IntToStr(ResLv) +
+    ' | 21 item=' + B01(InvGot) + ' gone=' + B01(InvGone) + ' lv=' + IntToStr(InvLv) +
+    ' scroll=' + IntToStr(InvScCnt) + ' | bag lv=' + IntToStr(BagLv) + ' | scrolls ' + IntToStr(CurSc0) + '->' + IntToStr(ScNow) +
+    ' stones ' + IntToStr(CurSt0) + '->' + IntToStr(StNow));
+  if (R = R_OK) and (Lv >= CurTo) then PlaySnd(SND_TARGET);
+  if R = R_BROKE then PlaySnd(SND_BROKE);
+  LastResAt := GetTickCount;
+  // the window: an error / no answer -> not known any more; the item gone -> empty
+  if R = R_NONE then begin
+    WinScroll := 0;
+    WinItem := 0;
+  end else if R = R_BROKE then begin   // the server closes the window when the item breaks (seen 2026-11-18)
+    SendCancel();
+    WinScroll := 0;
+    WinItem := 0;
+  end else Engine.SendToServer('D0E400');   // as the client does after a result
+  Phase := PH_IDLE;
+  Dirty := true;
+
+  if R = R_NONE then begin
+    if NoneRun >= NONE_RUN_MAX then begin
+      StopRun('none', 0, 'Enchanting: the server does not enchant (' + IntToStr(NoneRun) +
+        ' tries in a row did nothing; see the log in Library\Logs)');
+      exit;
+    end;
+    if NoneCnt >= NONE_MAX then
+      SkipItem(CurOID, CurItemID, CurJ, 'refused', CurName + ': refused ' + IntToStr(NoneCnt) + ' times in a row - skipped');
+    exit;
+  end;
+  if (R = R_BROKE) and StopOnBreak then begin
+    StopRun('broke', 0, 'Enchanting: ' + CurName + ' broke - stopped');
+    exit;
+  end;
+  if (MaxScrolls > 0) and (ScrollsN >= MaxScrolls) then
+    StopRun('limit', MaxScrolls, 'Enchanting: ' + IntToStr(ScrollsN) + ' scrolls used, the limit');
+end;
+
+// "enchant": 5F item + stone (0: none)
+procedure Fire();
+begin
+  ResGot := false;
+  ResCode := -1;
+  ResLv := -1;
+  InvGot := false;
+  InvGone := false;
+  InvLv := -1;
+  InvScGot := false;
+  InvScCnt := -1;
+  ResSeenAt := 0;
+  ResArmed := true;
+  Engine.SendToServer('5F' + HexLE32(CurOID) + HexLE32(CurStoneOID));   // RequestEnchantItem
+  Dbg('SEND 5F enchant OID ' + IntToStr(CurOID) + ' stone OID ' + IntToStr(CurStoneOID) + ' (' +
+    IntToStr(GetTickCount - WinPutAt) + ' ms after the put)');
+  Phase := PH_RES;
+  PhAt := GetTickCount;
+end;
+
+// the try ends without "enchant" (the window state not known any more)
+procedure DropTry();
+begin
+  Watch := false;
+  PkCapture := false;
+  Phase := PH_IDLE;
+  Dirty := true;
+end;
+
+// one step of the run (every loop)
+procedure EnchStep();
+var n, Cnt, WhyId: integer;
+  Ago: cardinal;
+  Why: string;
+begin
+  if Engine.Status <> lsOnline then begin
+    StopRun('offline', 0, 'Enchanting: not in the game - stopped');
+    exit;
+  end;
+  if Phase = PH_CRYST then begin
+    CrystStep();
+    exit;
+  end;
+  if Phase = PH_BOOT then begin   // a run starts: the whole bag first
+    if StopWanted then begin
+      FinishRun('page', 0, 'Enchanting: stopped');
+      exit;
+    end;
+    if not BagFresh() then exit;
+    ClearPend := false;
+    OvClear();
+    Phase := PH_IDLE;
+    if CrPending then begin   // crystallize now: no enchanting
+      CrPending := false;
+      StartCryst('crystal', 0, 'Crystallizing: done');
+    end;
+    exit;
+  end;
+  if Phase = PH_IDLE then begin
+    if StopWanted then begin
+      StopRun('page', 0, 'Enchanting: stopped');
+      exit;
+    end;
+    if User.Dead then begin
+      StopRun('dead', 0, 'Enchanting: dead - stopped');
+      exit;
+    end;
+    if not PickNext(Why, WhyId) then begin
+      StopRun(Why, WhyId, EndText(Why, WhyId));
+      exit;
+    end;
+    BeginTry();
+    exit;
+  end;
+  if StopWanted and (Phase < PH_RES) then begin   // "enchant" not sent: away at once
+    StopRun('page', 0, 'Enchanting: stopped');
+    exit;
+  end;
+  Ago := GetTickCount - PhAt;
+
+  if Phase = PH_CANCEL then begin   // the window closed (or was): the scroll now
+    if Ago < CANCEL_MS then exit;
+    n := StackOf(CurScroll, Cnt);
+    if n = 0 then begin
+      DropTry();
+      exit;
+    end;
+    CurScOID := n;
+    ChooseGot := false;
+    Engine.SendToServer('19' + HexLE32(n) + '00000000');   // UseItem: the scroll
+    Dbg('SEND 19 UseItem scroll OID ' + IntToStr(n));
+    Phase := PH_USE;
+    PhAt := GetTickCount;
+    exit;
+  end;
+
+  if Phase = PH_USE then begin
+    if ChooseGot then begin
+      WinScroll := CurScroll;
+      WinItem := 0;
+      UseFails := 0;
+      PutRes := -1;
+      PutFresh := true;
+      Engine.SendToServer('D04900' + HexLE32(CurOID));   // the item into the window
+      Dbg('SEND D0:49 put item OID ' + IntToStr(CurOID));
+      Phase := PH_PUT;
+      PhAt := GetTickCount;
+      exit;
+    end;
+    if Ago < CHOOSE_MS then exit;
+    UseFails := UseFails + 1;
+    Dbg('no 7C to the scroll in ' + IntToStr(CHOOSE_MS) + ' ms (' + IntToStr(UseFails) + ')');
+    if UseFails >= 2 then begin
+      StopRun('usefail', CurScroll, 'Enchanting: the scroll does not open the enchant window - stopped');
+      exit;
+    end;
+    SendCancel();   // something else open? closed, then the scroll again
+    WinScroll := 0;
+    WinItem := 0;
+    Phase := PH_CANCEL;
+    PhAt := GetTickCount;
+    exit;
+  end;
+
+  if Phase = PH_PUT then begin
+    if (PutRes = -1) and (Ago < PUT_MS) then exit;
+    if (PutRes = 0) and (not PutFresh) then begin   // the window we kept is not open any more: open it anew
+      Dbg('the item refused by the window kept open - the scroll again');
+      SendCancel();
+      WinScroll := 0;
+      WinItem := 0;
+      Phase := PH_CANCEL;
+      PhAt := GetTickCount;
+      exit;
+    end;
+    if PutRes = 0 then begin   // refused by a window just opened: the scroll does not fit it
+      WinItem := 0;
+      SkipItem(CurOID, CurItemID, CurJ, 'scroll', CurName + ': the scroll does not fit it - this kind skipped in range ' +
+        IntToStr(CurJ + 1));
+      DropTry();
+      exit;
+    end;
+    if PutRes = -1 then begin   // no answer: the window is not what we think
+      PutFails := PutFails + 1;
+      Dbg('no FE:82 answer to the item in ' + IntToStr(PUT_MS) + ' ms (' + IntToStr(PutFails) + ')');
+      WinScroll := 0;
+      WinItem := 0;
+      if PutFails >= 2 then begin
+        PutFails := 0;
+        SkipItem(CurOID, CurItemID, CurJ, 'refused', CurName + ': the window does not take it - skipped');
+      end;
+      DropTry();
+      exit;
+    end;
+    PutFails := 0;
+    WinItem := CurOID;
+    WinPutAt := GetTickCount;
+    Engine.SendToServer('D0E400');   // as the client does after an item is put in
+    Phase := PH_WAIT;
+    PhAt := GetTickCount;
+    exit;
+  end;
+
+  if Phase = PH_WAIT then begin
+    if GetTickCount - WinPutAt < cardinal(PutDelayMs) then exit;
+    if (LastResAt <> 0) and (GetTickCount - LastResAt < cardinal(DelayMs)) then exit;
+    if CurStone > 0 then begin
+      n := StackOf(CurStone, Cnt);
+      if n = 0 then begin
+        DropTry();
+        exit;
+      end;
+      CurStoneOID := n;
+      SupRes := -1;
+      Engine.SendToServer('D04A00' + HexLE32(n) + HexLE32(CurOID));   // the stone (a guess: not sniffed)
+      Dbg('SEND D0:4A put stone OID ' + IntToStr(n));
+      Phase := PH_SUP;
+      PhAt := GetTickCount;
+      exit;
+    end;
+    Fire();
+    exit;
+  end;
+
+  if Phase = PH_SUP then begin
+    if (SupRes = -1) and (Ago < PUT_MS) then exit;
+    if SupRes = 0 then begin
+      SkipItem(CurOID, CurItemID, CurJ, 'stone', CurName + ': the stone does not fit it - this kind skipped in range ' +
+        IntToStr(CurJ + 1));
+      DropTry();
+      exit;
+    end;
+    if SupRes = -1 then Dbg('no FE:83 answer to the stone in ' + IntToStr(PUT_MS) + ' ms - on anyway');
+    Fire();
+    exit;
+  end;
+
+  if Phase = PH_RES then begin   // the result, then its InventoryUpdate (or INV_MS)
+    if ResGot then begin
+      if ResSeenAt = 0 then ResSeenAt := GetTickCount;
+      if InvGot or (GetTickCount - ResSeenAt >= INV_MS) then Judge();
+      exit;
+    end;
+    if Ago >= RES_MS then begin
+      Dbg('no 87 result in ' + IntToStr(RES_MS) + ' ms');
+      Judge();
+    end;
+  end;
+end;
+
+// ===================== the settings =====================
+
+procedure CfgErr(S: string);
+begin
+  if CfgErrJson <> '' then CfgErrJson := CfgErrJson + ', ';
+  CfgErrJson := CfgErrJson + JsonStr(S);
+end;
+
+procedure ResetJob(n: integer);
+begin
+  JOn[n] := true;
+  JName[n] := 'range ' + IntToStr(n + 1);
+  JFrom[n] := 0;
+  JTo[n] := 3;
+  JScroll[n] := 0;
+  JStoneOn[n] := false;
+  JStone[n] := 0;
+  JItemN[n] := 0;
+  JWant[n] := true;
+  JCryst[n] := 0;
+  JKindN[n] := 0;
+end;
+
+procedure LoadCfg(L: TStringList);
+var i, n, p0, k, V: integer;
+  S, Fld, Val, Nm: string;
+begin
+  CfgErrJson := '';
+  JobN := 0;
+  CfgRun := false;
+  CfgRunId := '';
+  CfgCrystId := '';
+  DelayMs := 200;
+  PutDelayMs := 2000;
+  OrderMode := 0;
+  MaxScrolls := 0;
+  StopOnBreak := false;
+  ChatOn := false;
+  SoundOn := true;
+  DebugOn := true;
+  n := -1;   // the job being read; -1: the general part
+  for i := 0 to L.Count - 1 do begin
+    S := Trim(L[i]);
+    if S = '' then continue;
+    if (Copy(S, 1, 1) = ';') or (Copy(S, 1, 1) = '#') then continue;
+    if LowerCase(S) = '[job]' then begin
+      if n + 1 >= MAX_JOBS then begin
+        CfgErr('More than ' + IntToStr(MAX_JOBS) + ' ranges - the rest skipped');
+        break;
+      end;
+      n := n + 1;
+      ResetJob(n);
+      JobN := n + 1;
+      continue;
+    end;
+    p0 := Pos('=', S);
+    if p0 = 0 then continue;
+    Fld := LowerCase(Trim(Copy(S, 1, p0 - 1)));
+    Val := Trim(Copy(S, p0 + 1, Length(S)));
+    if n < 0 then begin
+      if Fld = 'run' then CfgRun := (Val = '1')
+      else if Fld = 'cryst_id' then CfgCrystId := Val
+      else if Fld = 'run_id' then CfgRunId := Val
+      else if Fld = 'delay_ms' then DelayMs := StrToIntDef(Val, 200)
+      else if Fld = 'put_ms' then PutDelayMs := StrToIntDef(Val, 2000)
+      else if Fld = 'order' then begin
+        if LowerCase(Val) = 'round' then OrderMode := 1 else OrderMode := 0;
+      end
+      else if Fld = 'max_scrolls' then MaxScrolls := StrToIntDef(Val, 0)
+      else if Fld = 'stop_on_break' then StopOnBreak := (Val = '1')
+      else if Fld = 'chat' then ChatOn := (Val = '1')
+      else if Fld = 'sound' then SoundOn := (Val <> '0')
+      else if Fld = 'debug' then DebugOn := (Val <> '0');
+      continue;
+    end;
+    if Fld = 'on' then begin
+      JOn[n] := (Val <> '0');
+      JWant[n] := JOn[n];
+    end
+    else if Fld = 'cryst' then begin
+      Val := LowerCase(Val);
+      if Val = 'done' then JCryst[n] := 1
+      else if Val = 'left' then JCryst[n] := 2
+      else if Val = 'all' then JCryst[n] := 3
+      else JCryst[n] := 0;
+    end
+    else if Fld = 'name' then begin
+      if Val <> '' then JName[n] := Val;
+    end
+    else if Fld = 'from' then JFrom[n] := StrToIntDef(Val, 0)
+    else if Fld = 'to' then JTo[n] := StrToIntDef(Val, 3)
+    else if Fld = 'scroll' then JScroll[n] := StrToIntDef(Val, 0)
+    else if Fld = 'stone_on' then JStoneOn[n] := (Val = '1')
+    else if Fld = 'stone' then JStone[n] := StrToIntDef(Val, 0)
+    else if Fld = 'kind' then begin
+      k := Pos('|', Val);
+      if k > 0 then Val := Copy(Val, 1, k - 1);
+      V := StrToIntDef(Trim(Val), 0);
+      if V > 0 then begin
+        if JKindN[n] < MAX_JK then begin
+          JKind[n * MAX_JK + JKindN[n]] := V;
+          JKindN[n] := JKindN[n] + 1;
+        end else CfgErr(JName[n] + ': more than ' + IntToStr(MAX_JK) + ' kinds of items - the rest skipped');
+      end;
+    end
+    else if Fld = 'item' then begin
+      k := Pos('|', Val);
+      if k > 0 then Val := Copy(Val, 1, k - 1);
+      V := StrToIntDef(Trim(Val), 0);
+      if V <> 0 then begin
+        if JItemN[n] < MAX_JI then begin
+          JItem[n * MAX_JI + JItemN[n]] := V;
+          JItemN[n] := JItemN[n] + 1;
+        end else CfgErr(JName[n] + ': more than ' + IntToStr(MAX_JI) + ' items - the rest skipped');
+      end;
+    end;
+  end;
+  if DelayMs < 0 then DelayMs := 0;
+  if DelayMs > MAX_DELAY_MS then DelayMs := MAX_DELAY_MS;
+  if PutDelayMs < 0 then PutDelayMs := 0;
+  if PutDelayMs > MAX_DELAY_MS then PutDelayMs := MAX_DELAY_MS;
+  if MaxScrolls < 0 then MaxScrolls := 0;
+  for n := 0 to JobN - 1 do begin
+    Nm := JName[n];
+    if JFrom[n] < 0 then JFrom[n] := 0;
+    if JTo[n] > 100 then JTo[n] := 100;
+    if not JOn[n] then continue;
+    if JFrom[n] >= JTo[n] then begin
+      CfgErr(Nm + ': from +' + IntToStr(JFrom[n]) + ' to +' + IntToStr(JTo[n]) + ' - nothing to do, off');
+      JOn[n] := false;
+    end else if JScroll[n] <= 0 then begin
+      CfgErr(Nm + ': no scroll chosen - off');
+      JOn[n] := false;
+    end else if JStoneOn[n] and (JStone[n] <= 0) then begin
+      CfgErr(Nm + ': stones on, but no stone chosen - off');
+      JOn[n] := false;
+    end;
+  end;
+  PkOn := DebugOn;
+end;
+
+// the settings: read anew when changed; a new run_id with run=1 starts, run=0 stops
+procedure CheckCfg();
+var L: TStringList;
+begin
+  L := TStringList.Create;
+  if not ReadText(CfgPath, L) then begin
+    L.Free;
+    if FileExists(CfgPath) then exit;   // there, not read right now (the page writes it): the next time
+    FirstCfg := false;
+    if Running then StopWanted := true;
+    if not CfgMissTold then begin
+      CfgMissTold := true;
+      Engine.Msg('[Ench]', 'No settings yet (' + CfgPath + ') - open Library\Binds\enchant.html', 128);
+    end;
+    exit;
+  end;
+  CfgMissTold := false;
+  if L.Text = CfgText then begin
+    L.Free;
+    FirstCfg := false;
+    exit;
+  end;
+  CfgText := L.Text;
+  LoadCfg(L);
+  L.Free;
+  CfgReadAt := FormatDateTime('hh:nn:ss', Now);
+  Dirty := true;
+  if CfgErrJson <> CfgErrOld then begin
+    CfgErrOld := CfgErrJson;
+    if CfgErrJson <> '' then Engine.Msg('[Ench]', 'Settings: ' + CfgErrJson, 128);
+  end;
+  if FirstCfg then begin   // the start of the last time does not start again
+    FirstCfg := false;
+    SeenRunId := CfgRunId;
+    SeenCrystId := CfgCrystId;
+    exit;
+  end;
+  if CfgCrystId <> SeenCrystId then begin   // crystallize now
+    SeenCrystId := CfgCrystId;
+    if (CfgCrystId <> '') and (not Running) then StartCrystOnly();
+  end;
+  if CfgRun and (CfgRunId <> SeenRunId) then begin
+    SeenRunId := CfgRunId;
+    if not Running then StartRun();
+  end else if (not CfgRun) and Running then StopWanted := true;
+end;
+
+// the page asks for the whole bag: a new number in <character>.ench.req (not while a run goes: every try
+// asks for it anyway)
+procedure CheckReq();
+var L: TStringList;
+  S: string;
+begin
+  L := TStringList.Create;
+  S := '';
+  if ReadText(ReqPath, L) then
+    if L.Count > 0 then S := Trim(L[0]);
+  L.Free;
+  if S = ReqSeen then exit;
+  ReqSeen := S;
+  if FirstReq then begin
+    FirstReq := false;
+    exit;
+  end;
+  if S = '' then exit;
+  if Running then exit;
+  AskBag();
+end;
+
+// ===================== for the page =====================
+
+// the bag as JSON: the gear (items) and the rest with counts (stuff); built anew only when it changes
+procedure BagJsons();
+var i, n, m, Sig, O, Lv, Cn, Eq, Tp, Bp: integer;
+  C: Int64;
+  It: TL2Item;
+  S, A, B: string;
+begin
+  Sig := (Inventory.User.Count + OvSeq * 7) and $FFFFF;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    Lv := It.EnchantLevel;
+    C := It.Count;
+    if C > 65535 then C := 65535;
+    if C < 0 then C := 0;
+    Cn := C;
+    Eq := 0;
+    if It.Equipped then Eq := 1;
+    Sig := ((Sig * 31) + (O and $FFFF) + Lv * 7 + Cn * 13 + Eq) and $3FFFFFF;
+  end;
+  if (Sig = BagSig) and (ItemsJson <> '') then exit;
+  BagSig := Sig;
+  A := '';
+  B := '';
+  n := 0;
+  m := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    Tp := It.ItemType;
+    O := It.OID;         // as a signed number: the page gives it back so, StrToIntDef reads it
+    if Tp <= 2 then begin
+      Eq := 0;
+      if It.Equipped then Eq := 1;
+      Lv := LvOf(O, It.EnchantLevel);
+      if Lv < 0 then continue;   // broke this run
+      Bp := It.BodyPart;
+      S := '{"oid": ' + IntToStr(O) + ', "id": ' + IntToStr(It.ID) + ', "name": ' + JsonStr(It.Name) +
+        ', "ench": ' + IntToStr(Lv) + ', "grade": ' + JsonStr(It.GradeName) + ', "type": ' + IntToStr(Tp) +
+        ', "part": ' + IntToStr(Bp) + ', "on": ' + IntToStr(Eq) + '}';
+      if n = 0 then A := A + S else A := A + ', ' + S;
+      n := n + 1;
+    end else begin
+      C := It.Count;
+      Cn := CvGet(It.ID);
+      if Cn >= 0 then C := Cn;
+      if C <= 0 then continue;   // used up this run
+      S := '{"oid": ' + IntToStr(O) + ', "id": ' + IntToStr(It.ID) + ', "name": ' + JsonStr(It.Name) +
+        ', "n": ' + Format('%d', [C]) + '}';
+      if m = 0 then B := B + S else B := B + ', ' + S;
+      m := m + 1;
+    end;
+  end;
+  ItemsJson := '[' + A + ']';
+  StuffJson := '[' + B + ']';
+end;
+
+// <character>.ench.json: what was read, the run, the tries, the bag
+procedure DumpState();
+var L: TStringList;
+  i, k, j, Secs, BagAgo: integer;
+  S, Cur: string;
+begin
+  BagJsons();
+  Secs := RunSecs;
+  if Running then Secs := (GetTickCount - RunAt) div 1000;
+  Cur := 'null';
+  if Running and (Phase <> PH_IDLE) and (Phase <> PH_CRYST) and (Phase <> PH_BOOT) then
+    Cur := '{"oid": ' + IntToStr(CurOID) + ', "name": ' + JsonStr(CurName) + ', "job": ' + IntToStr(CurJ) +
+      ', "id": ' + IntToStr(CurItemID) + ', "from": ' + IntToStr(CurLvl0) + ', "to": ' + IntToStr(CurTo) +
+      ', "phase": ' + IntToStr(Phase) + '}';
+  BagAgo := -1;
+  if ListAt <> 0 then BagAgo := (GetTickCount - ListAt) div 1000;
+  L := TStringList.Create;
+  L.Add('{"char": ' + JsonStr(CharName) + ', "written": ' + JsonStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)) + ', "ver": 2,' +
+    ' "bag_ago": ' + IntToStr(BagAgo) + ',');
+  L.Add(' "cfg": {"read": ' + JsonStr(CfgReadAt) + ', "run_id": ' + JsonStr(SeenRunId) + ', "cryst_id": ' + JsonStr(SeenCrystId) + ', "jobs": ' + IntToStr(JobN) +
+    ', "delay": ' + IntToStr(DelayMs) + ', "put": ' + IntToStr(PutDelayMs) + ', "errors": [' + CfgErrJson + ']},');
+  L.Add(' "run": {"state": ' + JsonStr(RunState) + ', "id": ' + JsonStr(RunId) + ', "end": ' + JsonStr(RunEnd) +
+    ', "end_id": ' + IntToStr(RunEndId) + ', "started": ' + JsonStr(RunStarted) + ', "secs": ' + IntToStr(Secs) +
+    ', "tries": ' + IntToStr(Tries) + ', "ok": ' + IntToStr(OkN) + ', "fail": ' + IntToStr(FailN) +
+    ', "broke": ' + IntToStr(BrokeN) + ', "none": ' + IntToStr(NoneN) + ', "scrolls": ' + IntToStr(ScrollsN) +
+    ', "stones": ' + IntToStr(StonesN) + ', "cryst": ' + IntToStr(CrystN) + ', "cr_n": ' + IntToStr(CrN) +
+    ', "cr_i": ' + IntToStr(CrIdx) + ', "cur": ' + Cur + '},');
+  S := '';
+  for k := 0 to SkN - 1 do begin
+    if k > 0 then S := S + ', ';
+    S := S + '{"oid": ' + IntToStr(SkOID[k]) + ', "id": ' + IntToStr(SkIDv[k]) + ', "job": ' + IntToStr(SkJob[k]) +
+      ', "why": ' + JsonStr(SkWhy[k]) + '}';
+  end;
+  L.Add(' "skip": [' + S + '],');
+  L.Add(' "stats": [');
+  for k := 0 to StN - 1 do begin
+    if k = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"oid": ' + IntToStr(StOID[k]) + ', "id": ' + IntToStr(StID[k]) + ', "tries": ' + IntToStr(StTry[k]) + ', "ok": ' + IntToStr(StOk[k]) +
+      ', "fail": ' + IntToStr(StFail[k]) + ', "broke": ' + IntToStr(StBroke[k]) + ', "max": ' + IntToStr(StMax[k]) + '}');
+  end;
+  L.Add(' ],');
+  L.Add(' "log": [');
+  for j := 0 to LgN - 1 do begin   // the oldest first
+    i := (LgSeqN - LgN + j) mod LOG_N;
+    if j = 0 then S := '  ' else S := ' ,';
+    L.Add(S + '{"n": ' + IntToStr(LgSeq[i]) + ', "t": ' + JsonStr(LgT[i]) + ', "oid": ' + IntToStr(LgOID[i]) +
+      ', "id": ' + IntToStr(LgID[i]) + ', "name": ' + JsonStr(LgName[i]) + ', "job": ' + IntToStr(LgJob[i]) + ', "from": ' + IntToStr(LgFrom[i]) +
+      ', "to": ' + IntToStr(LgLv[i]) + ', "res": ' + JsonStr(ResWord(LgRes[i])) + ', "code": ' + IntToStr(LgCode[i]) +
+      ', "sc": ' + IntToStr(LgSc[i]) + ', "st": ' + IntToStr(LgSt[i]) + '}');
+  end;
+  L.Add(' ],');
+  L.Add(' "items": ' + ItemsJson + ',');
+  L.Add(' "stuff": ' + StuffJson + '}');
+  WriteText(StatePath, L, StateTold);
+  L.Free;
+end;
+
+var
+  CfgAt, StateAt: cardinal;
+
+begin
+  Running := false;
+  StopWanted := false;
+  RunState := 'idle';
+  RunEnd := '';
+  RunId := '';
+  RunStarted := '';
+  RunEndId := 0;
+  RunSecs := 0;
+  RunAt := GetTickCount;
+  Tries := 0;
+  OkN := 0;
+  FailN := 0;
+  BrokeN := 0;
+  NoneN := 0;
+  ScrollsN := 0;
+  StonesN := 0;
+  SkN := 0;
+  StN := 0;
+  LgN := 0;
+  LgSeqN := 0;
+  Phase := PH_IDLE;
+  Watch := false;
+  ResArmed := false;
+  PkOn := false;
+  PkCapture := false;
+  PkHead := 0;
+  PkTail := 0;
+  CliWatchAt := 0;
+  ListAt := 0;
+  ListGot := false;
+  ClearPend := false;
+  OvN := 0;
+  CvN := 0;
+  OvSeq := 0;
+  WinScroll := 0;
+  WinItem := 0;
+  WinPutAt := 0;
+  PutFresh := false;
+  CrN := 0;
+  CrIdx := 0;
+  CrystN := 0;
+  CrPending := false;
+  CfgCrystId := '';
+  SeenCrystId := '';
+  LastResAt := 0;
+  UseFails := 0;
+  PutFails := 0;
+  PutDelayMs := 2000;
+  AskAt := 0;
+  ReqSeen := '';
+  FirstReq := true;
+  JobN := 0;
+  DelayMs := 200;
+  DebugOn := true;
+  CfgText := '';
+  CfgReadAt := '';
+  CfgErrJson := '';
+  CfgErrOld := '';
+  SeenRunId := '';
+  CfgMissTold := false;
+  BagSig := -1;
+  ItemsJson := '';
+  StuffJson := '';
+  DbgL := TStringList.Create;
+  DbgN := 0;
+  DbgPath := '';
+  DbgDirty := false;
+  DbgAt := GetTickCount;
+  while User.Name = '' do Delay(500);   // in the game
+  CharName := User.Name;
+  CfgPath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench';
+  StatePath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench.json';
+  ReqPath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench.req';
+  Engine.Msg('[Ench]', 'Enchant: set it up and start it in Library\Binds\enchant.html (Chrome / Edge)', 0);
+
+  Engine.SendActID(2);   // packet hooks on: the server's answers to a try (OnPacket), the debug log
+  FirstCfg := true;      // till the settings are first read: their run_id is an old one
+  CheckCfg();
+  CheckReq();            // the number there now is an old one
+  AskBag();              // the whole bag from the server: the bot's copy may be old
+  DumpState();
+  CfgAt := GetTickCount;
+  StateAt := GetTickCount;
+
+  while Delay(LOOP_MS) do begin
+    if GetTickCount - CfgAt >= CFG_MS then begin
+      CfgAt := GetTickCount;
+      CheckCfg();
+      CheckReq();
+    end;
+    if Running then EnchStep();
+    if ClearPend and (not Running) and BagFresh() then begin   // the whole bag is in: the bot's copy is right again
+      ClearPend := false;
+      OvClear();
+      Dirty := true;
+    end;
+    if PkHead <> PkTail then DrainPk();
+    if Dirty or (GetTickCount - StateAt >= STATE_MS) then begin
+      Dirty := false;
+      StateAt := GetTickCount;
+      DumpState();
+    end;
+    if DbgDirty and (GetTickCount - DbgAt >= 2000) then FlushDbg();   // the whole log rewritten: not too often
+  end;
+end.

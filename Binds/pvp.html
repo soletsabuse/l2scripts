@@ -1,0 +1,1336 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PvP focus</title>
+<style>
+  :root { --bg: #090c11; --panel: #10141b; --panel2: #161b24; --panel3: #1d2330; --line: #212836; --line2: #2d3646;
+    --text: #e6ebf2; --muted: #8893a4; --dim: #5b6676; --accent: #5aa9ff; --ok: #4dd4ac; --warn: #ffbf5a; --bad: #ff6b7a;
+    --foe: #ff8a7a; --gold: #ffd166; --shadow: 0 12px 40px rgba(0, 0, 0, .55); color-scheme: dark; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  body { background: radial-gradient(1200px 500px at 50% -200px, #16202e 0%, var(--bg) 70%) fixed; }
+  svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+  /* ===== top bar ===== */
+  #bar { position: sticky; top: 0; z-index: 6; display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; padding: 8px 16px;
+    background: rgba(13, 17, 24, .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 9px; margin-right: 4px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #2a0a06;
+    background: linear-gradient(135deg, #ff8a7a, #ffbf5a); box-shadow: 0 2px 14px rgba(255, 138, 122, .35); }
+  .brand .logo svg { stroke-width: 2.2; width: 17px; height: 17px; }
+  .brand b { font-size: 15px; font-weight: 700; letter-spacing: .01em; }
+  .profpick { display: flex; align-items: center; gap: 8px; padding: 3px 4px 3px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line2); }
+  .profpick select { border: 0; background: transparent; font-weight: 600; padding: 3px 4px; max-width: 220px; }
+  .profpick select:focus { box-shadow: none; }
+  .sp { flex: 1; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 99px; font-size: 12px;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+  .pill.ok { color: var(--ok); } .pill.ok .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .pill.warn { color: var(--warn); } .pill.warn .dot { background: var(--warn); }
+  .pill.bad { color: var(--bad); } .pill.bad .dot { background: var(--bad); }
+  .pill:empty { display: none; }
+
+  button { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 7px; padding: 5px 10px; font: inherit; cursor: pointer; white-space: nowrap;
+    transition: background .12s, border-color .12s, color .12s; }
+  button:hover { border-color: #46536a; background: var(--panel3); }
+  button.primary { background: linear-gradient(180deg, #4a97f0, #2f73c6); border-color: #5aa3f5; color: #fff; }
+  button.primary:hover { background: linear-gradient(180deg, #5aa3f5, #357bd0); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--panel3); color: var(--text); }
+  button.icon { padding: 4px 7px; }
+  button.add { color: var(--accent); border-style: dashed; background: transparent; }
+  button:disabled { opacity: .3; cursor: default; }
+  input[type=text], input[type=number], select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 7px; padding: 5px 8px; font: inherit; }
+  input[type=number] { width: 76px; }
+  input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+  input::placeholder { color: var(--dim); }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); margin: 0; }
+  label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  .lbl { color: var(--dim); font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .08em; }
+
+  main { max-width: 1060px; margin: 0 auto; padding: 14px 16px 60px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+  .card > h3 { margin: 0 0 10px; font-size: 13.5px; font-weight: 650; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .card > h3 .muted { font-weight: 400; font-size: 12.5px; }
+  .intro h2 { margin: 0 0 6px; font-size: 16px; font-weight: 650; }
+  .intro ol { margin: 8px 0 12px; padding-left: 20px; color: var(--muted); }
+  .intro b { color: var(--text); font-weight: 600; }
+  #errors:empty { display: none; }
+  #errors { border-color: #5a2a33; background: #1a1115; color: #ffb3bc; }
+  #errors ul { margin: 4px 0 0; padding-left: 18px; }
+
+  /* ===== tabs ===== */
+  #tabs { display: flex; gap: 4px; margin: 0 0 14px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; width: max-content; max-width: 100%; overflow-x: auto; }
+  #tabs button { border: 0; background: transparent; color: var(--muted); padding: 7px 14px; border-radius: 8px; font-weight: 600; }
+  #tabs button:hover { color: var(--text); background: var(--panel2); }
+  #tabs button.on { color: #fff; background: linear-gradient(180deg, #23324a, #1b2739); box-shadow: inset 0 0 0 1px #2f4a6e; }
+  #tabs button .n { font-size: 11px; color: var(--dim); font-weight: 500; margin-left: 2px; }
+
+  /* ===== chips ===== */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 28px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 4px 3px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line2); }
+  .chip.foe { border-color: #6a3a33; background: #221614; }
+  .chip.sk { border-color: #5c4a2c; background: #1f1a12; }
+  .chip .n { font-size: 11px; color: var(--dim); }
+  .chip .x { padding: 0 4px; border: 0; background: transparent; color: var(--dim); font-size: 15px; line-height: 1; }
+  .chip .x:hover { color: var(--bad); background: transparent; }
+  .addrow { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+  .addrow input { width: 170px; }
+  .near { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  button.nc { padding: 2px 9px; border-radius: 99px; font-size: 12px; color: var(--muted); }
+  button.nc .n { color: var(--dim); font-size: 11px; }
+  button.nc.on { color: var(--foe); border-color: #6a3a33; background: #221614; }
+  button.nc.mine { opacity: .45; cursor: default; }
+  .general { display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center; }
+  .general input[type=text] { width: 110px; }
+
+  /* ===== groups ===== */
+  .grp { padding: 0; overflow: hidden; border-left: 3px solid var(--mc, var(--accent)); }
+  .grp.off { opacity: .5; }
+  .grp .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line); background: linear-gradient(90deg, var(--mbg, transparent), transparent 60%); }
+  .grp .head input.name { flex: 1 1 130px; min-width: 100px; font-weight: 650; background: transparent; border-color: transparent; font-size: 14px; }
+  .grp .head input.name:hover { border-color: var(--line2); }
+  .grp .head input.name:focus { background: var(--panel2); }
+  .grp .head select.mode { font-weight: 600; color: var(--mc); border-color: var(--mbd, var(--line2)); }
+  .grp .head .dist { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+  .grp .head .dist input { width: 70px; }
+  .m-class { --mc: #5aa9ff; --mbg: rgba(90, 169, 255, .07); --mbd: #2f4a6e; }
+  .m-reskill { --mc: #4dd4ac; --mbg: rgba(77, 212, 172, .07); --mbd: #245a4a; }
+  .m-cast { --mc: #ffb15a; --mbg: rgba(255, 177, 90, .07); --mbd: #6b4f27; }
+  .m-names { --mc: #c7a8ff; --mbg: rgba(199, 168, 255, .07); --mbd: #4b3b6e; }
+  .keybtn { font: 13px Consolas, monospace; min-width: 92px; justify-content: center; background: #15233a; border-color: #2f6299; color: #cfe5ff; }
+  .keybtn.none { color: var(--warn); border-color: #6b5527; background: #241d10; font-family: inherit; }
+  .keybtn.opt { color: var(--muted); border-color: var(--line2); background: var(--panel2); font-family: inherit; }
+  .keybtn.cap { background: #1d3b5f; border-color: var(--accent); color: #fff; animation: pulse 1s infinite; font-family: inherit; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 4px rgba(90, 169, 255, .25); } }
+  .grp .body { padding: 10px 12px 12px; display: grid; gap: 8px; }
+  .grp .chev { width: 26px; justify-content: center; padding: 3px 0; color: var(--muted); }
+  .grp.shut .head { border-bottom-color: transparent; }
+  .sum { font-size: 12.5px; color: var(--muted); }
+  .sum b { color: var(--text); font-weight: 600; }
+  .sum .t1 { color: var(--gold); } .sum .t2 { color: #c9d6e6; } .sum .t3 { color: #8a96a8; }
+  .hint { font-size: 12px; color: var(--dim); }
+  .row { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: start; }
+  .row > .lbl { padding-top: 6px; }
+  .role { display: grid; grid-template-columns: 92px 1fr; gap: 8px; align-items: start; }
+  .role > .lbl { padding-top: 5px; }
+  .role > .lbl.has { color: var(--accent); }
+  .cls { display: flex; flex-wrap: wrap; gap: 5px; }
+  .cl { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px; border: 1px solid var(--line2);
+    background: var(--panel2); color: var(--muted); cursor: pointer; user-select: none; }
+  .cl:hover { color: var(--text); border-color: #46536a; }
+  .cl.on { color: #fff; background: #15304d; border-color: #2f6299; }
+  .cl.on.t2 { background: #1c2a3f; border-color: #2a4566; }
+  .cl.on.t3 { background: #1a2230; border-color: #2a3a52; color: #c9d6e6; }
+  .cl .cnt { font-size: 10.5px; color: var(--foe); font-weight: 650; }
+  .tier { font-size: 10px; font-weight: 700; min-width: 17px; height: 17px; display: inline-grid; place-items: center; border-radius: 5px;
+    background: var(--gold); color: #2a1d00; margin-right: -4px; }
+  .tier.t2 { background: #c9d6e6; color: #10141b; }
+  .tier.t3 { background: #7a8698; color: #0b0e13; }
+  details.filt > summary { cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 2px 0; }
+  details.filt > summary b { color: var(--accent); font-weight: 600; }
+  details.filt[open] > summary { margin-bottom: 7px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; color: var(--muted); padding-top: 8px; border-top: 1px dashed var(--line); }
+  .opts label:hover { color: var(--text); }
+  .opts select { padding: 3px 6px; }
+  .now { font-size: 12.5px; color: var(--muted); }
+  .now b { color: var(--text); font-weight: 600; }
+  .now .t { color: var(--foe); font-weight: 600; }
+  .now .d { color: var(--dim); }
+  .now .x { color: var(--gold); font-weight: 650; }
+  .warns div { font-size: 12px; color: var(--warn); }
+  .warns div.bad { color: var(--bad); }
+  .warns div.soft { color: var(--dim); }
+  .empty { text-align: center; color: var(--muted); padding: 22px 16px; border: 1px dashed var(--line2); border-radius: 12px; margin-bottom: 12px; }
+  #adds { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 18px; }
+  #adds button { padding: 8px 14px; }
+  #adds button b { color: var(--mc); }
+
+  /* ===== players ===== */
+  .plist { display: grid; gap: 4px; }
+  .pl { display: grid; grid-template-columns: 30px 26px 1fr auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); }
+  .pl .rk { color: var(--gold); font-weight: 700; text-align: center; font-size: 12px; }
+  .pl .tagb { padding: 2px 5px; font-size: 13px; }
+  .pl.skip { opacity: .75; }
+  .pl.skip .nm { text-decoration: line-through; color: var(--muted); }
+  .pl .nm { font-weight: 600; }
+  .pl .seen { font-size: 11.5px; color: var(--dim); margin-left: 6px; font-weight: 400; }
+  .ntable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .ntable td { padding: 4px 6px; border-top: 1px solid var(--line); }
+  .ntable td.d { color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; }
+  .ntable tr.foe td.nm { color: var(--foe); }
+  .ntable button { padding: 1px 7px; font-size: 12px; }
+
+  /* ===== radar ===== */
+  .radarwrap { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; }
+  .radarbox { position: relative; background: radial-gradient(circle at center, #121a26 0%, #0b0f15 75%); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  #radar { display: block; width: 100%; }
+  .radarctl { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-bottom: 10px; }
+  .rlist { display: grid; gap: 4px; align-content: start; max-height: 620px; overflow-y: auto; }
+  .rlist .it { display: grid; grid-template-columns: 22px 1fr auto; gap: 6px; align-items: baseline; padding: 4px 6px; border-radius: 7px; background: var(--panel2); }
+  .rlist .it .no { color: var(--gold); font-weight: 700; }
+  .rlist .it .nm { color: var(--foe); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rlist .it .sub { grid-column: 2 / 4; font-size: 11.5px; color: var(--dim); }
+  .rlist .it .d { color: var(--dim); font-size: 12px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+  #tip { position: fixed; z-index: 40; pointer-events: none; background: #1b2230; border: 1px solid var(--line2); border-radius: 8px; padding: 6px 9px;
+    font-size: 12px; box-shadow: var(--shadow); max-width: 280px; }
+
+  /* ===== profiles ===== */
+  .prow { display: grid; grid-template-columns: 26px minmax(140px, 1fr) auto; gap: 10px; align-items: center; padding: 8px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); margin-bottom: 6px; }
+  .prow.cur { border-color: #2f4a6e; background: #121c2a; }
+  .prow input.pname { font-weight: 650; background: transparent; border-color: transparent; width: 100%; }
+  .prow input.pname:hover { border-color: var(--line2); }
+  .prow .meta { font-size: 11.5px; color: var(--dim); padding-left: 8px; }
+  .prow .btns { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
+  .crow { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .crow .cn { min-width: 160px; font-weight: 600; }
+  .crow .live { font-size: 11.5px; color: var(--ok); }
+
+  details.help summary { cursor: pointer; color: var(--muted); font-weight: 600; }
+  details.help li { color: var(--muted); margin: 3px 0; }
+  details.help b { color: var(--text); font-weight: 600; }
+  details.help ul { padding-left: 18px; }
+
+  #toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(10px); opacity: 0; pointer-events: none;
+    background: #1b2230; border: 1px solid var(--line2); border-radius: 9px; padding: 8px 14px; box-shadow: var(--shadow);
+    transition: opacity .2s, transform .2s; max-width: calc(100vw - 32px); z-index: 30; }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+
+  @media (max-width: 760px) {
+    .radarwrap { grid-template-columns: 1fr; }
+    .row, .role { grid-template-columns: 1fr; gap: 4px; }
+    .row > .lbl, .role > .lbl { padding-top: 0; }
+    .prow { grid-template-columns: 26px 1fr; }
+    .prow .btns { grid-column: 1 / 3; justify-content: flex-start; }
+  }
+</style>
+</head>
+<body>
+<div id="bar">
+  <div class="brand">
+    <span class="logo"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M1 12h4M19 12h4"/></svg></span>
+    <b>PvP focus</b>
+  </div>
+  <div class="profpick" id="profBox" hidden>
+    <span class="lbl">Профиль</span>
+    <select id="profSel" title="Какой профиль правишь"></select>
+  </div>
+  <span id="profUse" class="pill"></span>
+  <button id="connect" class="primary" hidden>Подключить папку</button>
+  <span class="sp"></span>
+  <select id="botSel" hidden title="Чьими глазами смотреть: радар, кто рядом, кого возьмёт клавиша"></select>
+  <span id="botState" class="pill"></span>
+  <span id="saveState" class="pill"></span>
+  <button id="otherDir" class="ghost" hidden title="Выбрать другую папку">папка…</button>
+</div>
+
+<main>
+  <section id="intro" class="card intro" hidden></section>
+  <section id="errors" class="card"></section>
+  <div id="page" hidden>
+    <nav id="tabs">
+      <button data-tab="keys">Клавиши</button>
+      <button data-tab="foes">Враги и ники</button>
+      <button data-tab="radar">Радар</button>
+      <button data-tab="profiles">Профили</button>
+    </nav>
+
+    <div class="tab" id="tab-keys">
+      <section class="card general">
+        <span class="lbl">Общее</span>
+        <label><input type="checkbox" id="chatOn"> писать в пати-чат, кого взял</label>
+        <label>от имени <input type="text" id="chatName" maxlength="16" placeholder="PvP"></label>
+        <label title="Повторное нажатие клавиши группы берёт следующего по очереди. Через столько секунд без нажатий очередь начинается сначала">круг сбрасывается через <input type="number" id="cycleS" min="1" max="60" step="1"> с</label>
+      </section>
+      <div id="groups"></div>
+      <div id="adds">
+        <button class="m-class" data-add="class" title="Ближайший враг отмеченных классов; можно задать приоритет классов 1, 2, 3"><b>+</b> Профы</button>
+        <button class="m-reskill" data-add="reskill" title="Враг, который только что встал (его реснули)"><b>+</b> Рес-кил</button>
+        <button class="m-cast" data-add="cast" title="Сбить каст: того, в кого кастуют форсы (или другой скилл), или самого кастующего"><b>+</b> Каст / форсы</button>
+        <button class="m-names" data-add="names" title="Игроки со звёздочкой из списка «Враги и ники», по порядку"><b>+</b> По никам</button>
+      </div>
+    </div>
+
+    <div class="tab" id="tab-foes">
+      <section class="card">
+        <h3>Вражеские кланы <span class="muted">имя клана или альянса, регистр не важен. Пусто — любой, кроме твоего клана, альянса и пати</span></h3>
+        <div class="chips"><span class="chips" id="clans"></span>
+          <span class="addrow"><input type="text" id="clanIn" placeholder="клан или альянс" maxlength="32"><button id="clanAdd">добавить</button></span></div>
+        <div class="near" id="nearClans"></div>
+      </section>
+      <section class="card">
+        <h3>Игроки <span class="muted">★ — бить в первую очередь (по порядку списка, любого клана), ⛔ — не трогать никогда</span></h3>
+        <div class="plist" id="players"></div>
+        <div class="addrow" style="margin-top:8px"><input type="text" id="plIn" placeholder="ник" maxlength="24">
+          <button id="plPrio">★ приоритет</button><button id="plSkip">⛔ не трогать</button></div>
+        <div class="near" id="nearPlayers"></div>
+      </section>
+    </div>
+
+    <div class="tab" id="tab-radar">
+      <section class="card">
+        <div class="radarctl">
+          <label><span class="lbl">Группа</span> <select id="radarG"></select></label>
+          <label><span class="lbl">Масштаб</span> <select id="radarZ">
+            <option value="auto">по дальности группы</option><option value="800">800</option><option value="1500">1500</option>
+            <option value="2500">2500</option><option value="4000">4000</option></select></label>
+          <span class="muted" id="radarInfo"></span>
+        </div>
+        <div class="radarwrap">
+          <div class="radarbox"><canvas id="radar"></canvas></div>
+          <div><div class="lbl" style="margin-bottom:6px">Очередь клавиши</div><div class="rlist" id="radarList"></div></div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </section>
+    </div>
+
+    <div class="tab" id="tab-profiles">
+      <section class="card">
+        <h3>Профили <span class="muted">не привязаны к нику: любой персонаж может взять любой. Звёздочка — профиль по умолчанию для всех</span></h3>
+        <div id="profList"></div>
+        <div class="addrow" style="margin-top:6px">
+          <button class="add" id="profNew"><b>+</b> новый профиль</button>
+          <button id="profImport">Импорт файла…</button>
+          <input type="file" id="profFile" accept=".pvp,.ini,.txt" hidden>
+        </div>
+      </section>
+      <section class="card">
+        <h3>Персонажи <span class="muted">какой профиль у кого. «По умолчанию» — профиль со звёздочкой</span></h3>
+        <div id="charList"></div>
+        <div class="addrow" style="margin-top:8px"><input type="text" id="charIn" placeholder="ник персонажа" maxlength="24"><button id="charAdd">добавить персонажа</button></div>
+      </section>
+    </div>
+
+    <details class="help card">
+      <summary>Как это работает</summary>
+      <ul>
+        <li>В боте запусти <b>Scripts\pvp_focus.txt</b> на персонаже. Профили — файлы <i>&lt;имя&gt;.pvp</i> в <b>Library\Binds</b>, какой у кого — в <i>pvp_focus.ini</i>. Всё сохраняется само, бот подхватывает за секунду без перезапуска. Бот пишет сюда, кого видит рядом (<i>&lt;ник&gt;.focus.json</i>): отсюда радар, кланы и ники «рядом сейчас», строка «сейчас возьмёт».</li>
+        <li><b>Профы</b>: ближайший враг отмеченных классов. Цифра на классе — приоритет: сначала все «1», если их нет в дальности — «2», потом «3». Клик по цифре меняет её.</li>
+        <li><b>Рес-кил</b>: враг, который встал из мёртвых не дольше N секунд назад (бот видел его мёртвым, потом живым). Классы — необязательный фильтр.</li>
+        <li><b>Каст / форсы</b>: враг, который кастует выбранный скилл (Battle Force 426, Spell Force 427, рес и т. п.). «В кого кастуют» — берёт того, кого заряжают (больше форсов — первым): Sword Muse / Spectral Dancer под Noise, Soultaker под DoD. «Кастующего» — самого кастующего. Скиллы можно выбрать из тех, что бот видел рядом.</li>
+        <li><b>По никам</b>: игроки со ★ из списка, строго по порядку, любого класса и клана.</li>
+        <li><b>Повторное нажатие</b>, пока стоишь на выбранном, — следующий по той же очереди, по кругу. Если подходит только тот, на ком стоишь, бот повторяет действие «после» (например, станит снова).</li>
+        <li><b>Порядок выбора</b>: ★ ник (если включено «сначала ★»), приоритет класса, число форсов, расстояние. ⛔ и свои (пати, клан, альянс) не берутся никогда.</li>
+        <li><b>После выделения</b>: ничего, автоатака или скилл (бот жмёт его, пока не начнётся каст, до 1,5 с). Ctrl — как с зажатым Ctrl (бить без флага). <b>Метка</b> 1–4 — те же токены, что ставятся вручную.</li>
+        <li><b>Сам, без клавиши</b> (рес-кил, касты): бот сам выделяет, как только кто-то встал / начал кастовать, не чаще раза в N секунд и не трогая цель, если ты уже на одном из этой группы. Клавиша тогда не обязательна.</li>
+        <li>Клавиша срабатывает, только когда активно окно игры этого персонажа. Буквы без Ctrl/Alt срабатывают и при наборе в чате.</li>
+      </ul>
+    </details>
+  </div>
+</main>
+<div id="tip" hidden></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k === 'style') e.style.cssText = v;
+    else if (k.startsWith('on')) e[k] = v;
+    else if (k in e && typeof v !== 'string') e[k] = v;
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids) if (c !== null && c !== undefined && c !== false) e.append(c);
+  return e;
+}
+let toastT = 0;
+function toast(t) { const b = $('toast'); b.textContent = t; b.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => b.classList.remove('show'), 3200); }
+const lc = s => String(s || '').trim().toLowerCase();
+const clean = s => String(s || '').replace(/[\r\n|=]/g, ' ').trim();
+const store = { get(k) { try { return localStorage.getItem('pvpfocus.' + k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem('pvpfocus.' + k, v); } catch (e) {} } };
+
+// ===== the classes: a chip = the 3rd profession + its 2nd one (class IDs as the bot gives them, checked with clan_report) =====
+const ROLES = [
+  ['Хилы', '#5ee6a8', [['Cardinal', [97, 16], 'Bishop'], ["Eva's Saint", [105, 30], 'Elven Elder'], ['Shillien Saint', [112, 43], 'Shillien Elder']]],
+  ['Маги', '#b48cff', [['Archmage', [94, 12], 'Sorcerer'], ['Soultaker', [95, 13], 'Necromancer'], ['Mystic Muse', [103, 27], 'Spellsinger'],
+    ['Storm Screamer', [110, 40], 'Spellhowler']]],
+  ['Самонеры', '#8fb3ff', [['Arcana Lord', [96, 14], 'Warlock'], ['Elemental Master', [104, 28], 'Elemental Summoner'], ['Spectral Master', [111, 41], 'Phantom Summoner']]],
+  ['Баферы', '#ffd166', [['Hierophant', [98, 17], 'Prophet'], ['Doomcryer', [116, 52], 'Warcryer'], ['Dominator', [115, 51], 'Overlord'],
+    ['Sword Muse', [100, 21], 'Swordsinger'], ['Spectral Dancer', [107, 34], 'Bladedancer']]],
+  ['Танки', '#9fb0c6', [['Phoenix Knight', [90, 5], 'Paladin'], ['Hell Knight', [91, 6], 'Dark Avenger'], ["Eva's Templar", [99, 20], 'Temple Knight'],
+    ['Shillien Templar', [106, 33], 'Shillien Knight']]],
+  ['Лучники', '#ff9f5a', [['Sagittarius', [92, 9], 'Hawkeye'], ['Moonlight Sentinel', [102, 24], 'Silver Ranger'], ['Ghost Sentinel', [109, 37], 'Phantom Ranger']]],
+  ['Даггеры', '#ff6b9a', [['Adventurer', [93, 8], 'Treasure Hunter'], ['Wind Rider', [101, 23], 'Plainswalker'], ['Ghost Hunter', [108, 36], 'Abyss Walker']]],
+  ['Воины', '#ff7070', [['Duelist', [88, 2], 'Gladiator'], ['Dreadnought', [89, 3], 'Warlord'], ['Titan', [113, 46], 'Destroyer'], ['Grand Khavatari', [114, 48], 'Tyrant']]],
+  ['Гномы', '#d2a86e', [['Fortune Seeker', [117, 55], 'Bounty Hunter'], ['Maestro', [118, 57], 'Warsmith']]],
+  ['Камаэли', '#7fd6e8', [['Doombringer', [131, 127], 'Berserker'], ['Soul Hound', [132, 133, 128, 129], 'Soulbreaker'], ['Trickster', [134, 130], 'Arbalester'],
+    ['Judicator', [136, 135], 'Inspector']]]];
+const CLS_NAME = {}, CLS_ROLE = {};
+ROLES.forEach(([, , list], r) => { for (const [nm, ids, second] of list) ids.forEach((id, i) => { CLS_NAME[id] = i === 0 || (nm === 'Soul Hound' && i === 1) ? nm : second; CLS_ROLE[id] = r; }); });
+const clsName = id => CLS_NAME[id] || '#' + id;
+const roleColor = id => CLS_ROLE[id] !== undefined ? ROLES[CLS_ROLE[id]][1] : '#9aa4b2';
+// skills the bot can not name (not ours): the known ones
+const KNOWN_SK = { 426: 'Battle Force', 427: 'Spell Force' };
+
+const MODES = {
+  class: ['Профы', 'm-class', 'Ближайший враг отмеченных классов. Цифра на классе — приоритет: 1 раньше 2, 2 раньше 3.'],
+  reskill: ['Рес-кил', 'm-reskill', 'Враг, который встал из мёртвых не дольше окна назад. Классы — необязательный фильтр.'],
+  cast: ['Каст / форсы', 'm-cast', 'Враг, который кастует выбранный скилл, или тот, в кого его кастуют (заряжаемый — больше форсов первым).'],
+  names: ['По никам', 'm-names', 'Игроки со ★ из списка «Враги и ники», строго по порядку, любого класса и клана.'] };
+
+// ===== files: Library\Binds, the folder handle kept in IndexedDB (the same one binds.html keeps) =====
+function idb(mode, fn) { return new Promise(res => { try { const rq = indexedDB.open('equipbinds', 1);
+  rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+  rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => res(null); };
+  rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+// the bot reads and writes ANSI (cp1251)
+function decode(buf) { try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1251').decode(buf); } }
+function cp1251(s) {
+  const out = [];
+  for (const ch of s) { const c = ch.codePointAt(0);
+    if (c < 128) out.push(c); else if (c >= 0x410 && c <= 0x44F) out.push(c - 0x410 + 0xC0);
+    else if (c === 0x401) out.push(0xA8); else if (c === 0x451) out.push(0xB8); else out.push(63); }
+  return new Uint8Array(out);
+}
+
+const SEL = 'pvp_focus.ini', EXT = '.pvp', FRESH_MS = 6000;
+let dir = null, oldDir = null;
+let profs = {};                 // id -> { p (the profile), mod, saved (its text on disk) }
+let curId = null;               // the profile edited
+let sel = { active: 'main', chars: [] }, selMod = 0, selSaved = '';
+let bots = {}, curBot = null;   // <tag>.focus.json: { d, mod }; the one looked through
+let equipKeys = {};             // keyNorm -> ['char «bind»'] (equip binds that are on)
+let saveT = 0, saving = false, saveAgain = null, savedAt = 0, saveErr = '', readAtSave = {};
+let tab = store.get('tab') || 'keys';
+const P = () => profs[curId] ? profs[curId].p : null;
+
+async function sub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
+async function fileOf(name) { try { return await (await dir.getFileHandle(name)).getFile(); } catch (e) { return null; } }
+async function textOf(f) { try { return decode(await f.arrayBuffer()); } catch (e) { return null; } }
+async function writeFile(name, text) { const fh = await dir.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(cp1251(text)); await w.close(); return (await fh.getFile()).lastModified; }
+
+// ===== a profile: the general lines, then a [group] block per group (as pvp_focus.txt reads it) =====
+function newGroup(o) {
+  return Object.assign({ on: true, name: '', key: '', mode: 'class', range: 1200, height: 400, mark: 0, after: '', afterSk: 0, ctrl: true,
+    auto: false, autoMs: 3000, window: 15, who: 'target', prio: true, cls: {}, skills: [] }, o);
+}
+const clsMap = list => { const o = {}; for (const [id, t] of list) o[id] = t; return o; };
+function defaultProfile(name) {
+  return { name: name || 'Main', clans: ['PLAYHARDGOPRO', 'GhostRiders', 'DeathSentence', 'HeavenSent', 'StayGrounded', 'Slayers'], players: [],
+    chat: true, chatName: 'PvP', cycleMs: 6000, groups: [
+      newGroup({ name: 'Healers', key: 'X', mark: 3, cls: clsMap([[16, 1], [30, 1], [43, 1], [97, 1], [105, 1], [112, 1]]) }),
+      newGroup({ name: 'Mages', key: 'Z', mark: 3, cls: clsMap([[12, 2], [13, 1], [27, 1], [40, 2], [94, 2], [95, 1], [103, 1], [110, 2]]) }),
+      newGroup({ name: 'Res-kill', key: 'C', mode: 'reskill' }),
+      newGroup({ name: 'Forces', key: 'V', mode: 'cast', mark: 1, skills: [426, 427] })] };
+}
+function parseProfile(text) {
+  const p = { name: '', clans: [], players: [], chat: true, chatName: 'PvP', cycleMs: 6000, groups: [] };
+  let g = null;
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim();
+    if (!line || line[0] === ';' || line[0] === '#') continue;
+    if (line.toLowerCase() === '[group]') { g = newGroup({ name: 'group ' + (p.groups.length + 1) }); p.groups.push(g); continue; }
+    const i = line.indexOf('='); if (i < 0) continue;
+    const k = line.slice(0, i).trim().toLowerCase(), v = line.slice(i + 1).trim();
+    if (!g) {
+      if (k === 'name') p.name = v;
+      else if (k === 'clans') p.clans = v.split('|').map(s => s.trim()).filter(Boolean);
+      else if (k === 'players') p.players = v.split('|').map(s => s.trim()).filter(s => s.length > 1 && (s[0] === '+' || s[0] === '-'))
+        .map(s => ({ name: s.slice(1).trim(), tag: s[0] === '+' ? 'prio' : 'skip' }));
+      else if (k === 'chat') p.chat = v !== '0';
+      else if (k === 'chat_name' && v) p.chatName = v;
+      else if (k === 'cycle_ms') p.cycleMs = parseInt(v, 10) || 6000;
+      continue;
+    }
+    if (k === 'on') g.on = v !== '0';
+    else if (k === 'name' && v) g.name = v;
+    else if (k === 'key') g.key = v;
+    else if (k === 'mode') g.mode = MODES[v.toLowerCase()] ? v.toLowerCase() : 'class';
+    else if (k === 'range') g.range = parseInt(v, 10) || 1200;
+    else if (k === 'height') g.height = parseInt(v, 10) || 400;
+    else if (k === 'mark') g.mark = Math.min(4, Math.max(0, parseInt(v, 10) || 0));
+    else if (k === 'after') { const m = /^skill:(\d+)$/i.exec(v); if (m) { g.after = 'skill'; g.afterSk = +m[1]; } else g.after = lc(v) === 'attack' ? 'attack' : ''; }
+    else if (k === 'ctrl') g.ctrl = v !== '0';
+    else if (k === 'auto') g.auto = v === '1';
+    else if (k === 'auto_ms') g.autoMs = parseInt(v, 10) || 3000;
+    else if (k === 'window') g.window = parseInt(v, 10) || 15;
+    else if (k === 'who') g.who = lc(v) === 'caster' ? 'caster' : 'target';
+    else if (k === 'prio_first') g.prio = v !== '0';
+    else if (k === 'classes') { g.cls = {}; for (const s of v.split('|')) { const [a, b] = s.split(':'); const id = parseInt(a, 10); if (id >= 0) g.cls[id] = Math.min(9, Math.max(1, parseInt(b, 10) || 1)); } }
+    else if (k === 'skills') g.skills = v.split('|').map(s => parseInt(s, 10)).filter(n => n > 0);
+  }
+  return p;
+}
+function profileText(p) {
+  const L = ['; PvP focus profile: made in pvp.html (Library\\Binds), read by pvp_focus.txt on the fly', 'name=' + (clean(p.name) || 'Profile'),
+    'clans=' + p.clans.map(clean).filter(Boolean).join('|'),
+    'players=' + p.players.filter(x => clean(x.name)).map(x => (x.tag === 'skip' ? '-' : '+') + clean(x.name)).join('|'),
+    'chat=' + (p.chat ? 1 : 0), 'chat_name=' + (clean(p.chatName) || 'PvP'), 'cycle_ms=' + Math.max(1000, p.cycleMs | 0), ''];
+  p.groups.forEach((g, i) => L.push('[group]', 'on=' + (g.on ? 1 : 0), 'name=' + (clean(g.name) || 'group ' + (i + 1)), 'mode=' + g.mode, 'key=' + g.key,
+    'range=' + Math.max(100, g.range | 0), 'height=' + Math.max(50, g.height | 0), 'mark=' + (g.mark | 0),
+    'after=' + (g.after === 'attack' ? 'attack' : g.after === 'skill' && g.afterSk > 0 ? 'skill:' + g.afterSk : ''),
+    'ctrl=' + (g.ctrl ? 1 : 0), 'prio_first=' + (g.prio ? 1 : 0), 'window=' + Math.max(1, g.window | 0), 'auto=' + (g.auto ? 1 : 0),
+    'auto_ms=' + Math.max(500, g.autoMs | 0), 'who=' + g.who, 'skills=' + g.skills.join('|'),
+    'classes=' + Object.entries(g.cls).map(([id, t]) => id + ':' + t).join('|'), ''));
+  return L.join('\r\n');
+}
+// the selector: which profile each character uses
+function parseSel(text) {
+  const s = { active: '', chars: [] };
+  for (let line of text.split(/\r?\n/)) {
+    line = line.trim(); if (!line || line[0] === ';') continue;
+    const i = line.indexOf('='); if (i < 0) continue;
+    const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+    if (lc(k) === 'active') s.active = v; else if (/^char\./i.test(k) && k.length > 5 && v) s.chars.push([k.slice(5), v]);
+  }
+  return s;
+}
+const selText = () => ['; PvP focus: which profile (Library\\Binds\\<id>.pvp) each character uses. Made in pvp.html', 'active=' + (sel.active || 'main'),
+  ...sel.chars.map(([c, id]) => 'char.' + c + '=' + id)].join('\r\n') + '\r\n';
+// a file id from a name: latin letters, digits, _ and - (as FileTag of the script); unique
+const TR = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't',
+  у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+function newId(name) {
+  let s = [...lc(name)].map(c => TR[c] !== undefined ? TR[c] : c).join('').replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 24) || 'profile';
+  let id = s, n = 2; while (profs[id]) id = s + '-' + n++;
+  return id;
+}
+
+// ===== start / the folder =====
+async function start() {
+  if (!window.showDirectoryPicker) { intro('browser'); return; }
+  const h = await idb('readonly', st => st.get('dir'));
+  if (h) {
+    let p = 'prompt';
+    try { p = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+    if (p === 'granted') { await useDir(h); return; }
+    oldDir = h; intro('again');
+  } else intro('first');
+}
+async function connect(pickNew) {
+  try {
+    let h = pickNew ? null : oldDir;
+    if (h && await h.requestPermission({ mode: 'readwrite' }) !== 'granted') h = null;
+    if (!h) h = await showDirectoryPicker({ id: 'equipbinds', mode: 'readwrite' });
+    await useDir(h);
+  } catch (e) { if (e.name !== 'AbortError') toast('Не вышло: ' + e.message); }
+}
+$('connect').onclick = () => connect(false);
+$('otherDir').onclick = () => connect(true);
+
+async function useDir(h) {
+  if (h.name.toLowerCase() !== 'binds') h = (await sub(h, 'Binds')) || (await sub(h, 'Library', 'Binds')) || h;
+  let ok = h.name.toLowerCase() === 'binds';
+  if (!ok) try { for await (const [name] of h.entries()) if (/^(pvp|binds)\.html$|\.binds$|\.pvp$|\.focus\.json$/i.test(name)) { ok = true; break; } } catch (e) {}
+  if (!ok) { dir = h; intro('wrongdir'); return; }
+  dir = h; oldDir = null;
+  idb('readwrite', st => st.put(h, 'dir'));
+  $('connect').hidden = true; $('otherDir').hidden = false;
+  await scanProfiles(true);
+  await readSel();
+  if (!Object.keys(profs).length) {   // nothing yet: the first profile (as the script makes it)
+    profs.main = { p: defaultProfile('Main'), mod: 0, saved: '' };
+    await saveProfile('main');
+  }
+  if (!selSaved) { if (!profs[sel.active]) sel.active = profs.main ? 'main' : Object.keys(profs)[0]; await saveSel(); }
+  const want = store.get('prof');
+  curId = profs[want] ? want : profs[sel.active] ? sel.active : Object.keys(profs).sort()[0];
+  await scanBots();
+  await scanEquip();
+  intro(null);
+  renderAll();
+}
+
+async function scanProfiles(first) {
+  const seen = {};
+  try {
+    for await (const [name, h] of dir.entries()) {
+      const m = /^(.+)\.pvp$/i.exec(name); if (!m || h.kind !== 'file') continue;
+      const id = m[1];
+      let f; try { f = await h.getFile(); } catch (e) { if (profs[id]) seen[id] = profs[id]; continue; }
+      const old = profs[id];
+      if (old && old.mod === f.lastModified) { seen[id] = old; continue; }
+      if (old && id === curId && (saveT || saving)) { seen[id] = old; continue; }   // ours waits to be written
+      const t = await textOf(f); if (t === null) { if (old) seen[id] = old; continue; }
+      const p = parseProfile(t); if (!p.name) p.name = id;
+      const norm = profileText(p);
+      if (old && norm === old.saved) { old.mod = f.lastModified; seen[id] = old; continue; }
+      seen[id] = { p, mod: f.lastModified, saved: norm };
+      if (!first && old && id === curId) { toast('Профиль изменился снаружи — показан новый'); seen[id].changed = true; }
+    }
+  } catch (e) { intro('lost'); dir = null; return false; }
+  const before = Object.keys(profs).sort().join('|'), after = Object.keys(seen).sort().join('|');
+  const curChanged = curId && seen[curId] && seen[curId].changed;
+  if (curId && profs[curId] && !seen[curId] && !profs[curId].saved) seen[curId] = profs[curId];   // not written yet
+  profs = seen;
+  if (curChanged) delete profs[curId].changed;
+  return before !== after || curChanged;
+}
+async function readSel() {
+  const f = await fileOf(SEL);
+  if (!f) { selSaved = ''; selMod = 0; return false; }
+  if (f.lastModified === selMod) return false;
+  const t = await textOf(f); if (t === null) return false;
+  const s = parseSel(t);
+  selMod = f.lastModified;
+  if (!s.active) s.active = 'main';
+  const was = selText(); sel = s; selSaved = selText();
+  return was !== selSaved;
+}
+async function saveSel() {
+  try { selMod = await writeFile(SEL, selText()); selSaved = selText(); }
+  catch (e) { toast('Не сохранился ' + SEL + ': ' + e.message); }
+}
+
+// ===== saving the profile edited: by itself, half a second after the last change =====
+function changed(full) {
+  if (full) renderTab(); else refresh();
+  clearTimeout(saveT); saveT = setTimeout(saveNow, 500);
+  saveState(); renderProfBar();
+}
+async function saveNow() { clearTimeout(saveT); saveT = 0; await saveProfile(curId); }
+async function saveProfile(id) {
+  const pr = profs[id]; if (!dir || !pr) return;
+  if (saving) { saveAgain = id; return; }
+  const text = profileText(pr.p);
+  if (text === pr.saved) { saveState(); return; }
+  saving = true; saveState();
+  try {
+    pr.mod = await writeFile(id + EXT, text); pr.saved = text; savedAt = Date.now(); saveErr = '';
+    readAtSave = {}; for (const [t, b] of Object.entries(bots)) if (b.d.profile && b.d.profile.id === id) readAtSave[t] = b.d.profile.read;
+  } catch (e) { saveErr = e.message || String(e); }
+  saving = false;
+  if (saveAgain) { const again = saveAgain; saveAgain = null; saveProfile(again); }
+  saveState(); botState();
+}
+function saveState() {
+  const s = $('saveState');
+  if (!dir || !P()) { s.className = 'pill'; s.textContent = ''; return; }
+  if (saveErr) { s.className = 'pill bad'; s.replaceChildren(el('span', { class: 'dot' }), 'не сохранилось: ' + saveErr); return; }
+  if (saveT || saving) { s.className = 'pill warn'; s.replaceChildren(el('span', { class: 'dot' }), 'сохраняю…'); return; }
+  s.className = 'pill ok'; s.replaceChildren(el('span', { class: 'dot' }), savedAt ? 'сохранено' : 'всё сохранено');
+}
+window.addEventListener('beforeunload', e => { if (saveT || saving) { saveNow(); e.preventDefault(); e.returnValue = ''; } });
+
+// ===== the bots: <tag>.focus.json =====
+async function scanBots() {
+  const seen = {};
+  try {
+    for await (const [name, h] of dir.entries()) {
+      const m = /^(.+)\.focus\.json$/i.exec(name); if (!m || h.kind !== 'file') continue;
+      let f; try { f = await h.getFile(); } catch (e) { if (bots[m[1]]) seen[m[1]] = bots[m[1]]; continue; }
+      const old = bots[m[1]];
+      if (old && old.mod === f.lastModified) { seen[m[1]] = old; continue; }
+      const t = await textOf(f); let d = null;
+      try { d = JSON.parse(t); } catch (e) {}
+      if (d) seen[m[1]] = { d, mod: f.lastModified }; else if (old) seen[m[1]] = old;
+    }
+  } catch (e) { return; }
+  bots = seen;
+  const live = liveBots(), all = Object.keys(bots).sort((a, b) => bots[b].mod - bots[a].mod);
+  if (!curBot || !bots[curBot] || (!live.includes(curBot) && live.length)) {
+    const want = store.get('bot');
+    curBot = live.includes(want) ? want : live[0] || (bots[want] ? want : all[0]) || null;
+  }
+  const s = $('botSel'), opts = all.join('|') + '#' + live.join('|');
+  if (s.dataset.opts !== opts) {
+    s.dataset.opts = opts; s.textContent = '';
+    for (const c of all) s.append(el('option', { value: c, text: (bots[c].d.char || c) + (live.includes(c) ? '' : ' (не запущен)') }));
+  }
+  s.hidden = all.length < 2; if (curBot) s.value = curBot;
+}
+const liveBots = () => Object.keys(bots).filter(k => Date.now() - bots[k].mod < FRESH_MS).sort();
+$('botSel').onchange = e => { curBot = e.target.value; store.set('bot', curBot); refresh(); botState(); };
+function botData() { const b = curBot && bots[curBot]; return b && Date.now() - b.mod < FRESH_MS ? b.d : null; }
+const nearList = () => { const d = botData(); return d ? d.near || [] : null; };
+function usersOf(id) { return liveBots().filter(k => bots[k].d.profile && bots[k].d.profile.id === id).map(k => bots[k].d.char || k); }
+
+// the equip binds of every character: their keys, to warn about the same key
+async function scanEquip() {
+  const keys = {};
+  try {
+    for await (const [name, h] of dir.entries()) {
+      const m = /^(.+)\.binds$/i.exec(name); if (!m || h.kind !== 'file') continue;
+      let t = null; try { t = await textOf(await h.getFile()); } catch (e) {}
+      if (!t) continue;
+      let b = null; const list = [];
+      for (let line of t.split(/\r?\n/)) {
+        line = line.trim();
+        if (line.toLowerCase() === '[bind]') { b = { on: true, key: '', name: '' }; list.push(b); continue; }
+        const i = line.indexOf('='); if (!b || i < 0) continue;
+        const k = lc(line.slice(0, i)), v = line.slice(i + 1).trim();
+        if (k === 'on') b.on = v !== '0'; else if (k === 'key') b.key = v; else if (k === 'name') b.name = v;
+      }
+      for (const x of list) if (x.on && keyNorm(x.key)) (keys[keyNorm(x.key)] = keys[keyNorm(x.key)] || []).push(m[1] + ' «' + (x.name || 'бинд') + '»');
+    }
+  } catch (e) {}
+  equipKeys = keys;
+}
+
+function hhmm(s) { return String(s || '').replace(/^\d{4}-\d\d-\d\d /, ''); }
+function botState() {
+  const s = $('botState'), er = $('errors');
+  er.textContent = '';
+  if (!dir) { s.className = 'pill'; s.textContent = ''; return; }
+  const live = liveBots();
+  if (!live.length) {
+    const b = curBot && bots[curBot];
+    s.className = 'pill warn';
+    s.replaceChildren(el('span', { class: 'dot' }), b ? 'бот не запущен (последний раз ' + (b.d.char || curBot) + ' в ' + hhmm(b.d.written) + ')' : 'нет данных от бота: запусти pvp_focus.txt');
+  } else {
+    const late = savedAt && Date.now() - savedAt > 4000 && live.some(k => k in readAtSave && bots[k].d.profile && bots[k].d.profile.read === readAtSave[k]);
+    s.className = late ? 'pill bad' : 'pill ok';
+    s.replaceChildren(el('span', { class: 'dot' }), late ? 'бот не подхватил профиль: запущен ли pvp_focus.txt?' :
+      live.map(k => { const d = bots[k].d, pr = d.profile || {}; return (d.char || k) + ' → ' + (pr.name || pr.id || '?'); }).join(' · '));
+    s.title = live.map(k => { const pr = bots[k].d.profile || {}; return (bots[k].d.char || k) + ': профиль ' + (pr.name || pr.id) + ', групп ' + (pr.groups | 0) + ', прочитал в ' + (pr.read || '—'); }).join('\n');
+  }
+  // what the bots using this profile skipped
+  const errs = [];
+  for (const k of live) { const pr = bots[k].d.profile || {}; if (pr.id === curId) for (const t of pr.errors || []) if (!errs.includes(t)) errs.push(t); }
+  if (errs.length) er.append(el('b', { text: 'Бот пропустил:' }), el('ul', null, ...errs.map(t => el('li', { text: t }))));
+}
+
+// ===== who a group would take (the same order as the script) =====
+function plMap() { const m = {}; let r = 0; for (const x of P().players) { const k = lc(x.name); if (!k || m[k]) continue; m[k] = { tag: x.tag, rank: x.tag === 'prio' ? r++ : 99 }; } return m; }
+function isFoeClan(p) { const L = P().clans.map(lc); return !L.length || (p.c && L.includes(lc(p.c))) || (p.a && L.includes(lc(p.a))); }
+function cands(g, N) {
+  const pl = plMap(), sk = new Set(g.skills), ch = {}, hasCls = Object.keys(g.cls).length > 0;
+  if (g.mode === 'cast') for (const p of N) if (p.s && sk.has(p.s) && p.t) ch[p.t] = (ch[p.t] || 0) + 1;
+  const inr = [], far = [];
+  for (const p of N) {
+    if ((p.f & 2) || (p.f & 5)) continue;   // dead, party, our clan / alliance
+    let T = 1, cnt = 0;
+    if (g.mode !== 'names' && (g.mode === 'class' || hasCls)) { T = g.cls[p.k] || 0; if (!T) continue; }
+    if (g.mode === 'reskill' && !(p.rv >= 0 && p.rv <= g.window * 1000)) continue;
+    if (g.mode === 'cast') { if (g.who === 'caster') { if (!(p.s && sk.has(p.s))) continue; } else { cnt = ch[p.o] || 0; if (!cnt) continue; } }
+    const t = pl[lc(p.n)];
+    if (t && t.tag === 'skip') continue;
+    let rk = t && t.tag === 'prio' ? t.rank : 99;
+    if (g.mode === 'names') { if (!t || t.tag !== 'prio') continue; }
+    else { if (!(t && t.tag === 'prio') && !isFoeClan(p)) continue; if (!g.prio) rk = 0; }
+    const q = Object.assign({ T, cnt, rk, sc: rk * 1e8 + T * 1e7 + (20 - Math.min(cnt, 20)) * 1e5 + p.d, star: !!(t && t.tag === 'prio') }, p);
+    (p.d <= g.range && Math.abs(p.h | 0) <= g.height ? inr : far).push(q);
+  }
+  inr.sort((a, b) => a.sc - b.sc); far.sort((a, b) => a.d - b.d);
+  return { inr, far: far[0] || null };
+}
+const skName = id => { const d = botData() || (curBot && bots[curBot] && bots[curBot].d); const own = d && (d.skills || []).find(s => s.id === id); return KNOWN_SK[id] || (own && own.name) || 'скилл ' + id; };
+
+// ===== the page =====
+function intro(kind) {
+  const box = $('intro');
+  box.hidden = !kind; $('page').hidden = !!kind || !P();
+  $('connect').hidden = !(kind === 'first' || kind === 'again' || kind === 'lost');
+  $('connect').textContent = kind === 'again' && oldDir ? 'Подключить папку ' + oldDir.name : 'Подключить папку';
+  if (!kind) return;
+  box.textContent = '';
+  if (kind === 'browser') {
+    box.append(el('h2', { text: 'Нужен Chrome или Edge' }), el('p', { class: 'muted', text: 'Страница сама пишет файлы профилей в папку Library\\Binds, а это умеют только Chrome и Edge.' }));
+    return;
+  }
+  if (kind === 'wrongdir') {
+    box.append(el('h2', { text: 'Это не та папка' }), el('p', { class: 'muted' }, 'Нужна ', el('b', { text: 'Library\\Binds' }), ', та, где лежит pvp.html.'),
+      el('button', { class: 'primary', text: 'Выбрать другую папку', onclick: () => connect(true) }));
+    return;
+  }
+  box.append(el('h2', { text: kind === 'again' ? 'Подключи папку ещё раз' : 'Подключи папку Library\\Binds' }),
+    el('ol', null,
+      el('li', null, 'Нажми ', el('b', { text: 'Подключить папку' }), ' и выбери ', el('b', { text: 'Library\\Binds' }), ' (здесь лежит этот pvp.html). Если binds.html уже подключал — это та же папка.'),
+      el('li', null, 'Браузер спросит, можно ли странице менять файлы: ответь ', el('b', { text: 'да' }), '.'),
+      el('li', null, 'В боте запусти ', el('b', { text: 'Scripts\\pvp_focus.txt' }), ' на персонаже.')),
+    el('button', { class: 'primary', text: $('connect').textContent, onclick: () => connect(false) }));
+}
+
+function renderAll() {
+  $('page').hidden = !P();
+  if (!P()) return;
+  renderProfBar(); renderTabs(); renderTab(); botState(); saveState();
+}
+function renderTabs() {
+  for (const b of $('tabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.tab === tab);
+  for (const t of document.querySelectorAll('.tab')) t.hidden = t.id !== 'tab-' + tab;
+}
+$('tabs').onclick = e => { const b = e.target.closest('button'); if (!b) return; tab = b.dataset.tab; store.set('tab', tab); renderTabs(); renderTab(); };
+function renderTab() {
+  if (!P()) return;
+  if (tab === 'keys') renderKeys();
+  else if (tab === 'foes') { clansSig = ''; renderPlayers(); }
+  else if (tab === 'radar') renderRadarCtl();
+  else if (tab === 'profiles') renderProfiles();
+  refresh();
+}
+// the profile picker on the bar
+function renderProfBar() {
+  const s = $('profSel'), ids = Object.keys(profs).sort((a, b) => lc(profs[a].p.name).localeCompare(lc(profs[b].p.name)));
+  $('profBox').hidden = !ids.length;
+  const sig = JSON.stringify([ids.map(id => [id, profs[id].p.name]), sel.active, curId]);
+  if (s.dataset.sig !== sig) {   // not every second: an open list would close
+    s.dataset.sig = sig; s.textContent = '';
+    for (const id of ids) s.append(el('option', { value: id, text: (id === sel.active ? '★ ' : '') + (profs[id].p.name || id) }));
+    s.value = curId;
+  }
+  const u = $('profUse'), users = usersOf(curId);
+  if (!dir) { u.textContent = ''; return; }
+  u.className = users.length ? 'pill ok' : 'pill';
+  u.replaceChildren(el('span', { class: 'dot' }), users.length ? 'используют: ' + users.join(', ') : 'сейчас ни у кого');
+  u.title = users.length ? '' : 'Ни один запущенный бот не на этом профиле. Кто какой берёт — во вкладке «Профили»';
+}
+$('profSel').onchange = async e => { if (saveT) await saveNow(); curId = e.target.value; store.set('prof', curId); renderAll(); };
+
+// ----- the keys tab -----
+function renderKeys() {
+  const p = P();
+  $('chatOn').checked = p.chat; $('chatName').value = p.chatName; $('cycleS').value = Math.round(p.cycleMs / 1000);
+  const box = $('groups'); box.textContent = '';
+  if (!p.groups.length) box.append(el('div', { class: 'empty', text: 'Групп нет. Добавь группу кнопками ниже.' }));
+  p.groups.forEach((g, i) => box.append(groupCard(g, i)));
+}
+$('chatOn').onchange = e => { P().chat = e.target.checked; changed(false); };
+$('chatName').oninput = e => { P().chatName = e.target.value; changed(false); };
+$('cycleS').oninput = e => { const v = parseInt(e.target.value, 10); if (v >= 1) { P().cycleMs = Math.min(60, v) * 1000; changed(false); } };
+$('adds').onclick = e => {
+  const b = e.target.closest('button'); if (!b) return;
+  const m = b.dataset.add, n = P().groups.length + 1;
+  const g = newGroup({ mode: m, name: { class: 'Профы ' + n, reskill: 'Рес-кил', cast: 'Форсы', names: 'Ники' }[m] });
+  if (m === 'cast') { g.skills = [426, 427]; g.mark = 1; }
+  P().groups.push(g); changed(true);
+  const last = [...document.querySelectorAll('.grp')].pop(); if (last) { last.scrollIntoView({ behavior: 'smooth', block: 'center' }); last.querySelector('input.name').select(); }
+};
+
+function numIn(val, min, step, set, title) {
+  return el('input', { type: 'number', min, step, value: val, title, oninput: e => { const v = parseInt(e.target.value, 10); if (v >= min) { set(v); changed(false); } } });
+}
+function classGrid(g) {
+  const box = el('div', { class: 'grid' });
+  for (const [role, , list] of ROLES) {
+    const has = list.some(([, ids]) => ids.some(id => g.cls[id]));
+    const row = el('div', { class: 'cls' });
+    for (const [nm, ids, second] of list) {
+      const t = Math.min(...ids.map(id => g.cls[id] || 9)), on = t < 9;
+      const chip = el('span', { class: 'cl' + (on ? ' on t' + t : ''), 'data-ids': ids.join(','), title: nm + ' и ' + second + ' (ID ' + ids.join(', ') + ')' +
+        (on ? '. Цифра — приоритет, клик по ней меняет' : '') },
+        on ? el('span', { class: 'tier t' + t, text: String(t), title: 'Приоритет класса: 1 — первым. Клик: 1 → 2 → 3',
+          onclick: ev => { ev.stopPropagation(); const nt = t >= 3 ? 1 : t + 1; for (const id of ids) g.cls[id] = nt; changed(true); } }) : null,
+        el('span', { text: nm }), el('span', { class: 'cnt' }));
+      chip.onclick = () => { if (on) for (const id of ids) delete g.cls[id]; else for (const id of ids) g.cls[id] = 1; changed(true); };
+      row.append(chip);
+    }
+    box.append(el('div', { class: 'role' }, el('span', { class: 'lbl' + (has ? ' has' : ''), text: role }), row));
+  }
+  return box;
+}
+function skillOptions(sel0) {
+  const d = botData() || (curBot && bots[curBot] && bots[curBot].d), list = (d && d.skills || []).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const s = el('select', null, el('option', { value: '', text: 'выбери скилл…' }));
+  if (sel0 && !list.some(x => x.id === sel0)) s.append(el('option', { value: sel0, text: skName(sel0) + ' (' + sel0 + ')' }));
+  for (const x of list) s.append(el('option', { value: x.id, text: x.name + ' (' + x.id + ')' }));
+  s.append(el('option', { value: 'id', text: 'другой ID…' }));
+  s.value = sel0 ? String(sel0) : '';
+  return s;
+}
+function castRows(g) {
+  const chips = el('div', { class: 'chips' });
+  for (const id of g.skills) chips.append(el('span', { class: 'chip sk' }, el('span', { text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+    el('button', { class: 'x', text: '×', title: 'Убрать', onclick: () => { g.skills = g.skills.filter(x => x !== id); changed(true); } })));
+  const seen = el('select', { title: 'Скиллы, которые бот видел рядом (кастовали не свои)' }, el('option', { value: '', text: '+ из замеченных…' }));
+  const fill = () => {
+    seen.length = 1;
+    const d = curBot && bots[curBot] && bots[curBot].d, list = (d && d.casts || []).slice().sort((a, b) => b.n - a.n);
+    if (!list.length) seen.append(el('option', { value: '', text: 'бот пока ничего не видел', disabled: true }));
+    for (const c of list) seen.append(el('option', { value: c.id, text: skName(c.id) + ' · ' + c.id + ' · ×' + c.n + ' · ' + clsName(c.k) + (g.skills.includes(c.id) ? ' ✓' : '') }));
+  };
+  seen.onmousedown = fill; seen.onfocus = fill;
+  seen.onchange = () => { const id = +seen.value; if (id > 0 && !g.skills.includes(id)) { g.skills.push(id); changed(true); } else seen.value = ''; };
+  chips.append(seen, el('button', { text: '+ ID', onclick: () => { const v = parseInt(prompt('ID скилла') || '', 10); if (v > 0 && !g.skills.includes(v)) { g.skills.push(v); changed(true); } } }));
+  if (!(g.skills.includes(426) && g.skills.includes(427)))
+    chips.append(el('button', { class: 'add', text: 'форсы 426 + 427', onclick: () => { for (const v of [426, 427]) if (!g.skills.includes(v)) g.skills.push(v); changed(true); } }));
+  const who = el('div', { class: 'chips' },
+    el('label', { title: 'Того, на кого кастуют: заряжаемого форсами (Noise, DoD). Больше форсов на нём — первым' },
+      el('input', { type: 'radio', name: 'who' + g._uid, checked: g.who === 'target', onchange: () => { g.who = 'target'; changed(false); } }), 'в кого кастуют'),
+    el('label', null, el('input', { type: 'radio', name: 'who' + g._uid, checked: g.who === 'caster', onchange: () => { g.who = 'caster'; changed(false); } }), 'кастующего'));
+  return [el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Скиллы' }), chips), el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Брать' }), who)];
+}
+let uid = 0;
+function groupCard(g, i) {
+  const p = P(), M = MODES[g.mode] || MODES.class;
+  if (!g._uid) Object.defineProperty(g, '_uid', { value: ++uid, enumerable: false });
+  const keyBtn = el('button', { class: 'keybtn', onclick: e => capStart(e.currentTarget, g) }); keyBtnLook(keyBtn, g);
+  const mode = el('select', { class: 'mode', title: 'Что выделяет клавиша',
+    onchange: e => { g.mode = e.target.value; if (g.mode === 'cast' && !g.skills.length) g.skills = [426, 427]; changed(true); } },
+    ...Object.entries(MODES).map(([k, [t]]) => el('option', { value: k, text: t, selected: k === g.mode })));
+  const okey = 'open.' + curId + '.' + i, open = store.get(okey) !== '0';
+  const head = el('div', { class: 'head' },
+    el('button', { class: 'ghost chev', text: open ? '▾' : '▸', title: open ? 'Свернуть' : 'Развернуть', onclick: () => { store.set(okey, open ? '0' : '1'); renderKeys(); refresh(); } }),
+    el('input', { type: 'checkbox', checked: g.on, title: 'Группа включена', onchange: e => { g.on = e.target.checked; changed(false); } }),
+    el('input', { type: 'text', class: 'name', value: g.name, placeholder: 'Название', maxlength: 24, oninput: e => { g.name = e.target.value; changed(false); } }),
+    mode, keyBtn,
+    el('span', { class: 'dist', title: 'Дальше этого не берёт' }, 'дальность', numIn(g.range, 100, 50, v => g.range = v)),
+    el('span', { class: 'dist', title: 'Выше или ниже тебя больше чем на столько не берёт (другой этаж, обрыв)' }, 'высота', numIn(g.height, 50, 50, v => g.height = v)),
+    el('button', { class: 'ghost icon', title: 'Выше', disabled: i === 0, text: '↑', onclick: () => { p.groups.splice(i - 1, 0, p.groups.splice(i, 1)[0]); changed(true); } }),
+    el('button', { class: 'ghost icon', title: 'Копия группы', text: '⧉', onclick: () => { const c = JSON.parse(JSON.stringify(g)); c.name = (g.name || 'группа') + ' 2'; c.key = ''; p.groups.splice(i + 1, 0, newGroup(c)); changed(true); } }),
+    el('button', { class: 'ghost icon', title: 'Удалить группу', text: '✕', onclick: () => { if (confirm('Удалить группу «' + (g.name || 'без названия') + '»?')) { p.groups.splice(i, 1); changed(true); } } }));
+  if (!open) return el('section', { class: 'card grp shut ' + M[1] + (g.on ? '' : ' off'), 'data-i': i }, head,
+    el('div', { class: 'body' }, summaryOf(g), el('div', { class: 'warns' }), el('div', { class: 'now' })));
+  const body = el('div', { class: 'body' }, el('div', { class: 'hint', text: M[2] }));
+  if (g.mode === 'cast') body.append(...castRows(g));
+  if (g.mode === 'reskill') body.append(el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Окно' }),
+    el('label', null, numIn(g.window, 1, 1, v => g.window = v, 'Сколько секунд после того, как враг встал, его ещё считать реснутым'), 'с после того, как встал')));
+  if (g.mode === 'names') {
+    const stars = p.players.filter(x => x.tag === 'prio');
+    body.append(el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Ники' }), el('div', { class: 'chips' },
+      ...(stars.length ? stars.map((x, k) => el('span', { class: 'chip' }, el('span', { class: 'n', text: String(k + 1) }), el('span', { text: x.name }), el('span'))) : [el('span', { class: 'muted', text: 'нет ни одного ★ ника' })]),
+      el('button', { class: 'add', text: 'изменить список', onclick: () => { tab = 'foes'; store.set('tab', tab); renderTabs(); renderTab(); } }))));
+  }
+  if (g.mode === 'class') body.append(classGrid(g));
+  else if (g.mode !== 'names') {
+    const n = Object.keys(g.cls).length;
+    const det = el('details', { class: 'filt', open: n > 0 }, el('summary', null, 'Фильтр по классам ', n ? el('b', { text: '(' + [...new Set(Object.keys(g.cls).map(id => clsName(+id)))].filter(x => !/^#/.test(x)).length + ' отмечено)' }) : el('span', { class: 'dim', text: '— пусто: любой класс' })), classGrid(g));
+    body.append(det);
+  }
+  // the options
+  const mark = el('select', { onchange: e => { g.mark = +e.target.value; changed(false); } },
+    ...['нет', '1', '2', '3', '4'].map((t, k) => el('option', { value: k, text: t, selected: k === g.mark })));
+  const after = el('select', { onchange: e => { g.after = e.target.value; changed(true); } },
+    el('option', { value: '', text: 'ничего', selected: !g.after }), el('option', { value: 'attack', text: 'атаковать', selected: g.after === 'attack' }),
+    el('option', { value: 'skill', text: 'скилл', selected: g.after === 'skill' }));
+  const opts = el('div', { class: 'opts' });
+  if (g.mode !== 'names') opts.append(el('label', { title: 'Игроки со ★ из списка — раньше всех остальных, по порядку списка' },
+    el('input', { type: 'checkbox', checked: g.prio, onchange: e => { g.prio = e.target.checked; changed(false); } }), 'сначала ★ ники'));
+  opts.append(el('label', { title: 'Метка (токен) над выбранной целью — та же, что ставится вручную' }, 'метка', mark));
+  opts.append(el('label', null, 'после выделения', after));
+  if (g.after === 'skill') {
+    const s = skillOptions(g.afterSk);
+    s.onchange = () => { if (s.value === 'id') { const v = parseInt(prompt('ID скилла') || '', 10); if (v > 0) g.afterSk = v; changed(true); return; } g.afterSk = +s.value || 0; changed(false); };
+    opts.append(s);
+  }
+  if (g.after) opts.append(el('label', { title: 'Как с зажатым Ctrl: бить и игрока без флага' }, el('input', { type: 'checkbox', checked: g.ctrl, onchange: e => { g.ctrl = e.target.checked; changed(false); } }), 'Ctrl'));
+  if (g.mode === 'reskill' || g.mode === 'cast') {
+    opts.append(el('label', { title: g.mode === 'reskill' ? 'Как только враг встал — бот сам выделяет его' : 'Как только кто-то начал кастовать эти скиллы — бот сам выделяет' },
+      el('input', { type: 'checkbox', checked: g.auto, onchange: e => { g.auto = e.target.checked; changed(true); } }), 'сам, без клавиши'));
+    if (g.auto) opts.append(el('label', null, 'не чаще раза в', numIn(Math.round(g.autoMs / 1000), 1, 1, v => g.autoMs = v * 1000), 'с'));
+  }
+  body.append(opts, el('div', { class: 'warns' }), el('div', { class: 'now' }));
+  return el('section', { class: 'card grp ' + M[1] + (g.on ? '' : ' off'), 'data-i': i }, head, body);
+}
+// a folded group in one line: what it takes and what it does
+function summaryOf(g) {
+  const out = el('div', { class: 'sum' }), add = (...k) => { if (out.childNodes.length) out.append(' · '); out.append(...k); };
+  const byT = {};
+  for (const [id, t] of Object.entries(g.cls)) { const n = CLS_NAME[id]; if (!n) continue; const r = ROLES.flatMap(x => x[2]).find(c => c[1].includes(+id)); const nm = r ? r[0] : n; (byT[t] = byT[t] || new Set()).add(nm); }
+  const tiers = Object.keys(byT).sort().map(t => el('span', null, el('b', { class: 't' + t, text: t + ': ' }), [...byT[t]].join(', ') + ' '));
+  if (g.mode === 'cast') add(el('b', { text: g.skills.map(skName).join(', ') || 'нет скиллов' }), g.who === 'caster' ? ' — кастующего' : ' — в кого кастуют');
+  if (g.mode === 'reskill') add('встал не дольше ', el('b', { text: g.window + ' с' }), ' назад');
+  if (g.mode === 'names') add('★ ники: ', el('b', { text: P().players.filter(x => x.tag === 'prio').map(x => x.name).join(', ') || 'нет' }));
+  if (g.mode !== 'names') { if (tiers.length) add(...tiers); else if (g.mode !== 'class') add('любой класс'); }
+  if (g.mark) add('метка ' + g.mark);
+  if (g.after === 'attack') add('атака' + (g.ctrl ? ' с Ctrl' : ''));
+  if (g.after === 'skill' && g.afterSk) add('скилл ', el('b', { text: skName(g.afterSk) }), g.ctrl ? ' с Ctrl' : '');
+  if (g.auto && (g.mode === 'reskill' || g.mode === 'cast')) add(el('b', { text: 'сам' }), ' (не чаще раза в ' + Math.round(g.autoMs / 1000) + ' с)');
+  return out;
+}
+function warnsOf(g, i) {
+  const W = [], p = P(), hasCls = Object.keys(g.cls).length > 0;
+  const auto = g.auto && (g.mode === 'reskill' || g.mode === 'cast');
+  if (!g.key && !auto) W.push(['bad', 'Нет клавиши — бот эту группу пропустит.']);
+  if (g.mode === 'class' && !hasCls) W.push(['bad', 'Не отмечено ни одного класса — бот эту группу пропустит.']);
+  if (g.mode === 'cast' && !g.skills.length) W.push(['bad', 'Нет ни одного скилла — бот эту группу пропустит.']);
+  if (g.mode === 'names' && !p.players.some(x => x.tag === 'prio')) W.push(['bad', 'В списке «Враги и ники» нет ни одного ★ — бот эту группу пропустит.']);
+  if (g.after === 'skill' && !(g.afterSk > 0)) W.push(['', 'Скилл после выделения не выбран — будет просто выделение.']);
+  const kn = keyNorm(g.key);
+  if (kn) {
+    const j = p.groups.findIndex((x, k) => k < i && x.on && keyNorm(x.key) === kn);
+    if (g.on && j >= 0) W.push(['bad', 'Клавиша уже у группы «' + (p.groups[j].name || 'группа ' + (j + 1)) + '» — эту бот пропустит.']);
+    if (equipKeys[kn]) W.push(['', 'Эта же клавиша в equip-биндах: ' + equipKeys[kn].join(', ') + '. Если там запущен equip_binds.txt, сработают оба.']);
+    const k = keyParts(g.key);
+    if (!k.ctrl && !k.alt && /^[A-Z0-9]$/.test(k.base)) W.push(['soft', 'Буква или цифра без Ctrl/Alt сработает и когда пишешь в чат игры.']);
+  }
+  return W;
+}
+function whoEl(q, g) {
+  return el('span', null, q.star ? '★ ' : '', el('span', { class: 't', text: q.n }), ' ' + clsName(q.k) + (q.c ? ' [' + q.c + ']' : '') + ' ',
+    g.mode === 'cast' && g.who === 'target' ? el('span', { class: 'x', text: '×' + q.cnt + ' ' }) : null,
+    g.mode === 'reskill' ? el('span', { class: 'x', text: 'встал ' + Math.round(q.rv / 1000) + ' с назад ' }) : null,
+    el('span', { class: 'd', text: String(q.d) }));
+}
+function nowLine(g) {
+  const N = nearList();
+  if (!N) return el('span', { class: 'dim', text: 'Кого возьмёт — видно, когда pvp_focus.txt запущен.' });
+  const r = cands(g, N);
+  if (r.inr.length) {
+    const out = el('span', null, el('b', { text: 'Сейчас возьмёт: ' }));
+    r.inr.slice(0, 5).forEach((q, k) => { if (k) out.append(' → '); out.append(whoEl(q, g)); });
+    if (r.inr.length > 5) out.append(' · ещё ' + (r.inr.length - 5));
+    return out;
+  }
+  if (r.far) return el('span', null, 'В дальности никого. Ближайший: ', whoEl(r.far, g), Math.abs(r.far.h | 0) > g.height && r.far.d <= g.range ? ' (выше / ниже на ' + Math.abs(r.far.h) + ')' : '');
+  return el('span', { text: { cast: 'Сейчас никто не кастует эти скиллы.', reskill: 'Никто из врагов не вставал за последние ' + g.window + ' с.' }[g.mode] || 'Подходящих врагов рядом нет.' });
+}
+function counts() {
+  const N = nearList(), c = {};
+  if (N) for (const p of N) if (!(p.f & 7) && isFoeClan(p)) c[p.k] = (c[p.k] || 0) + 1;
+  return c;
+}
+
+// ----- the foes tab -----
+function addClan(name) {
+  name = clean(name); if (!name) return false;
+  if (P().clans.some(c => lc(c) === lc(name))) { toast('«' + name + '» уже в списке'); return false; }
+  P().clans.push(name); changed(false); return true;
+}
+function dropClan(name) { P().clans = P().clans.filter(c => lc(c) !== lc(name)); changed(false); }
+let clansSig = '', nearSig = '', nearPlSig = '';
+function renderClans() {
+  const N = nearList() || [], p = P();
+  const sig = JSON.stringify([curId, p.clans, N.map(x => [x.c, x.a, x.f & 5])]);
+  if (sig !== clansSig) {
+    clansSig = sig;
+    const box = $('clans'); box.textContent = '';
+    for (const c of p.clans) {
+      const n = N.filter(x => !(x.f & 5) && (lc(x.c) === lc(c) || lc(x.a) === lc(c))).length;
+      box.append(el('span', { class: 'chip foe' }, el('span', { text: c }), n ? el('span', { class: 'n', text: n + ' рядом' }) : null,
+        el('button', { class: 'x', text: '×', title: 'Убрать', onclick: () => dropClan(c) })));
+    }
+    if (!p.clans.length) box.append(el('span', { class: 'muted', text: 'список пуст — берётся любой, кроме своих' }));
+  }
+  const sig2 = JSON.stringify([curId, p.clans, curBot, N && N.map(x => [x.c, x.a, x.f & 5])]);
+  if (sig2 === nearSig) return;
+  nearSig = sig2;
+  const box = $('nearClans'); box.textContent = '';
+  if (!nearList()) { box.append(el('span', { class: 'muted', text: 'Кланы рядом появятся здесь, когда pvp_focus.txt запущен.' })); return; }
+  const by = {};
+  for (const x of N) { if (!x.c || (x.f & 1)) continue; const k = lc(x.c); (by[k] = by[k] || { name: x.c, ally: x.a, n: 0, mine: !!(x.f & 4) }).n++; }
+  const list = Object.values(by).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  const chips = el('div', { class: 'chips' }, el('span', { class: 'lbl', text: 'Рядом сейчас' }));
+  if (!list.length) chips.append(el('span', { class: 'muted', text: 'никого с кланом' }));
+  for (const c of list) {
+    const on = p.clans.some(x => lc(x) === lc(c.name));
+    chips.append(el('button', { class: 'nc' + (on ? ' on' : '') + (c.mine ? ' mine' : ''), title: c.mine ? 'Твой клан / альянс' : (c.ally ? 'Альянс: ' + c.ally + '. ' : '') + (on ? 'Клик: убрать из врагов' : 'Клик: добавить во враги'),
+      onclick: () => { if (c.mine) return; if (on) dropClan(c.name); else addClan(c.name); } }, c.name, el('span', { class: 'n', text: String(c.n) })));
+  }
+  box.append(chips);
+}
+function clanAddNow() { if (addClan($('clanIn').value)) { $('clanIn').value = ''; $('clanIn').focus(); } }
+$('clanAdd').onclick = clanAddNow;
+$('clanIn').onkeydown = e => { if (e.key === 'Enter') clanAddNow(); };
+
+function setPlayer(name, tag) {
+  name = clean(name); if (!name) return;
+  const p = P(), x = p.players.find(y => lc(y.name) === lc(name));
+  if (x) { if (x.tag === tag) { p.players = p.players.filter(y => y !== x); } else x.tag = tag; }
+  else p.players.push({ name, tag });
+  nearPlSig = ''; changed(false); renderPlayers();
+}
+function renderPlayers() {
+  const p = P(), box = $('players'), N = nearList() || [];
+  box.textContent = '';
+  if (!p.players.length) box.append(el('div', { class: 'muted', text: 'Пусто. Впиши ник ниже или нажми ★ / ⛔ у игрока из списка «рядом сейчас».' }));
+  let r = 0;
+  p.players.forEach((x, i) => {
+    const near = N.find(y => lc(y.n) === lc(x.name));
+    box.append(el('div', { class: 'pl' + (x.tag === 'skip' ? ' skip' : '') },
+      el('span', { class: 'rk', text: x.tag === 'prio' ? String(++r) : '' }),
+      el('button', { class: 'ghost tagb', text: x.tag === 'prio' ? '★' : '⛔', title: x.tag === 'prio' ? 'Приоритет. Клик: сделать «не трогать»' : 'Не трогать. Клик: сделать приоритетом',
+        onclick: () => { x.tag = x.tag === 'prio' ? 'skip' : 'prio'; changed(false); renderPlayers(); } }),
+      el('span', { class: 'nm' }, x.name, near ? el('span', { class: 'seen', text: clsName(near.k) + (near.c ? ' [' + near.c + ']' : '') + ' · ' + near.d }) : null),
+      el('span', null,
+        el('button', { class: 'ghost icon', text: '↑', title: 'Выше', disabled: i === 0, onclick: () => { p.players.splice(i - 1, 0, p.players.splice(i, 1)[0]); changed(false); renderPlayers(); } }),
+        el('button', { class: 'ghost icon', text: '↓', title: 'Ниже', disabled: i === p.players.length - 1, onclick: () => { p.players.splice(i + 1, 0, p.players.splice(i, 1)[0]); changed(false); renderPlayers(); } }),
+        el('button', { class: 'ghost icon', text: '✕', title: 'Убрать', onclick: () => { p.players.splice(i, 1); changed(false); renderPlayers(); } }))));
+  });
+  nearPlSig = '';
+  renderNearPlayers();
+}
+function renderNearPlayers() {
+  const N = nearList(), p = P();
+  const sig = JSON.stringify([curId, curBot, p.players, p.clans, N && N.map(x => [x.n, x.k, x.c, Math.round(x.d / 100), x.f])]);
+  if (sig === nearPlSig) return;
+  nearPlSig = sig;
+  const box = $('nearPlayers'); box.textContent = '';
+  if (!N) { box.append(el('span', { class: 'muted', text: 'Игроки рядом появятся здесь, когда pvp_focus.txt запущен.' })); return; }
+  const list = N.filter(x => !(x.f & 5)).sort((a, b) => a.d - b.d).slice(0, 40);
+  box.append(el('div', { class: 'lbl', style: 'margin-bottom:4px', text: 'Рядом сейчас (без своих)' }));
+  if (!list.length) { box.append(el('span', { class: 'muted', text: 'никого' })); return; }
+  const pl = plMap(), tb = el('table', { class: 'ntable' });
+  for (const x of list) {
+    const t = pl[lc(x.n)];
+    tb.append(el('tr', { class: isFoeClan(x) ? 'foe' : '' },
+      el('td', { class: 'nm', text: x.n + (x.f & 2 ? ' (мёртв)' : '') }), el('td', { text: clsName(x.k) }), el('td', { class: 'dim', text: x.c || '—' }), el('td', { class: 'd', text: String(x.d) }),
+      el('td', null, el('button', { text: '★', title: t && t.tag === 'prio' ? 'Убрать из приоритета' : 'В приоритет', class: t && t.tag === 'prio' ? 'primary' : '', onclick: () => setPlayer(x.n, 'prio') }), ' ',
+        el('button', { text: '⛔', title: t && t.tag === 'skip' ? 'Убрать из «не трогать»' : 'Не трогать', class: t && t.tag === 'skip' ? 'primary' : '', onclick: () => setPlayer(x.n, 'skip') }))));
+  }
+  box.append(tb);
+}
+$('plPrio').onclick = () => { setPlayer($('plIn').value, 'prio'); $('plIn').value = ''; };
+$('plSkip').onclick = () => { setPlayer($('plIn').value, 'skip'); $('plIn').value = ''; };
+$('plIn').onkeydown = e => { if (e.key === 'Enter') $('plPrio').click(); };
+
+// ----- the radar -----
+let radarPts = [];
+function radarGroup() { const p = P(), i = +(store.get('radarG') || 0); return p.groups[i] || p.groups[0] || null; }
+function renderRadarCtl() {
+  const s = $('radarG'), p = P(); s.textContent = '';
+  p.groups.forEach((g, i) => s.append(el('option', { value: i, text: (g.name || 'группа ' + (i + 1)) + (g.key ? ' [' + keyShow(g.key) + ']' : '') })));
+  s.value = String(Math.min(+(store.get('radarG') || 0), Math.max(0, p.groups.length - 1)));
+  $('radarZ').value = store.get('radarZ') || 'auto';
+  $('legend').replaceChildren(...ROLES.map(([r, c]) => el('span', null, el('i', { style: 'background:' + c }), r)),
+    el('span', null, el('i', { style: 'background:#5aa9ff' }), 'свои'), el('span', null, el('i', { style: 'background:#4b5563' }), 'не враги'),
+    el('span', null, el('i', { style: 'background:transparent;border:1px solid #ffd166' }), 'очередь клавиши'));
+}
+$('radarG').onchange = e => { store.set('radarG', e.target.value); refresh(); };
+$('radarZ').onchange = e => { store.set('radarZ', e.target.value); refresh(); };
+function drawRadar() {
+  const cv = $('radar'), box = cv.parentElement, W = box.clientWidth; if (!W) return;
+  const H = Math.round(Math.min(640, Math.max(320, W * .78))), dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); cv.style.height = H + 'px'; }
+  const x = cv.getContext('2d'); x.setTransform(dpr, 0, 0, dpr, 0, 0); x.clearRect(0, 0, W, H);
+  const N = nearList(), g = radarGroup(), z = store.get('radarZ') || 'auto';
+  const R = z === 'auto' ? Math.max(800, (g ? g.range : 1200) * 1.3) : +z;
+  const cx = W / 2, cy = H / 2, sc = (Math.min(W, H) / 2 - 22) / R;
+  // the rings every 500
+  x.lineWidth = 1; x.font = '11px Segoe UI, sans-serif'; x.textAlign = 'left';
+  for (let r = 500; r <= R; r += 500) { x.strokeStyle = 'rgba(120,140,170,.12)'; x.beginPath(); x.arc(cx, cy, r * sc, 0, 7); x.stroke(); x.fillStyle = 'rgba(140,155,180,.4)'; x.fillText(String(r), cx + r * sc * .707 + 3, cy - r * sc * .707 - 3); }
+  x.strokeStyle = 'rgba(120,140,170,.08)'; x.beginPath(); x.moveTo(cx, 8); x.lineTo(cx, H - 8); x.moveTo(8, cy); x.lineTo(W - 8, cy); x.stroke();
+  if (g) {   // the group's range
+    x.setLineDash([6, 5]); x.strokeStyle = 'rgba(90,169,255,.7)'; x.lineWidth = 1.5; x.beginPath(); x.arc(cx, cy, g.range * sc, 0, 7); x.stroke(); x.setLineDash([]);
+    x.fillStyle = 'rgba(90,169,255,.05)'; x.beginPath(); x.arc(cx, cy, g.range * sc, 0, 7); x.fill();
+  }
+  radarPts = [];
+  if (!N) { x.fillStyle = '#8893a4'; x.textAlign = 'center'; x.font = '13px Segoe UI, sans-serif'; x.fillText('нет данных от бота: запусти pvp_focus.txt', cx, cy - 30); }
+  const d = botData(), me = d && d.me || {}, byO = {};
+  for (const p of N || []) byO[p.o] = p;
+  const P2 = p => [cx + p.x * sc, cy + p.y * sc];
+  // the casts: a line from the caster to his target (the forces brighter)
+  for (const p of N || []) {
+    if (!p.s || !p.t) continue;
+    const t = p.t === me.oid ? { x: 0, y: 0 } : byO[p.t]; if (!t) continue;
+    const [ax, ay] = P2(p), [bx, by] = P2(t), force = p.s === 426 || p.s === 427 || (g && g.mode === 'cast' && g.skills.includes(p.s));
+    x.strokeStyle = force ? 'rgba(255,177,90,.85)' : 'rgba(160,170,190,.3)'; x.lineWidth = force ? 2 : 1;
+    x.beginPath(); x.moveTo(ax, ay); x.lineTo(bx, by); x.stroke();
+  }
+  const q = g && N ? cands(g, N) : { inr: [] }, order = {};
+  q.inr.forEach((c, k) => order[c.o] = k + 1);
+  for (const p of (N || []).slice().sort((a, b) => (order[a.o] ? 1 : 0) - (order[b.o] ? 1 : 0))) {
+    const [px, py] = P2(p); if (px < -20 || py < -20 || px > W + 20 || py > H + 20) continue;
+    const ours = p.f & 5, foe = !ours && (isFoeClan(p) || plMap()[lc(p.n)]?.tag === 'prio'), dead = p.f & 2, rad = order[p.o] ? 6 : 4.5;
+    const col = ours ? '#5aa9ff' : foe ? roleColor(p.k) : '#4b5563';
+    x.beginPath(); x.arc(px, py, rad, 0, 7);
+    if (dead) { x.strokeStyle = col; x.lineWidth = 1.5; x.stroke(); }
+    else { x.fillStyle = col; x.fill(); if (foe) { x.strokeStyle = 'rgba(0,0,0,.6)'; x.lineWidth = 1; x.stroke(); } }
+    if (p.rv >= 0 && p.rv < 15000) { x.strokeStyle = 'rgba(77,212,172,.8)'; x.lineWidth = 1.5; x.beginPath(); x.arc(px, py, rad + 4, 0, 7); x.stroke(); }
+    if (order[p.o]) {
+      x.strokeStyle = '#ffd166'; x.lineWidth = 2; x.beginPath(); x.arc(px, py, rad + 3, 0, 7); x.stroke();
+      x.fillStyle = '#ffd166'; x.font = '600 11px Segoe UI, sans-serif'; x.textAlign = 'left';
+      x.fillText(order[p.o] + '. ' + p.n, px + rad + 6, py + 4);
+    }
+    radarPts.push({ px, py, p });
+  }
+  // we
+  x.fillStyle = '#fff'; x.beginPath(); x.moveTo(cx, cy - 8); x.lineTo(cx + 6, cy + 6); x.lineTo(cx, cy + 3); x.lineTo(cx - 6, cy + 6); x.closePath(); x.fill();
+  $('radarInfo').textContent = N ? (d.char + ': рядом ' + N.length + ', врагов ' + N.filter(p => !(p.f & 5) && isFoeClan(p)).length) : '';
+  // the queue
+  const L = $('radarList'); L.textContent = '';
+  if (!g) L.append(el('div', { class: 'muted', text: 'нет групп' }));
+  else if (!N) L.append(el('div', { class: 'muted', text: '—' }));
+  else if (!q.inr.length) L.append(el('div', { class: 'muted', text: 'в дальности никого' + (q.far ? '; ближайший ' + q.far.n + ' — ' + q.far.d : '') }));
+  q.inr.slice(0, 20).forEach((c, k) => L.append(el('div', { class: 'it' }, el('span', { class: 'no', text: String(k + 1) }),
+    el('span', { class: 'nm', text: (c.star ? '★ ' : '') + c.n }), el('span', { class: 'd', text: String(c.d) }),
+    el('span', { class: 'sub', text: clsName(c.k) + (c.c ? ' [' + c.c + ']' : '') + (g.mode === 'class' ? ' · приоритет ' + c.T : '') +
+      (g.mode === 'cast' && g.who === 'target' ? ' · форсов ×' + c.cnt : '') + (g.mode === 'cast' && g.who === 'caster' ? ' · кастует ' + skName(c.s) : '') +
+      (g.mode === 'reskill' ? ' · встал ' + Math.round(c.rv / 1000) + ' с назад' : '') }))));
+}
+$('radar').onmousemove = e => {
+  const r = e.target.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, tip = $('tip');
+  let best = null, bd = 12;
+  for (const t of radarPts) { const dd = Math.hypot(t.px - mx, t.py - my); if (dd < bd) { bd = dd; best = t.p; } }
+  if (!best) { tip.hidden = true; return; }
+  tip.hidden = false;
+  tip.replaceChildren(el('b', { text: best.n }), el('div', { class: 'muted', text: clsName(best.k) + (best.c ? ' [' + best.c + ']' : '') + (best.a ? ' / ' + best.a : '') }),
+    el('div', { class: 'dim', text: best.d + ' от тебя, высота ' + (best.h > 0 ? '+' : '') + best.h + (best.f & 2 ? ' · мёртв' : '') + (best.s ? ' · кастует ' + skName(best.s) : '') +
+      (best.rv >= 0 ? ' · встал ' + Math.round(best.rv / 1000) + ' с назад' : '') + (best.f & 1 ? ' · пати' : best.f & 4 ? ' · свой клан' : '') }));
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - 290) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+};
+$('radar').onmouseleave = () => { $('tip').hidden = true; };
+window.addEventListener('resize', () => { if (tab === 'radar') drawRadar(); });
+
+// ----- the profiles tab -----
+function renderProfiles() {
+  const box = $('profList'); box.textContent = '';
+  const ids = Object.keys(profs).sort((a, b) => lc(profs[a].p.name).localeCompare(lc(profs[b].p.name)));
+  for (const id of ids) {
+    const pr = profs[id], users = usersOf(id), chars = sel.chars.filter(([, x]) => x === id).map(([c]) => c);
+    const name = el('input', { type: 'text', class: 'pname', value: pr.p.name, maxlength: 32, title: 'Название профиля',
+      oninput: e => { pr.p.name = e.target.value; if (id === curId) changed(false); else { clearTimeout(pr.t); pr.t = setTimeout(() => saveProfile(id), 500); } renderProfBar(); } });
+    box.append(el('div', { class: 'prow' + (id === curId ? ' cur' : '') },
+      el('input', { type: 'radio', name: 'activeProf', checked: id === sel.active, title: 'По умолчанию для всех персонажей',
+        onchange: async () => { sel.active = id; await saveSel(); renderProfBar(); renderProfiles(); toast('«' + pr.p.name + '» — по умолчанию для всех'); } }),
+      el('div', null, name, el('div', { class: 'meta', text: id + EXT + ' · групп ' + pr.p.groups.length + (id === sel.active ? ' · по умолчанию' : '') +
+        (chars.length ? ' · у персонажей: ' + chars.join(', ') : '') + (users.length ? ' · сейчас у: ' + users.join(', ') : '') })),
+      el('div', { class: 'btns' },
+        id === curId ? el('span', { class: 'pill ok', text: 'правишь' }) : el('button', { text: 'Править', onclick: async () => { if (saveT) await saveNow(); curId = id; store.set('prof', id); renderAll(); } }),
+        el('button', { text: 'Копия', onclick: () => copyProfile(id) }),
+        el('button', { text: 'Экспорт', title: 'Скачать файл профиля — можно передать другу или сохранить', onclick: () => exportProfile(id) }),
+        el('button', { class: 'ghost', text: 'Удалить', disabled: ids.length < 2, onclick: () => deleteProfile(id) }))));
+  }
+  renderChars();
+}
+async function copyProfile(id) {
+  const src = profs[id], p = JSON.parse(JSON.stringify(src.p)); p.name = (src.p.name || id) + ' копия';
+  p.groups = p.groups.map(g => newGroup(g));
+  const nid = newId(p.name); profs[nid] = { p, mod: 0, saved: '' };
+  await saveProfile(nid); curId = nid; store.set('prof', nid); renderAll(); toast('Сделана копия: ' + p.name);
+}
+function exportProfile(id) {
+  const pr = profs[id], a = el('a', { href: URL.createObjectURL(new Blob([cp1251(profileText(pr.p))])), download: (pr.p.name || id) + EXT });
+  document.body.append(a); a.click(); a.remove();
+}
+async function deleteProfile(id) {
+  const pr = profs[id];
+  if (!confirm('Удалить профиль «' + (pr.p.name || id) + '»? Файл ' + id + EXT + ' будет удалён.')) return;
+  try { await dir.removeEntry(id + EXT); } catch (e) { toast('Не удалось удалить: ' + e.message); return; }
+  delete profs[id];
+  const left = Object.keys(profs);
+  let sv = false;
+  if (sel.active === id) { sel.active = left[0]; sv = true; }
+  if (sel.chars.some(([, x]) => x === id)) { sel.chars = sel.chars.filter(([, x]) => x !== id); sv = true; }
+  if (sv) await saveSel();
+  if (curId === id) { curId = sel.active; store.set('prof', curId); }
+  renderAll(); toast('Профиль удалён');
+}
+$('profNew').onclick = async () => {
+  const name = prompt('Название нового профиля', 'Новый профиль'); if (name === null) return;
+  const id = newId(name || 'profile'); profs[id] = { p: defaultProfile(clean(name) || 'Profile'), mod: 0, saved: '' };
+  await saveProfile(id); curId = id; store.set('prof', id); renderAll(); toast('Профиль создан: ' + profs[id].p.name);
+};
+$('profImport').onclick = () => $('profFile').click();
+$('profFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  const p = parseProfile(decode(await f.arrayBuffer()));
+  if (!p.groups.length && !p.clans.length) { toast('В файле нет профиля PvP focus'); return; }
+  if (!p.name) p.name = f.name.replace(/\.[^.]+$/, '');
+  const id = newId(p.name); profs[id] = { p, mod: 0, saved: '' };
+  await saveProfile(id); curId = id; store.set('prof', id); renderAll(); toast('Импортирован: ' + p.name);
+};
+function renderChars() {
+  const box = $('charList'); box.textContent = '';
+  const names = []; const add = n => { if (n && !names.some(x => lc(x) === lc(n))) names.push(n); };
+  for (const k of Object.keys(bots)) add(bots[k].d.char || k);
+  for (const [c] of sel.chars) add(c);
+  if (!names.length) { box.append(el('div', { class: 'muted', text: 'Персонажи появятся, когда на них запустишь pvp_focus.txt (или добавь ник вручную).' })); return; }
+  const live = liveBots().map(k => lc(bots[k].d.char || k)), ids = Object.keys(profs);
+  for (const n of names.sort((a, b) => a.localeCompare(b))) {
+    const own = sel.chars.find(([c]) => lc(c) === lc(n)), def = profs[sel.active] ? profs[sel.active].p.name : sel.active;
+    const s = el('select', { onchange: async e => {
+      sel.chars = sel.chars.filter(([c]) => lc(c) !== lc(n));
+      if (e.target.value) sel.chars.push([n, e.target.value]);
+      await saveSel(); renderProfBar(); renderProfiles();
+    } }, el('option', { value: '', text: 'по умолчанию (' + def + ')' }), ...ids.map(id => el('option', { value: id, text: profs[id].p.name || id })));
+    s.value = own && profs[own[1]] ? own[1] : '';
+    if (own && !profs[own[1]]) s.append(el('option', { value: own[1], text: own[1] + ' (нет файла)', selected: true }));
+    box.append(el('div', { class: 'crow' }, el('span', { class: 'cn', text: n }), s, live.includes(lc(n)) ? el('span', { class: 'live', text: '● запущен' }) : null));
+  }
+}
+$('charAdd').onclick = async () => { const n = clean($('charIn').value); if (!n) return; if (!sel.chars.some(([c]) => lc(c) === lc(n))) { sel.chars.push([n, curId]); await saveSel(); } $('charIn').value = ''; renderProfiles(); };
+
+// ----- the live parts: counts, warnings, who would be taken, the clans / players / radar -----
+function refresh() {
+  if (!P()) return;
+  if (tab === 'keys') {
+    const C = counts(), p = P();
+    document.querySelectorAll('.grp').forEach(card => {
+      const i = +card.dataset.i, g = p.groups[i]; if (!g) return;
+      card.classList.toggle('off', !g.on);
+      card.querySelectorAll('.cl').forEach(c => { const n = c.dataset.ids.split(',').reduce((s, id) => s + (C[id] || 0), 0); c.querySelector('.cnt').textContent = n ? String(n) : ''; });
+      const w = card.querySelector('.warns'); w.textContent = '';
+      for (const [k, t] of warnsOf(g, i)) w.append(el('div', { class: k, text: t }));
+      card.querySelector('.now').replaceChildren(nowLine(g));
+    });
+  } else if (tab === 'foes') { renderClans(); renderNearPlayers(); }
+  else if (tab === 'radar') drawRadar();
+  else if (tab === 'profiles' && !document.activeElement.matches('input.pname')) { const sig = JSON.stringify([liveBots(), Object.keys(bots)]); if (sig !== refresh.psig) { refresh.psig = sig; renderProfiles(); } }
+}
+
+// ----- keys: as pvp_focus.txt reads them (the same as equip_binds) -----
+const KEY_SHOW = { Minus: '-', Equal: '=', LBracket: '[', RBracket: ']', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+  Backslash: '\\', NumMul: 'Num *', NumAdd: 'Num +', NumSub: 'Num -', NumDot: 'Num .', NumDiv: 'Num /' };
+function keyName(code) {
+  let m;
+  if ((m = /^Key([A-Z])$/.exec(code))) return m[1];
+  if ((m = /^Digit(\d)$/.exec(code))) return m[1];
+  if ((m = /^F(\d{1,2})$/.exec(code)) && +m[1] >= 1 && +m[1] <= 24) return 'F' + m[1];
+  if ((m = /^Numpad(\d)$/.exec(code))) return 'Num' + m[1];
+  return { Space: 'Space', Tab: 'Tab', Enter: 'Enter', NumpadEnter: 'Enter', Backspace: 'Backspace', Insert: 'Insert', Delete: 'Delete',
+    Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown', ArrowUp: 'Up', ArrowDown: 'Down', ArrowLeft: 'Left', ArrowRight: 'Right',
+    Backquote: '~', Minus: 'Minus', Equal: 'Equal', BracketLeft: 'LBracket', BracketRight: 'RBracket', Semicolon: 'Semicolon', Quote: 'Quote',
+    Comma: 'Comma', Period: 'Period', Slash: 'Slash', Backslash: 'Backslash', NumpadMultiply: 'NumMul', NumpadAdd: 'NumAdd',
+    NumpadSubtract: 'NumSub', NumpadDecimal: 'NumDot', NumpadDivide: 'NumDiv' }[code] || null;
+}
+function keyParts(key) {
+  const p = String(key || '').split('+').map(s => s.trim()).filter(Boolean);
+  const r = { ctrl: false, alt: false, shift: false, base: '' };
+  for (const x of p) { const u = x.toLowerCase(); if (u === 'ctrl') r.ctrl = true; else if (u === 'alt') r.alt = true; else if (u === 'shift') r.shift = true; else r.base = x; }
+  return r;
+}
+const keyNorm = key => { const k = keyParts(key); return k.base ? (k.ctrl ? 'C' : '') + (k.alt ? 'A' : '') + (k.shift ? 'S' : '') + '+' + k.base.toUpperCase() : ''; };
+function keyShow(key) {
+  const k = keyParts(key); if (!k.base) return '';
+  return (k.ctrl ? 'Ctrl+' : '') + (k.alt ? 'Alt+' : '') + (k.shift ? 'Shift+' : '') + (KEY_SHOW[k.base] || k.base);
+}
+const modsOf = e => (e.ctrlKey ? 'Ctrl+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '');
+let cap = null;   // the key button waiting for a key: { btn, g }
+function capStart(btn, g) { capStop(); cap = { btn, g }; btn.className = 'keybtn cap'; btn.textContent = 'нажми клавишу… (Esc — отмена, Del — убрать)'; }
+function capStop() { if (!cap) return; const c = cap; cap = null; keyBtnLook(c.btn, c.g); }
+function capSet(key) { cap.g.key = key; capStop(); changed(false); }
+window.addEventListener('keydown', e => {
+  if (!cap) { if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); saveNow(); } return; }
+  e.preventDefault(); e.stopPropagation();
+  if (e.code === 'Escape') { capStop(); return; }
+  if (e.code === 'Delete' && !modsOf(e)) { capSet(''); return; }
+  if (/^(Control|Shift|Alt|Meta)(Left|Right)$/.test(e.code)) { cap.btn.textContent = modsOf(e) + '…'; return; }
+  const k = keyName(e.code);
+  if (!k) { toast('Эту клавишу бот не знает'); return; }
+  capSet(modsOf(e) + k);
+}, true);
+window.addEventListener('keyup', e => { if (cap) { e.preventDefault(); if (/^(Control|Shift|Alt|Meta)/.test(e.code)) cap.btn.textContent = modsOf(e) ? modsOf(e) + '…' : 'нажми клавишу… (Esc — отмена, Del — убрать)'; } }, true);
+window.addEventListener('mousedown', e => {
+  if (!cap) return;
+  const m = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' }[e.button];
+  if (m) { e.preventDefault(); capSet(modsOf(e) + m); return; }
+  if (e.button === 0 && e.target !== cap.btn) capStop();
+}, true);
+window.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) e.preventDefault(); }, true);
+window.addEventListener('auxclick', e => { if (e.button === 1 && cap) e.preventDefault(); }, true);
+function keyBtnLook(btn, g) {
+  if (g.key) { btn.className = 'keybtn'; btn.textContent = keyShow(g.key); btn.title = 'Клик: назначить другую клавишу'; }
+  else if (g.auto && (g.mode === 'reskill' || g.mode === 'cast')) { btn.className = 'keybtn opt'; btn.textContent = 'без клавиши'; btn.title = 'Группа срабатывает сама. Клик: назначить ещё и клавишу'; }
+  else { btn.className = 'keybtn none'; btn.textContent = 'назначить клавишу'; btn.title = 'Клик, потом нажми сочетание: Alt+1, F5, Z, колесо / боковые кнопки мыши'; }
+}
+
+// ===== the bot's files, looked at all the time =====
+let tick = 0, polling = false;
+setInterval(async () => {
+  if (!dir || polling || !P()) return;
+  polling = true;
+  try {
+    await scanBots();
+    if (++tick % 3 === 0) {
+      const sw = await readSel();
+      const pw = await scanProfiles(false);
+      if (!profs[curId]) { curId = profs[sel.active] ? sel.active : Object.keys(profs)[0]; renderAll(); }
+      else if (pw || sw) { if (!document.activeElement || !document.activeElement.matches('input[type=text], input[type=number]')) renderAll(); else renderProfBar(); }
+    }
+    if (tick % 6 === 0) await scanEquip();
+    if (!cap) refresh();
+    renderProfBar(); botState(); saveState();
+  } finally { polling = false; }
+}, 1000);
+
+start();
+</script>
+</body>
+</html>

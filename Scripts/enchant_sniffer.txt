@@ -1,0 +1,362 @@
+uses SysUtils, Classes;
+
+// Item sniffer: how THIS server's client enchants / crystallizes / ... Run it on the character, wait for
+// "ready" in the bot window, then do it in the game BY HAND, slowly (2-3 s between the steps), 2-3 times,
+// then stop the script. (Enchant: the scroll, the item into the window, [a stone], Enchant, the result;
+// Crystallize: the game's crystallize function on a few items.)
+// Log: Library\Logs\enchant_sniff_<time>.log (the path is printed at the start; saved every second):
+//   BAG  - the bag at the start (gear: OID, item ID, +level, worn; the rest: OID, item ID, count)
+//   CLI  - every packet of the game client (but movement / position / ping): opcode[:2nd opcode], size,
+//          the whole hex (up to PK_B bytes), and the 4-byte values in it that are an OID / item ID of the bag
+//   SRV  - the server's packets within SRV_WINDOW_MS after a client packet (at most SRV_MAX per window)
+//   DIFF - what changed in the bag (levels, counts, items gone / new): the whole bag is asked for
+//          (RequestItemList) BAG_AFTER_MS after a client packet with an OID of the bag in it, or 19 / 5F / 2F
+//          (not after D0:24: the client saves the bag order after every ItemList - that would loop)
+// Nothing is sent but RequestItemList: the sniffer does not enchant.
+
+const
+  SRV_WINDOW_MS = 3000;   // server packets this long after a client packet are logged ...
+  SRV_MAX       = 80;     // ... at most this many per window
+  PK_N          = 256;    // packets kept between two looks of the main loop
+  PK_B          = 256;    // bytes of a packet kept
+  BAG_AFTER_MS  = 1500;   // a client 19 / 5F / D0 packet -> the whole bag asked for this long after
+  LIST_WAIT_MS  = 800;    // ... and looked at this long after that
+  MAX_BAG       = 400;
+
+var
+  // the ring: the hooks write numbers only, the main loop makes the text
+  PkDir, PkOp, PkOp2, PkSz, PkLen: array[0..255] of integer;
+  PkAt: array[0..255] of cardinal;
+  PkByte: array[0..65535] of integer;        // packet i: PkByte[i * PK_B + b]
+  PkHead, PkTail: integer;
+  CliAt, BagWantAt: cardinal;
+  SrvN: integer;
+  // the log
+  SnLog: TStringList;
+  LogPath: string;
+  LogDirty, LogTold: boolean;
+  // the bag: the last look
+  BgOID, BgID, BgLv, BgOn, BgType, BgCnt: array[0..399] of integer;
+  BgName: array[0..399] of string;
+  BgN: integer;
+  // the new look (LookBag)
+  NOID, NID, NLv, NOn, NTp, NCnt: array[0..399] of integer;
+  NName: array[0..399] of string;
+  Seen: array[0..399] of boolean;
+  MyOID: integer;
+  StartTick: cardinal;
+
+// ===================== raw packet reading =====================
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+// the 4 bytes of a value as they stand in a packet
+function HexOf4(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) +
+            IntToHex((V shr 16) and $FF, 2) + IntToHex((V shr 24) and $FF, 2);
+end;
+
+// ===================== the log =====================
+
+procedure AddLine(S: string);
+begin
+  SnLog.Add(FormatDateTime('hh:nn:ss.zzz', Now) + ' ' + S);
+  LogDirty := true;
+end;
+
+// shared with readers: the log can be read while the sniffer runs
+procedure SaveLog();
+var FS: TFileStream;
+  Ok: boolean;
+begin
+  if not LogDirty then exit;
+  LogDirty := false;
+  Ok := true;
+  try
+    FS := TFileStream.Create(LogPath, fmCreate or fmShareDenyNone);
+    try
+      SnLog.SaveToStream(FS);
+    finally
+      FS.Free;
+    end;
+  except
+    Ok := false;
+  end;
+  if (not Ok) and (not LogTold) then begin
+    LogTold := true;
+    Engine.Msg('[Sniff]', 'Cannot write ' + LogPath, 128);
+  end;
+end;
+
+// ===================== the packet hooks (numbers only) =====================
+
+procedure PkPush(Dir: integer; ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var i, n, b: integer;
+begin
+  i := PkHead mod PK_N;
+  PkDir[i] := Dir;
+  PkOp[i] := ID1;
+  PkOp2[i] := ID2;
+  PkSz[i] := Size;
+  PkAt[i] := GetTickCount;
+  n := Size;
+  if n > PK_B then n := PK_B;
+  PkLen[i] := n;
+  for b := 0 to n - 1 do PkByte[i * PK_B + b] := RdByte(Data, b);
+  PkHead := PkHead + 1;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+// the OID of a bag item somewhere in the first 64 bytes (numbers only)
+function HasBagOID(Data: Pointer; Size: Word): boolean;
+var off, k, n, V: integer;
+begin
+  result := false;
+  n := Size;
+  if n > 64 then n := 64;
+  for off := 0 to n - 4 do begin
+    V := RdInt(Data, off);
+    if (V = 0) or (V = -1) then continue;
+    for k := 0 to BgN - 1 do
+      if BgOID[k] = V then begin
+        result := true;
+        exit;
+      end;
+  end;
+end;
+
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var Mine: boolean;
+begin
+  if (ID1 = $0F) or (ID1 = $59) or (ID1 = $B1) then exit;   // movement, position, ping
+  CliAt := GetTickCount;
+  SrvN := 0;
+  Mine := (ID1 = $19) or (ID1 = $5F) or (ID1 = $2F);
+  if (ID1 = $D0) and (ID2 = $24) then Mine := false        // the bag order saved: after every ItemList
+  else if not Mine then Mine := HasBagOID(Data, Size);
+  if Mine then BagWantAt := GetTickCount + BAG_AFTER_MS;
+  PkPush(1, ID1, ID2, Data, Size);
+end;
+
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+begin
+  if CliAt = 0 then exit;
+  if GetTickCount - CliAt > SRV_WINDOW_MS then exit;
+  if ID1 = $2F then exit;   // movement
+  if SrvN >= SRV_MAX then exit;
+  SrvN := SrvN + 1;
+  PkPush(0, ID1, ID2, Data, Size);
+end;
+
+// ===================== the bag =====================
+
+function BagIdx(OID: integer): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to BgN - 1 do
+    if BgOID[k] = OID then begin
+      result := k;
+      exit;
+    end;
+end;
+
+// a 4-byte value of a packet: what it is in the bag ('' = nothing known)
+function ValName(V: integer): string;
+var k: integer;
+begin
+  result := '';
+  if (V = 0) or (V = -1) then exit;
+  if V = MyOID then begin
+    result := 'MY_OID';
+    exit;
+  end;
+  for k := 0 to BgN - 1 do
+    if BgOID[k] = V then begin
+      result := 'OID(' + BgName[k] + ' +' + IntToStr(BgLv[k]) + ')';
+      exit;
+    end;
+  if V < 20 then exit;
+  for k := 0 to BgN - 1 do
+    if BgID[k] = V then begin
+      result := 'itemID(' + BgName[k] + ')';
+      exit;
+    end;
+end;
+
+// the bag now into Bg*; First: all of it into the log, else what changed (DIFF)
+procedure LookBag(First: boolean);
+var i, k, n, O, ID, Lv, Wr, Tp, Cn: integer;
+  C: Int64;
+  It: TL2Item;
+  Nm, S: string;
+begin
+  n := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    if n >= MAX_BAG then break;
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    ID := It.ID;
+    Lv := It.EnchantLevel;
+    Tp := It.ItemType;
+    Wr := 0;
+    if It.Equipped then Wr := 1;
+    C := It.Count;
+    if C > 1000000000 then C := 1000000000;
+    Cn := C;
+    k := BagIdx(O);
+    if k >= 0 then Nm := BgName[k] else Nm := It.Name;
+    NOID[n] := O;
+    NID[n] := ID;
+    NLv[n] := Lv;
+    NOn[n] := Wr;
+    NTp[n] := Tp;
+    NCnt[n] := Cn;
+    NName[n] := Nm;
+    n := n + 1;
+  end;
+  if First then begin
+    AddLine('BAG ' + IntToStr(n) + ' stacks, my OID ' + IntToStr(MyOID) + ' (hex ' + HexOf4(MyOID) + ')');
+    for k := 0 to n - 1 do begin
+      if NTp[k] <= 2 then S := 'gear +' + IntToStr(NLv[k]) else S := 'x' + IntToStr(NCnt[k]);
+      if NOn[k] = 1 then S := S + ' WORN';
+      AddLine('BAG OID ' + IntToStr(NOID[k]) + ' (hex ' + HexOf4(NOID[k]) + ') ID ' + IntToStr(NID[k]) + ' (hex ' +
+        HexOf4(NID[k]) + ') ' + S + '  ' + NName[k]);
+    end;
+  end else begin
+    for k := 0 to BgN - 1 do Seen[k] := false;
+    for k := 0 to n - 1 do begin
+      i := BagIdx(NOID[k]);
+      if i < 0 then begin
+        AddLine('DIFF new: ' + NName[k] + ' +' + IntToStr(NLv[k]) + ' x' + IntToStr(NCnt[k]) + ' (OID ' + IntToStr(NOID[k]) + ')');
+        continue;
+      end;
+      Seen[i] := true;
+      if NLv[k] <> BgLv[i] then
+        AddLine('DIFF level: ' + NName[k] + ' +' + IntToStr(BgLv[i]) + ' -> +' + IntToStr(NLv[k]) + ' (OID ' + IntToStr(NOID[k]) + ')');
+      if NCnt[k] <> BgCnt[i] then
+        AddLine('DIFF count: ' + NName[k] + ' x' + IntToStr(BgCnt[i]) + ' -> x' + IntToStr(NCnt[k]));
+      if NOn[k] <> BgOn[i] then
+        AddLine('DIFF worn: ' + NName[k] + ' ' + IntToStr(BgOn[i]) + ' -> ' + IntToStr(NOn[k]));
+    end;
+    for k := 0 to BgN - 1 do
+      if not Seen[k] then
+        AddLine('DIFF gone: ' + BgName[k] + ' +' + IntToStr(BgLv[k]) + ' x' + IntToStr(BgCnt[k]) + ' (OID ' + IntToStr(BgOID[k]) + ')');
+  end;
+  for k := 0 to n - 1 do begin
+    BgOID[k] := NOID[k];
+    BgID[k] := NID[k];
+    BgLv[k] := NLv[k];
+    BgOn[k] := NOn[k];
+    BgType[k] := NTp[k];
+    BgCnt[k] := NCnt[k];
+    BgName[k] := NName[k];
+  end;
+  BgN := n;
+end;
+
+// ===================== the ring into the log =====================
+
+procedure Drain();
+var i, b, h, off, V, n: integer;
+  S, M, W: string;
+begin
+  h := PkHead;
+  if PkTail < h - PK_N then begin
+    AddLine('... ' + IntToStr(h - PK_N - PkTail) + ' packets lost (too many at once)');
+    PkTail := h - PK_N;
+  end;
+  while PkTail < h do begin
+    i := PkTail mod PK_N;
+    n := PkLen[i];
+    if PkDir[i] = 1 then S := 'CLI ' else S := '    SRV ';
+    S := S + IntToHex(PkOp[i], 2);
+    if (PkOp[i] = $FE) or (PkOp[i] = $D0) then S := S + ':' + IntToHex(PkOp2[i], 2);
+    S := S + ' size=' + IntToStr(PkSz[i]) + ' +' + IntToStr(PkAt[i] - StartTick) + 'ms hex=';
+    for b := 0 to n - 1 do S := S + IntToHex(PkByte[i * PK_B + b], 2);
+    if PkSz[i] > n then S := S + '...';
+    M := '';
+    if (PkDir[i] = 0) and (PkOp[i] = $62) and (n >= 2) then
+      M := M + ' sysmsg=' + IntToStr(PkByte[i * PK_B] + PkByte[i * PK_B + 1] * 256);
+    for off := 0 to n - 4 do begin
+      V := PkByte[i * PK_B + off] or (PkByte[i * PK_B + off + 1] shl 8) or (PkByte[i * PK_B + off + 2] shl 16) or
+        (PkByte[i * PK_B + off + 3] shl 24);
+      W := ValName(V);
+      if W <> '' then M := M + ' @' + IntToStr(off) + '=' + W;
+    end;
+    AddLine(S + M);
+    PkTail := PkTail + 1;
+  end;
+end;
+
+var
+  SaveAt: cardinal;
+  WasOnline, ListAsked: boolean;
+  ListAt: cardinal;
+
+begin
+  SnLog := TStringList.Create;
+  LogPath := Script.Path + '..\Logs\item_sniff_' + FormatDateTime('mmdd_hhnnss', Now) + '.log';
+  LogDirty := false;
+  LogTold := false;
+  PkHead := 0;
+  PkTail := 0;
+  CliAt := 0;
+  BagWantAt := 0;
+  SrvN := 0;
+  BgN := 0;
+  StartTick := GetTickCount;
+  while User.Name = '' do Delay(500);
+  MyOID := User.OID;
+  AddLine('item sniffer started on ' + User.Name);
+  Engine.Msg('[Sniff]', 'Log: ' + LogPath, 128);
+
+  Engine.SendToServer('14');   // RequestItemList: a fresh bag to start from
+  Delay(1500);
+  LookBag(true);
+  SaveLog();
+
+  Engine.SendActID(2);         // packet hooks on
+  AddLine('ready');
+  Engine.Msg('[Sniff]', 'ready: do it BY HAND in the game, slowly, 2-3 times (enchant / crystallize ...), then stop the script', 128);
+  SaveAt := GetTickCount;
+  WasOnline := true;
+  ListAsked := false;
+  ListAt := 0;
+  while Delay(50) do begin
+    if PkHead <> PkTail then Drain();
+    if (BagWantAt <> 0) and (GetTickCount >= BagWantAt) then begin
+      BagWantAt := 0;
+      Engine.SendToServer('14');   // the whole bag: the bot's own copy misses changes
+      ListAsked := true;
+      ListAt := GetTickCount;
+    end;
+    if ListAsked and (GetTickCount - ListAt >= LIST_WAIT_MS) then begin
+      ListAsked := false;
+      Drain();
+      LookBag(false);
+    end;
+    if WasOnline and (Engine.Status <> lsOnline) then begin
+      WasOnline := false;
+      AddLine('DISCONNECTED');
+      SaveLog();
+    end;
+    if GetTickCount - SaveAt >= 1000 then begin
+      SaveAt := GetTickCount;
+      SaveLog();
+    end;
+  end;
+end.
