@@ -35,6 +35,9 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 // action again.
 // auto=1 (cast): the group fires by itself on a new cast of its skills (not more often than auto_ms, not while the
 // target is one of the group already). reskill: see above.
+// The auto picks (res-kill, cast auto) never cut in on you: not within AUTO_HOLD_MS of a key pick, not while the after
+// skill of a pick is still being sent, not while our own cast goes; they do not touch the cycle of a key. A res-kill
+// turned on / off by its key stays so when the profile is read again (the page saved).
 // The notices (what was taken, res-kill on / off): notify=<chat type> - a fake chat message only we see: 15 the command
 // channel commander (in the middle of the screen, as the siege commander's), 19 a screen announce, 3 party, 0 none.
 // A pick: the target; mark=1..4 -> that token on him (RequestActionUse $4E..$51, sniffed with token_sniffer);
@@ -70,7 +73,7 @@ const
   SRV_RETRY_MS  = 3000;     // no server: tried again this often
   CAST_SCAN_MS  = 100;      // who casts what: looked at this often
   CAST_KEEP_MS  = 600;      // a cast seen this lately still counts (a channel flickers between the looks)
-  REV_SCAN_MS   = 200;      // who is dead / up again: looked at this often
+  REV_SCAN_MS   = 100;      // who is dead / up again: looked at this often (the res-kill window is in ms)
   REV_GAP_MS    = 2500;     // seen dead this lately, now alive = got up (else he came back from the town)
   SCAN_CHUNK    = 16;       // the scans look at the keys after this many players
   NAME_KEEP_MS  = 5000;     // a player's name / clan / alliance for the state read again after this long
@@ -98,6 +101,7 @@ const
   MODE_SMART    = 4;
   MODE_ONUS     = 5;
   RES_LOOK_MS   = 100;      // a res-kill group that is on looks for an enemy up from the dead this often
+  AUTO_HOLD_MS  = 1000;     // after a key pick the auto picks wait this long (your choice is not taken over)
   ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
   ASSIST_MIN_MS = 150;      // ... closer than this to his switch = the same moment (an AoE, an auto target): no follower
   ASSIST_HALF_MS = 120000;  // an assister's points halve this often (the callers of now on top)
@@ -130,6 +134,10 @@ var
   GResMin, GResMax: array[0..15] of integer;         // reskill: up from the dead this long ago (ms), at least / at most
   GResOn: array[0..15] of boolean;                   // reskill: on now (its key turns it on / off)
   ResLookAt: cardinal;
+  ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
+  KeepName: array[0..15] of string;                  // LoadProfile: the res-kill groups on / off before the reading ...
+  KeepOn: array[0..15] of boolean;
+  KeepN: integer;
   NotifyType: integer;                               // the notices: the chat type (15 middle of the screen ... 0 none)
   AutoAt: array[0..15] of cardinal;                  // ... it fired then
   // the profile
@@ -1221,6 +1229,13 @@ begin
   AfterTick();
 end;
 
+// an auto pick must wait now: a key pick a moment ago (your choice stays), the after skill of a pick still being sent
+// (a new target would drop it), our own cast going (no target switch in the middle of it)
+function AutoHeld(): boolean;
+begin
+  result := (GetTickCount - ManualAt < AUTO_HOLD_MS) or (PendSk <> 0) or (User.Cast.EndTime > 0);
+end;
+
 // group g: a key press (IsAuto false) or its auto event. true = somebody was targeted
 function PickGroup(g: integer; IsAuto: boolean): boolean;
 var Best, BestOID, InRange, FarI, FarOID, Cur, k: integer;
@@ -1235,11 +1250,12 @@ begin
   Cur := TargetOID();
   Pre := GName[g] + ': ';
   if IsAuto then begin
+    if AutoHeld() then exit;           // your key pick / its after skill / our cast first
     Best := ScanGroup(g, Cur, false, BestOID, BestD, InRange, CurIn, FarI, FarD);
     if CurIn or (Best < 0) then exit;   // on one of them already / none in range: quiet
     Pre := GName[g] + ' (сам): ';
-    CycN := 0;
   end else begin
+    ManualAt := GetTickCount;          // a key pick: the auto picks wait AUTO_HOLD_MS
     // a new cycle unless this group key was pressed lately and we are still on its last pick
     if (CycG <> g) or (GetTickCount - CycAt > cardinal(CycleMs)) or (CycN >= MAX_CYCLE) then CycN := 0;
     if CycN > 0 then
@@ -1290,10 +1306,12 @@ begin
     PfKey := GetTickCount - LastAt;
     if PfKey > PfKeyMax then PfKeyMax := PfKey;
   end;
-  CycG := g;
-  CycAt := GetTickCount;
-  CycOID[CycN] := BestOID;
-  CycN := CycN + 1;
+  if not IsAuto then begin             // the cycle of a key (an auto pick leaves it as it is)
+    CycG := g;
+    CycAt := GetTickCount;
+    CycOID[CycN] := BestOID;
+    CycN := CycN + 1;
+  end;
   if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
   if GMark[g] > 0 then SendMark(GMark[g]);
   Rest := '';
@@ -1566,6 +1584,13 @@ var P: TStringList;
 begin
   P := TStringList.Create;
   CfgErrJson := '';
+  KeepN := 0;        // the res-kill groups on / off now: kept over the reading (by name)
+  for i := 0 to GroupN - 1 do
+    if (GMode[i] = MODE_RES) and (KeepN < 16) then begin
+      KeepName[KeepN] := LowerCase(GName[i]);
+      KeepOn[KeepN] := GResOn[i];
+      Inc(KeepN);
+    end;
   GroupN := 0;       // the key thread sees none meanwhile
   NextG := -1;
   CycN := 0;
@@ -1694,6 +1719,9 @@ begin
     AutoWant[k] := false;
     AutoAt[k] := 0;
     GResOn[k] := (GMode[k] = MODE_RES) and GAuto[k];   // res-kill: on at the start if auto=1 (its key turns it)
+    if GMode[k] = MODE_RES then
+      for j := 0 to KeepN - 1 do
+        if KeepName[j] = LowerCase(GName[k]) then GResOn[k] := KeepOn[j];   // as it was before the reading
     k := k + 1;
   end;
   GroupN := k;
@@ -2198,6 +2226,8 @@ begin
   SmartFb := false;
   NotifyType := 15;
   ResLookAt := 0;
+  ManualAt := 0;
+  KeepN := 0;
   FoesAt := 0;
   UsAt := 0;
   DeadCnt := 0;
@@ -2252,7 +2282,7 @@ begin
       HandleKeys();
     end;
     for g := 0 to GroupN - 1 do
-      if AutoWant[g] then begin
+      if AutoWant[g] and (not AutoHeld()) then begin   // must wait: the event stays for later
         AutoWant[g] := false;
         if GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g]) then
           if PickGroup(g, true) then AutoAt[g] := GetTickCount;
