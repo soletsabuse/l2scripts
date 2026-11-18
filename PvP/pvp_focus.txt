@@ -18,6 +18,13 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             (auto=1: on at the start); while on, the bot takes such an enemy by itself (every RES_LOOK_MS) and does
 //             the after action at once (attack)
 //   onus    - enemies holding me or a party member in their target (the ones on me first; the classes: optional)
+//   assist  - the target of a player: assist=<1st>|<2nd>|<3rd> ('' = the party leader) - the first of them in sight, alive
+//             and (assist_aggro 2) not aggroed; aggroed / killed / gone -> the next one. Its key takes his target + the
+//             after action; auto=1: follows - his target changed (or the next one took over) -> taken at once.
+//             assist_aggro: 2 an aggroed assister is skipped (an enemy in sight holds him in the target), 1 no assist
+//             while I am aggroed, 0 no check
+// CP potions (cp_item, '0' none): a thread of its own looks at our CP every CP_LOOK_MS; below cp_pct % -> the potion,
+// again not sooner than cp_gap_ms (the server's flood guard); the potions left: looked at every second (told when none)
 //   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
 //             who=target - the one it is cast on (the one being charged: the most casters first),
 //             who=caster - the caster (the classes: optional, of the one taken)
@@ -100,6 +107,9 @@ const
   MODE_NAMES    = 3;
   MODE_SMART    = 4;
   MODE_ONUS     = 5;
+  MODE_ASSIST   = 6;
+  ASSIST_LOOK_MS = 100;     // an assist group that follows (auto) looks at his target this often
+  CP_LOOK_MS    = 15;       // the CP potions: our CP looked at this often (a thread of its own)
   RES_LOOK_MS   = 100;      // a res-kill group that is on looks for an enemy up from the dead this often
   AUTO_HOLD_MS  = 1000;     // after a key pick the auto picks wait this long (your choice is not taken over)
   ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
@@ -135,6 +145,20 @@ var
   GResOn: array[0..15] of boolean;                   // reskill: on now (its key turns it on / off)
   ResLookAt: cardinal;
   ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
+  // assist: whom (name, '' = the party leader), the aggro check, his OID found (re-found by name now and then), his
+  // target seen last (the follow acts on a change)
+  GAssist: array[0..15] of string;                   // as in the profile: '1st|2nd|3rd'
+  GAsName: array[0..47] of string;                   // group g, assister s: GAsName[g * 3 + s] (lower case)
+  GAsN, GAsAggro, AsLast: array[0..15] of integer;
+  AsOID: array[0..47] of integer;                    // ... his OID found (0 not yet)
+  AsFindAt: array[0..47] of cardinal;                // ... looked for by name then (not more often than a second)
+  AsLookAt: cardinal;
+  AsSlot: integer;                                   // AssistActive: which of the list took (0..2; -1 the party leader)
+  AsWhy: string;                                     // ... none: why
+  // CP potions: the item, below this % of CP, not sooner than this (ms); the thread reads numbers only
+  CpItem, CpPct, CpGap, CpUsed: integer;
+  CpHave, CpTold: boolean;
+  CpAt, CpInvAt: cardinal;
   KeepName: array[0..15] of string;                  // LoadProfile: the res-kill groups on / off before the reading ...
   KeepOn: array[0..15] of boolean;
   KeepN: integer;
@@ -1335,6 +1359,208 @@ begin
   result := true;
 end;
 
+// OID is aggroed: an enemy player in sight holds him in his target (the followed players: numbers only)
+function AggroOn(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  if OID = 0 then exit;
+  for k := 0 to FOE_SLOTS - 1 do
+    if (FoOID[k] <> 0) and (FoTgt[k] = OID) and (not FoOurs[k]) and (GetTickCount - FoSeen[k] <= FOE_SEEN_MS) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// CharList index of OID (-1 not in sight)
+function CharIdxOf(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// CharList index of assister s (0..2) of group g: by his OID found before, by name not more often than a second (the
+// names are strings of the bot: not read every look); -1 not in sight
+function AssistSlot(g, s: integer): integer;
+var i, j: integer;
+begin
+  result := -1;
+  j := g * 3 + s;
+  if AsOID[j] <> 0 then begin
+    result := CharIdxOf(AsOID[j]);
+    if result >= 0 then exit;
+  end;
+  if (AsFindAt[j] <> 0) and (GetTickCount - AsFindAt[j] < 1000) then exit;
+  AsFindAt[j] := GetTickCount;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if LowerCase(CharList(i).Name) = GAsName[j] then begin
+      AsOID[j] := CharList(i).OID;
+      result := i;
+      exit;
+    end;
+end;
+
+// whom group g assists now: the first of its list in sight, alive and (assist_aggro 2) not aggroed - aggroed / killed /
+// gone -> the next one; no list -> the party leader. His CharList index (AsSlot: which), -1 none (AsWhy: why)
+function AssistActive(g: integer): integer;
+var s, i: integer;
+  L: TL2Char;
+begin
+  result := -1;
+  AsSlot := -1;
+  AsWhy := '';
+  if GAsN[g] = 0 then begin
+    L := Party.Leader;
+    if (L = nil) or (L.OID = MyOID) then begin
+      AsWhy := 'лидера пати нет';
+      exit;
+    end;
+    i := CharIdxOf(L.OID);
+    if i < 0 then AsWhy := 'лидер пати не в видимости'
+    else if CharList(i).Dead then AsWhy := 'лидер пати убит'
+    else if (GAsAggro[g] = 2) and AggroOn(L.OID) then AsWhy := 'лидер пати сагрен'
+    else result := i;
+    exit;
+  end;
+  for s := 0 to GAsN[g] - 1 do begin
+    i := AssistSlot(g, s);
+    if i < 0 then continue;                          // not in sight
+    if CharList(i).Dead then continue;               // killed
+    if (GAsAggro[g] = 2) and AggroOn(CharList(i).OID) then continue;   // aggroed
+    result := i;
+    AsSlot := s;
+    exit;
+  end;
+  AsWhy := 'все ассистеры сагрены / убиты / не видно';
+end;
+
+// assist group g: the target of the player it assists (not one of ours, not me) + the after action; not while the
+// aggro check says aggroed (assist_aggro: 2 the assisted player, 1 me). true = taken
+function AssistPick(g: integer; IsAuto: boolean): boolean;
+var i, OID, k, HisOID: integer;
+  TL: TL2Live;
+  Who, Rest, Pre, His: string;
+begin
+  result := false;
+  RefreshMe();
+  Pre := GName[g] + ': ';
+  if IsAuto then Pre := GName[g] + ' (сам): ';
+  if (GAsAggro[g] = 1) and AggroOn(MyOID) then begin
+    if not IsAuto then Say(Pre + 'не ассистирую: ты сагрен');
+    exit;
+  end;
+  i := AssistActive(g);
+  if i < 0 then begin
+    if not IsAuto then Say(Pre + AsWhy);
+    exit;
+  end;
+  HisOID := CharList(i).OID;
+  OID := 0;
+  TL := CharList(i).Target;
+  if TL <> nil then OID := TL.OID;
+  if (OID = 0) or (OID = MyOID) then begin
+    if not IsAuto then Say(Pre + 'у него нет цели');
+    exit;
+  end;
+  k := CharIdxOf(OID);
+  if (k >= 0) and IsOurs(k) then begin
+    if not IsAuto then Say(Pre + 'его цель - свой');
+    exit;
+  end;
+  if OID = TargetOID() then begin           // on his target already: the after action again (a key)
+    if not IsAuto then begin
+      Rest := DoAfter(g, OID);
+      Say(Pre + 'уже на его цели' + Rest);
+    end;
+    exit;
+  end;
+  if IsAuto then begin
+    if AutoHeld() then exit;
+  end else ManualAt := GetTickCount;
+  His := '';
+  if i < CharList.Count then His := CharList(i).Name;
+  if k >= 0 then Who := WhoText(k, OID) else Who := 'его цель (не игрок)';
+  if not Engine.SetTarget(OID) then begin
+    Say(Pre + 'не взял ' + Who);
+    exit;
+  end;
+  if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
+  if GMark[g] > 0 then SendMark(GMark[g]);
+  Rest := DoAfter(g, OID);
+  if AsSlot > 0 then His := His + ', ' + IntToStr(AsSlot + 1) + '-й: первые сагрены / убиты / не видно';
+  Say(Pre + Who + ' (цель ' + His + ')' + Rest);
+  result := true;
+end;
+
+// assist groups that follow (auto): his target changed -> taken (when the aggro check lets; else later)
+procedure AssistTick();
+var g, i, OID: integer;
+  TL: TL2Live;
+begin
+  for g := 0 to GroupN - 1 do begin
+    if (GMode[g] <> MODE_ASSIST) or (not GAuto[g]) then continue;
+    i := AssistActive(g);                    // the first one usable now: the next one when he is aggroed / killed
+    if i < 0 then continue;
+    OID := 0;
+    TL := CharList(i).Target;
+    if TL <> nil then OID := TL.OID;
+    if OID = AsLast[g] then continue;       // no change
+    if (OID = 0) or (OID = MyOID) or (OID = TargetOID()) then begin
+      AsLast[g] := OID;
+      continue;
+    end;
+    if AssistPick(g, true) then AsLast[g] := OID
+    else if (CharIdxOf(OID) >= 0) and IsOurs(CharIdxOf(OID)) then AsLast[g] := OID;   // a friend: nothing to wait for
+  end;
+end;
+
+// ===================== CP potions =====================
+
+// a thread of its own: our CP below CpPct % -> the potion (not sooner than CpGap). Numbers only (no strings: two
+// threads building strings at once crash PaxScript); the potions left are looked at by the main loop (CpCheck)
+procedure CpPots_Thread();
+var Cur, Mx: integer;
+begin
+  while true do begin
+    Delay(CP_LOOK_MS);
+    if (CpItem <= 0) or (not CpHave) then continue;
+    if User.Dead then continue;
+    Mx := User.MaxCP;
+    if Mx <= 0 then continue;
+    Cur := User.CurCP;
+    if Cur * 100 >= Mx * CpPct then continue;
+    if GetTickCount - CpAt < cardinal(CpGap) then continue;
+    CpAt := GetTickCount;
+    Engine.UseItem(CpItem);
+    Inc(CpUsed);
+  end;
+end;
+
+// the potions left (main loop, every second): none -> the thread waits, told once
+procedure CpCheck();
+var It: TL2Item;
+  Have: boolean;
+begin
+  if CpItem <= 0 then begin
+    CpHave := false;
+    exit;
+  end;
+  Have := Inventory.User.ByID(CpItem, It);
+  if Have then Have := It.Count > 0;
+  if (not Have) and (not CpTold) then begin
+    CpTold := true;
+    Say('CP-банок нет (ID ' + IntToStr(CpItem) + ')');
+  end;
+  if Have then CpTold := false;
+  CpHave := Have;
+end;
+
 // the presses waiting: done now (between the scans too - a scan stopped for a press does not keep it waiting)
 procedure HandleKeys();
 var g: integer;
@@ -1348,7 +1574,8 @@ begin
       AutoAt[g] := 0;
       if GResOn[g] then Say(GName[g] + ': ВКЛ (встал ' + IntToStr(GResMin[g]) + '-' + IntToStr(GResMax[g]) + ' мс назад)')
       else Say(GName[g] + ': ВЫКЛ');
-    end else PickGroup(g, false);
+    end else if GMode[g] = MODE_ASSIST then AssistPick(g, false)
+    else PickGroup(g, false);
   end;
 end;
 
@@ -1421,6 +1648,8 @@ begin
   GAutoMs[n] := 3000;
   GWindow[n] := 15;
   GResMin[n] := 0;
+  GAssist[n] := '';
+  GAsAggro[n] := 2;
   GResMax[n] := -1;                                  // not given: from window (s)
   GWho[n] := 0;
   GPrio[n] := true;
@@ -1446,6 +1675,8 @@ begin
   GAutoMs[b] := GAutoMs[a];
   GWindow[b] := GWindow[a];
   GResMin[b] := GResMin[a];
+  GAssist[b] := GAssist[a];
+  GAsAggro[b] := GAsAggro[a];
   GResMax[b] := GResMax[a];
   GWho[b] := GWho[a];
   GPrio[b] := GPrio[a];
@@ -1468,6 +1699,7 @@ begin
   else if S = 'names' then result := MODE_NAMES
   else if S = 'smart' then result := MODE_SMART
   else if S = 'onus' then result := MODE_ONUS
+  else if S = 'assist' then result := MODE_ASSIST
   else result := -1;
 end;
 
@@ -1599,6 +1831,9 @@ begin
   ChatOn := true;
   ChatName := 'PvP';
   NotifyType := 15;
+  CpItem := 5592;                                    // Greater CP Potion (a profile without cp_item: on)
+  CpPct := 95;
+  CpGap := 150;
   CycleMs := 6000;
   Clans := '';
   Players := '';
@@ -1629,6 +1864,9 @@ begin
         if not ChatOn then NotifyType := 0;
       end
       else if Fld = 'notify' then NotifyType := StrToIntDef(Val, 15)
+      else if Fld = 'cp_item' then CpItem := StrToIntDef(Val, 0)
+      else if Fld = 'cp_pct' then CpPct := StrToIntDef(Val, 95)
+      else if Fld = 'cp_gap_ms' then CpGap := StrToIntDef(Val, 150)
       else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val
       else if Fld = 'cycle_ms' then CycleMs := StrToIntDef(Val, 6000);
       continue;
@@ -1651,6 +1889,8 @@ begin
     else if Fld = 'window' then GWindow[n] := StrToIntDef(Val, 15)
     else if Fld = 'res_min_ms' then GResMin[n] := StrToIntDef(Val, 0)
     else if Fld = 'res_max_ms' then GResMax[n] := StrToIntDef(Val, -1)
+    else if Fld = 'assist' then GAssist[n] := Val
+    else if Fld = 'assist_aggro' then GAsAggro[n] := StrToIntDef(Val, 2)
     else if Fld = 'who' then begin
       if LowerCase(Val) = 'caster' then GWho[n] := 1 else GWho[n] := 0;
     end
@@ -1660,6 +1900,9 @@ begin
   end;
   SetClans(Clans, P);
   SetPlayers(Players, P);
+  if (CpPct < 1) or (CpPct > 100) then CpPct := 95;
+  if CpGap < 50 then CpGap := 50;
+  CpTold := false;
   if CycleMs < 1000 then CycleMs := 1000;
   if CycleMs > 60000 then CycleMs := 60000;
 
@@ -1667,8 +1910,8 @@ begin
   k := 0;
   for i := 0 to n do begin
     if not GOn[i] then continue;
-    AutoOk := GAuto[i] and ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST));
-    if not ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST)) then GAuto[i] := false;
+    AutoOk := GAuto[i] and ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST) or (GMode[i] = MODE_ASSIST));
+    if not ((GMode[i] = MODE_RES) or (GMode[i] = MODE_CAST) or (GMode[i] = MODE_ASSIST)) then GAuto[i] := false;
     Code := ParseKey(GKeyText[i]);
     if (Code = 0) and (GKeyText[i] <> '') then begin
       if AutoOk then CfgErr(GName[i] + ': cannot read the key "' + GKeyText[i] + '" - auto only')
@@ -1718,6 +1961,16 @@ begin
     EvAt[k] := 0;
     AutoWant[k] := false;
     AutoAt[k] := 0;
+    AsLast[k] := 0;
+    GAsN[k] := 0;                                    // the assisters: '1st|2nd|3rd'
+    SplitTo(GAssist[k], '|', P);
+    for j := 0 to P.Count - 1 do
+      if (Trim(P[j]) <> '') and (GAsN[k] < 3) then begin
+        GAsName[k * 3 + GAsN[k]] := LowerCase(Trim(P[j]));
+        AsOID[k * 3 + GAsN[k]] := 0;
+        AsFindAt[k * 3 + GAsN[k]] := 0;
+        GAsN[k] := GAsN[k] + 1;
+      end;
     GResOn[k] := (GMode[k] = MODE_RES) and GAuto[k];   // res-kill: on at the start if auto=1 (its key turns it)
     if GMode[k] = MODE_RES then
       for j := 0 to KeepN - 1 do
@@ -1740,6 +1993,9 @@ begin
   L.Add('players=');
   L.Add('chat=1');
   L.Add('notify=15');
+  L.Add('cp_item=5592');
+  L.Add('cp_pct=95');
+  L.Add('cp_gap_ms=150');
   L.Add('chat_name=PvP');
   L.Add('cycle_ms=6000');
   L.Add('');
@@ -2228,6 +2484,15 @@ begin
   ResLookAt := 0;
   ManualAt := 0;
   KeepN := 0;
+  AsLookAt := 0;
+  CpItem := 0;
+  CpPct := 95;
+  CpGap := 150;
+  CpUsed := 0;
+  CpHave := false;
+  CpTold := false;
+  CpAt := 0;
+  CpInvAt := 0;
   FoesAt := 0;
   UsAt := 0;
   DeadCnt := 0;
@@ -2255,6 +2520,8 @@ begin
   RevScanAt := GetTickCount;
 
   Script.NewThread(@KeyEvents_Thread);
+  CpCheck();                                         // the potions first (the thread waits for CpHave)
+  Script.NewThread(@CpPots_Thread);                  // the CP potions: a thread of its own (fast, numbers only)
 
   LoopAt := GetTickCount;
   while Delay(KEY_POLL_MS) do begin
@@ -2287,6 +2554,16 @@ begin
         if GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g]) then
           if PickGroup(g, true) then AutoAt[g] := GetTickCount;
       end;
+    // assist groups that follow: his target changed -> taken
+    if GetTickCount - AsLookAt >= ASSIST_LOOK_MS then begin
+      AsLookAt := GetTickCount;
+      AssistTick();
+    end;
+    // the CP potions left (the thread drinks them)
+    if GetTickCount - CpInvAt >= 1000 then begin
+      CpInvAt := GetTickCount;
+      CpCheck();
+    end;
     // res-kill groups that are on: somebody up from the dead in their window -> taken + the after action (attack)
     if GetTickCount - ResLookAt >= RES_LOOK_MS then begin
       ResLookAt := GetTickCount;
