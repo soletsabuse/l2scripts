@@ -30,6 +30,9 @@ procedure ChatMenuOnCliPacketRaw(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
 procedure ChatMenuPoll();
 procedure ChatSay(Text: string);               // a fake party message from MenuName (only we see it)
 procedure ChatSayFrom(Name, Text: string);     // a fake party message from Name - no menu needed for it
+// a fake message of any chat type from Name (only we see it): 3 party, 15 the command channel commander (the
+// client shows it in the middle of the screen - as the siege commander's), 19 a screen announce, 18 a red announce
+procedure ChatSayType(ChatType: integer; Name, Text: string);
 function ChatCommand(): string;                // next command typed (lower case, no "!"); '' = none
 
 implementation
@@ -117,6 +120,11 @@ end;
 procedure ChatSayFrom(Name, Text: string);
 begin
   Engine.SendToClient('4A' + CmHexD(0) + CmHexD(CM_PARTY) + CmHexS(Name) + CmHexD(-1) + CmHexS(Text));
+end;
+
+procedure ChatSayType(ChatType: integer; Name, Text: string);
+begin
+  Engine.SendToClient('4A' + CmHexD(0) + CmHexD(ChatType) + CmHexS(Name) + CmHexD(-1) + CmHexS(Text));
 end;
 
 procedure ChatSay(Text: string);

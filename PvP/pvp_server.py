@@ -6,6 +6,9 @@ PvP focus server: the page pvp.html <-> the bot script pvp_focus.txt, live - no 
         bot -> server:   HELLO|<character>        STATE|<json: what the bot sees, ~3 times a second>
         server -> bot:   RELOAD                   (a profile / the active one changed: read the files now)
                          PING                     (the bot answers PONG)
+                         WATCH|1 / WATCH|0        (a page is open / none: the bot builds its STATE only while 1;
+                                                   sent on HELLO and when the first page opens / the last closes)
+                         STATRESET                (the page: the stats from zero)
 
 The settings stay in files of this folder - the script reads them itself as well (the server may be down: the
 keys still work):
@@ -17,7 +20,9 @@ Page API (same origin; a change needs the header X-PvP: 1 - another site in the 
     PUT    /api/profile?id=<id>         body: the profile text            -> written, the bots told
     DELETE /api/profile?id=<id>
     PUT    /api/active?id=<id>
+    PUT    /api/cmd?c=statreset         every bot: its stats from zero
     GET    /api/events                  server-sent events: state, gone, profiles, equip
+    GET    /api/skillnames              {id: name} of every skill (Library\\Nav\\skilldb.txt, made from the bot's L2DB)
 
 Run: pvp_server.bat (no window), or "python pvp_server.py" to see its log. One per PC: a second one finds the ports
 taken and quits. Log: pvp_server.log next to it. Python 3.8+, nothing to install.
@@ -36,6 +41,7 @@ PROF_DIR = os.path.join(DIR, "profiles")
 INI = os.path.join(DIR, "pvp.ini")
 PAGE = os.path.join(DIR, "pvp.html")
 BINDS_DIR = os.path.normpath(os.path.join(DIR, "..", "Binds"))   # the equip binds (their keys: a clash warning)
+SKILLDB = os.path.normpath(os.path.join(DIR, "..", "Nav", "skilldb.txt"))   # every skill: id|oper|magic|range|name|...
 LOG = os.path.join(DIR, "pvp_server.log")
 HOST = "127.0.0.1"
 HTTP_PORT = 7790
@@ -48,6 +54,7 @@ bots = {}              # name -> {"writer", "state", "at"}
 pages = set()          # asyncio.Queue of every open page (server-sent events)
 files_sig = None       # the profiles / pvp.ini as seen last (names + mtimes)
 equip_sig = None
+watch_said = None      # the WATCH the bots were told last (1 a page is open, 0 none)
 
 
 # ---------- small things ----------
@@ -189,6 +196,20 @@ async def to_bots(line):
             pass
 
 
+def watch_now():
+    return 1 if pages else 0
+
+
+async def watch_changed():
+    """the first page opened / the last one closed: the bots start / stop building their state"""
+    global watch_said
+    w = watch_now()
+    if w != watch_said:
+        watch_said = w
+        log("pages open:", len(pages), "-> WATCH|%d" % w)
+        await to_bots("WATCH|%d" % w)
+
+
 # ---------- the bots ----------
 
 async def bot_conn(reader, writer):
@@ -221,6 +242,8 @@ async def bot_conn(reader, writer):
                         pass
                 bots[name] = {"writer": writer, "state": None, "at": time.time()}
                 log("bot", name, "in from", peer)
+                writer.write(("WATCH|%d\r\n" % watch_now()).encode("ascii"))   # a page open now or not
+                await writer.drain()
             elif s == "PONG" and name in bots:
                 bots[name]["at"] = time.time()
     except (OSError, ConnectionError, asyncio.IncompleteReadError, ValueError):   # ValueError: a line over the limit
@@ -247,6 +270,27 @@ def reply(writer, code, body=b"", ctype="text/plain; charset=utf-8", extra=""):
     writer.write(head.encode("ascii") + body)
 
 
+skill_names = None     # {id: name}, read once
+
+
+def skill_names_json():
+    global skill_names
+    if skill_names is None:
+        names = {}
+        try:
+            with open(SKILLDB, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if line.startswith("#"):
+                        continue
+                    p = line.split("|")
+                    if len(p) > 4 and p[0].isdigit() and p[4].strip():
+                        names[p[0]] = p[4].strip()
+        except OSError:
+            pass
+        skill_names = json.dumps(names, ensure_ascii=False)
+    return skill_names
+
+
 def state_json():
     return json.dumps({"active": active(), "profiles": profiles(),
                        "bots": {n: b["state"] for n, b in bots.items() if b["state"] is not None},
@@ -256,6 +300,7 @@ def state_json():
 async def events(writer):
     q = asyncio.Queue(maxsize=400)
     pages.add(q)
+    await watch_changed()
     writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\n"
                  b"Connection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\nretry: 1500\n\n")
     try:
@@ -271,6 +316,10 @@ async def events(writer):
         pass
     finally:
         pages.discard(q)
+        try:
+            await watch_changed()
+        except (OSError, ConnectionError):
+            pass
 
 
 async def http_conn(reader, writer):
@@ -311,6 +360,9 @@ async def http_conn(reader, writer):
         if method == "GET" and path == "/api/state":
             reply(writer, 200, state_json(), "application/json; charset=utf-8")
             return
+        if method == "GET" and path == "/api/skillnames":
+            reply(writer, 200, skill_names_json(), "application/json; charset=utf-8")
+            return
         if method == "GET" and path == "/api/events":
             await events(writer)
             return
@@ -330,6 +382,11 @@ async def http_conn(reader, writer):
                     os.makedirs(PROF_DIR, exist_ok=True)
                     write_text(p, dec(body))
                 await changed_files()
+                reply(writer, 200, "ok")
+                return
+            if path == "/api/cmd" and (q.get("c") or [""])[0] == "statreset":
+                await to_bots("STATRESET")
+                log("stats reset")
                 reply(writer, 200, "ok")
                 return
             if path == "/api/active" and ID_RE.match(pid):

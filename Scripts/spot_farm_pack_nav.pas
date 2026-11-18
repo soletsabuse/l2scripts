@@ -669,6 +669,8 @@ var
   PkSnapOID: array[0..31] of integer;    // mobs under the last mass spoil (taken at the cast)
   PkSnapN: integer;
   PkSweptOID: array[0..63] of integer;   // corpses a mass sweep was cast on (the bot may keep Sweepable on them)
+  PkFpX, PkFpY: array[0..15] of integer;  // the places of this fight (its start, then every 300 moved): the final
+  PkFpN: integer;                          //   sweep takes the corpses round any of them (a ranged mob hunted far off)
   PkSweptHead: integer;
   PkSweepHold: cardinal;                 // a mass sweep did not go (MP...): not tried in the fight before this
 
@@ -2355,6 +2357,7 @@ begin
   AtkOID := NpcList(i).AtkOID;
   TargetOID := PullMobTarget(i);
   if (AtkOID <> User.OID) and (TargetOID <> User.OID) then exit;
+  if PullIsStale(i) then exit;                // on us only from before (death / the start)
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
@@ -2644,6 +2647,7 @@ begin
   Atk := NpcList(i).AtkOID;
   Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
+  if PullIsStale(i) then exit;                // on us only from before (death / the start)
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
@@ -5374,6 +5378,25 @@ begin
   if Near > 0 then NavRun(X, Y, Z, Near) else NavRun(X, Y, Z, PK_REACH);
 end;
 
+// the farm spot of the room we farm nearest to us along the map (-1 = the room has none)
+function PkRoomSpotNear(): integer;
+var i: integer;
+  D, Best: double;
+begin
+  result := -1;
+  if PkRoomSel <= 0 then exit;
+  Best := 1E18;
+  for i := 0 to PkSpotN - 1 do begin
+    if not PkSpotFor(i, PkRoomSel - 1) then continue;
+    D := NavPathLen(PkSpotX[i], PkSpotY[i]);
+    if D < 0 then D := PkDist(PkSpotX[i], PkSpotY[i]) * 2;
+    if D < Best then begin
+      Best := D;
+      result := i;
+    end;
+  end;
+end;
+
 procedure PkGather();
 var i, k, NX, NY, CX, CY, n, UX, UY, UZ, Far: integer;
 begin
@@ -5386,7 +5409,7 @@ begin
     Engine.Msg('[Pack]', 'Mage: pack ' + IntToStr(PkCountAggro()) + ' - fought right here', 0);
     exit;
   end;
-  // the pull was one planned run (an AoE pull skill): it ended next to this farm spot - the pack is led there
+  // the pull was planned to end at this farm spot (an AoE run / the order of the taps): the pack is led there
   if PkSweepSpot > 0 then begin
     k := PkSweepSpot - 1;
     PkSweepSpot := 0;
@@ -5435,7 +5458,21 @@ begin
         PkRunSpot(PkCX, PkCY, PkCZ, 0);   // NavRun (a mage: in steps, healing on the way); stuck -> NavUnstick
         exit;
       end;
-      if PkSpotsOnly and (PkSpotN > 0) then begin   // only the spots: none here -> fight where we are
+      if PkSpotsOnly and (PkSpotN > 0) then begin   // only the spots: none fits this pack by the map now
+        // (the positions jump: a lag spike, client / server out of step) -> the room's own nearest spot anyway -
+        // never a fight in the middle of the room while it has a spot
+        k := PkRoomSpotNear();
+        if k >= 0 then begin
+          PkCorner := 0;
+          PkCX := PkSpotX[k];
+          PkCY := PkSpotY[k];
+          PkCZ := PkSpotZ[k];
+          if PkCZ = 0 then PkCZ := UZ;
+          Engine.Msg('[Pack]', 'Pack ' + IntToStr(n) + ' -> farm spot ' + IntToStr(k + 1) + ' of the room (none fits the ' +
+            'pack by the map now - the room''s own nearest, not a fight in the room)', 0);
+          PkRunSpot(PkCX, PkCY, PkCZ, 0);
+          exit;
+        end;
         Far := 0;                      // (here: the spots of this room, for the message)
         for i := 0 to PkSpotN - 1 do
           if (PkRoomSel > 0) and PkSpotFor(i, PkRoomSel - 1) then Inc(Far);
@@ -5484,6 +5521,7 @@ begin
   Atk := NpcList(i).AtkOID;
   Tgt := PullMobTarget(i);
   if (Atk <> User.OID) and (Tgt <> User.OID) then exit;
+  if PullIsStale(i) then exit;                // on us only from before (death / the start)
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
@@ -5695,6 +5733,33 @@ begin
     end;
 end;
 
+// where we fight now: a new place of the fight when 300+ from every one kept (16 at most)
+procedure PkFightPlace();
+var k, UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  for k := 0 to PkFpN - 1 do
+    if PkSq(PkFpX[k] - UX) + PkSq(PkFpY[k] - UY) < 90000 then exit;
+  if PkFpN >= 16 then exit;
+  PkFpX[PkFpN] := UX;
+  PkFpY[PkFpN] := UY;
+  PkFpN := PkFpN + 1;
+end;
+
+// X, Y within F2 (squared) of where we are or of a place of this fight
+function PkNearFight(X, Y: integer; F2: double): boolean;
+var k: integer;
+begin
+  result := PkSq(X - User.X) + PkSq(Y - User.Y) <= F2;
+  if result then exit;
+  for k := 0 to PkFpN - 1 do
+    if PkSq(X - PkFpX[k]) + PkSq(Y - PkFpY[k]) <= F2 then begin
+      result := true;
+      exit;
+    end;
+end;
+
 function PkSwept(OID: integer): boolean;
 var k: integer;
 begin
@@ -5728,11 +5793,13 @@ end;
 // swept (one cast per corpse, never a sweep with no sweepable corpse around); it did not go (MP, reuse...) -> they stay
 // to sweep. true = it went
 function PkSweepNow(): boolean;
-var i, NX, NY, OID, COID: integer;
+var i, NX, NY, OID, COID, SX, SY: integer;
 begin
   result := false;
   if PkCorpses() = 0 then exit;        // checked again right before the cast
   COID := PkCorpseOID;
+  SX := User.X;                        // the sweep goes round where we cast it from (we may move on meanwhile)
+  SY := User.Y;
   Engine.SetTarget(COID);
   Engine.UseSkill(PkMassSweep);
   result := SpSkillLeft(PkMassSweep) > 0;   // in reuse right after the cast = it went
@@ -5747,7 +5814,7 @@ begin
     if PkSwept(OID) then continue;
     NX := NpcList(i).X;
     NY := NpcList(i).Y;
-    if PkDist(NX, NY) > AOE_SWEEP_RANGE then continue;
+    if PkSq(NX - SX) + PkSq(NY - SY) > PkSq(AOE_SWEEP_RANGE) then continue;
     PkSweptOID[PkSweptHead] := OID;
     PkSweptHead := (PkSweptHead + 1) mod 64;
   end;
@@ -5759,6 +5826,7 @@ function PkTrySweep(): boolean;
 var n: integer;
 begin
   result := false;
+  PkFightPlace();                      // where we fight now (the final sweep looks round every place of the fight)
   if PkMassSweep = 0 then exit;
   n := PkCorpses();
   if n = 0 then begin
@@ -5774,22 +5842,22 @@ begin
   result := true;                      // the target is a corpse now
 end;
 
-// after the pack: every sweepable corpse not swept yet round the place of the fight (within PK_SWEEP_FAR - they lie
-// apart round the spot, not only within the sweep reach of where we stand): the corpse with the most others within
+// after the pack: every sweepable corpse not swept yet round the places of the fight (within PK_SWEEP_FAR of where
+// we are or of any place of it - PkFightPlace: the corner of the pack AND where a ranged mob was hunted down far off;
+// they lie apart round the spot, not only within the sweep reach of where we stand): the corpse with the most others within
 // the sweep reach first - run next to it, wait for the reuse (however long it is), the mass sweep; again until none
 // is left. A cast that did not go is tried again (3 in a row -> given up); a corpse we cannot get next to in 4 s is
 // left. Ends: none left, a mob on us (the fight goes on), PK_SWEEP_MAX_MS
 procedure PkFinalSweep();
 const
-  PK_SWEEP_FAR = 700;                  // corpses this far from where the fight ended are swept too
-  PK_SWEEP_MAX_MS = 25000;             // the final sweep at most this long (spoiled corpses vanish anyway)
-var i, j, n, BestN, BestOID, BX, BY, BZ, CX, CY, OID, NX, NY, Fails, RunOID, Done: integer;
+  PK_SWEEP_FAR = 700;                  // corpses this far from a place of the fight are swept too
+  PK_SWEEP_MAX_MS = 35000;             // the final sweep at most this long (spoiled corpses vanish anyway)
+var i, j, n, BestN, BestOID, BX, BY, BZ, OID, NX, NY, Fails, RunOID, Done: integer;
   T0, RunSince: cardinal;
   R2, F2: double;
 begin
   if (PkMassSweep = 0) or (not HasSkill(PkMassSweep)) then exit;
-  CX := User.X;                        // where the fight ended
-  CY := User.Y;
+  PkFightPlace();                      // where the fight ended is one of its places too
   R2 := PkSq(AOE_SWEEP_RANGE);
   F2 := PkSq(PK_SWEEP_FAR);
   T0 := GetTickCount;
@@ -5811,7 +5879,7 @@ begin
       if PkSwept(OID) then continue;
       NX := NpcList(i).X;
       NY := NpcList(i).Y;
-      if PkSq(NX - CX) + PkSq(NY - CY) > F2 then continue;
+      if not PkNearFight(NX, NY, F2) then continue;
       n := 0;
       for j := 0 to NpcList.Count - 1 do if j < NpcList.Count then begin
         if (not NpcList(j).Dead) or (not NpcList(j).Sweepable) then continue;
@@ -5862,7 +5930,8 @@ begin
       Delay(500);
     end;
   end;
-  if DbgOn() then Dbg('[Sweep]', 'final sweep: ' + IntToStr(Done) + ' casts in ' + IntToStr(GetTickCount - T0) + ' ms');
+  if DbgOn() then Dbg('[Sweep]', 'final sweep: ' + IntToStr(Done) + ' casts in ' + IntToStr(GetTickCount - T0) + ' ms, ' +
+    IntToStr(PkFpN) + ' places of the fight');
   PkCorpseSince := 0;
 end;
 
@@ -7268,6 +7337,12 @@ begin
       end else if (PkRangedMs > 0) and (GetTickCount - RangedSince > PkRangedMs) then begin
         TX := MgNearest();             // ... unless the nearest one stays away: go closer to it
         if (TX <> 0) and (TX = NearOID) and (PkNearD > NearD0 - 50) then begin
+          // the corpses here first (the hunt takes us away and they rot meanwhile) - if the sweep is ready
+          if (PkMassSweep > 0) and (SpSkillLeft(PkMassSweep) = 0) and (PkCorpses() > 0) then
+            if PkSweepNow() then begin
+              Dbg('[Sweep]', 'swept here before the hunt');
+              OID := 0;                // the target is a corpse now: the hunted one is selected anew
+            end;
           HuntOID := TX;
           Idx := SpMobIdx(TX);
           if Idx >= 0 then
@@ -7848,6 +7923,8 @@ var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, 
   DbgAt: cardinal;
 begin
   PkInFight := true;                   // SbAtSpot: a map with no spots - the spot buffs go in a fight
+  PkFpN := 0;                          // the places of this fight: from here on
+  PkFightPlace();
   if MgOn() then begin                 // a mage: skills, no auto attack / spoil
     PkMageFight();
     PkInFight := false;
@@ -7962,6 +8039,12 @@ begin
       end else if (PkRangedMs > 0) and (GetTickCount - RangedSince > PkRangedMs) then begin
         TX := PkNearestFight();
         if (TX <> 0) and (TX = NearOID) and (PkNearD > NearD0 - 50) then begin
+          // the corpses here first (the hunt takes us away and they rot meanwhile) - if the sweep is ready
+          if (PkMassSweep > 0) and (SpSkillLeft(PkMassSweep) = 0) and (PkCorpses() > 0) then
+            if PkSweepNow() then begin
+              Dbg('[Sweep]', 'swept here before the hunt');
+              OID := 0;                // the target is a corpse now: the hunted one is selected anew
+            end;
           HuntOID := TX;
           Dbg('[Fight]', 'hunt ' + IntToStr(TX) + ' (stays ' + IntToStr(Round(PkNearD)) + ' away)');
           Idx := SpMobIdx(TX);
@@ -8557,7 +8640,7 @@ begin
   PullSweepEndsClear();
   PkSwN := 0;
   PkSweepSpot := 0;
-  if MgOn() or (not PullAoeOn()) then exit;
+  if MgOn() then exit;                 // (a mage starts at the spot and fights where the pull ends)
   for k := 0 to PkSpotN - 1 do begin
     if PkSwN >= 8 then break;
     if not PkSpotFor(k, n) then continue;
@@ -8806,9 +8889,11 @@ begin
   if k < 1 then k := 1;
   PkState('rooms: pulling room ' + RoomName(cur) + ' full: ' + IntToStr(PkCountAggro()) + ' on us, ' +
     IntToStr(RoomFree(cur)) + ' free -> pack ' + IntToStr(k));
+  PullLog('room ' + RoomName(cur) + ': ' + IntToStr(RoomFree(cur)) + ' free, ' + IntToStr(PkCountAggro()) + ' on us -> pack ' +
+    IntToStr(k) + ' (the room is pulled at ' + IntToStr(RoomMin(cur)) + '+ free)');
   PullSetPackSize(k);
   PullSetPackLive(PkRoomRecount);      // respawn meanwhile: taken too, until we run to the spot
-  PkSweepEnds(cur);                    // an AoE pull skill: the run ends at the farm spot of the room
+  PkSweepEnds(cur);                    // the pull (AoE run / taps) is planned to end at the farm spot of the room
   Got := PullRun();
   AX := PullSweepEndPicked();
   if (AX >= 0) and (AX < PkSwN) then PkSweepSpot := PkSwSpot[AX] + 1;

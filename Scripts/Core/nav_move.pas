@@ -110,6 +110,9 @@ procedure NavSpotAddMob(X, Y: integer);       // ... and add every mob of the pa
 // sees it / no sharp turn round a corner / through the pack), else the higher the better
 function NavSpotScore(PX, PY, FromX, FromY, MX, MY: integer): double;
 function NavPathLen(X, Y: integer): double;   // run length to X, Y along the map; -1 = no way
+// run length from X1, Y1 to X2, Y2 along the map (any two points; -1 = no way). No map / the tables busy in
+// another thread: the straight length. Calls to the same X2, Y2 reuse its way table (12 kept)
+function NavWayLen(X1, Y1, X2, Y2: integer): double;
 function NavFarPoint(MinDist: integer): boolean;   // a walkable map point at least MinDist away (patrol)
 function NavFarX(): integer;
 function NavFarY(): integer;
@@ -2636,6 +2639,59 @@ begin
     i := j;
   end;
   result := result + Sqrt(NmSq(NavX[i] - X) + NmSq(NavY[i] - Y));
+end;
+
+// run length from X1, Y1 to X2, Y2: straight when nothing is between, else the way table of X2, Y2 (NmFieldOf) and
+// the cheapest graph node X1, Y1 sees (as NmRoute: the cheapest first, its sight checked, the next if hidden).
+// -1 = no way. No map / another thread on the tables (NmFBusy) / the table rewritten meanwhile: the straight one
+function NavWayLen(X1, Y1, X2, Y2: integer): double;
+var f, Base, i, n, PX, PY: integer;
+  T: cardinal;
+  D, DX, DY, BestC: double;
+  Cost: array of double;
+begin
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  result := Sqrt(DX * DX + DY * DY);
+  if (not NmReady) or (NavN = 0) then exit;
+  if NmLineFree(X1, Y1, X2, Y2, false) then exit;
+  if NmFBusy then exit;
+  NmFBusy := true;
+  f := NmFieldOf(X2, Y2);
+  Base := f * NavN;
+  T := GetTickCount;
+  SetLength(Cost, NavN);
+  for i := 0 to NavN - 1 do begin
+    Cost[i] := 1E18;
+    if NmFD[Base + i] >= 1E17 then continue;
+    if T < NmBadUntil[i] then continue;
+    DX := NavX[i] - X1;
+    DY := NavY[i] - Y1;
+    D := Sqrt(DX * DX + DY * DY);
+    if D > NAV_SEE_MAX then continue;
+    Cost[i] := D + NmFD[Base + i];
+  end;
+  D := -1;
+  while true do begin
+    n := -1;
+    BestC := 1E17;
+    for i := 0 to NavN - 1 do
+      if Cost[i] < BestC then begin
+        BestC := Cost[i];
+        n := i;
+      end;
+    if n < 0 then break;
+    PX := NavX[n];
+    PY := NavY[n];
+    if NmLineFree(X1, Y1, PX, PY, false) then begin
+      D := BestC;
+      break;
+    end;
+    Cost[n] := 1E18;                   // hidden from X1, Y1: the next cheapest
+  end;
+  NmFBusy := false;
+  if (NmFTX[f] <> X2) or (NmFTY[f] <> Y2) or (NmFVer[f] <> NmBadVer) then exit;   // rewritten meanwhile
+  result := D;
 end;
 
 // patrol: the next graph node at least MinDist away, going round the node list (spread over the map)

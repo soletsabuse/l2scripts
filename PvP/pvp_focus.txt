@@ -14,25 +14,47 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //
 // A group of a profile: a key (none: auto only) and a mode:
 //   class   - enemies of the classes of the group, by the class priority (1 first), then the nearest
-//   reskill - enemies up from the dead not longer than <window> s ago (the classes: optional)
+//   reskill - enemies up from the dead res_min_ms..res_max_ms ago (the classes: optional). Its key turns it ON / OFF
+//             (auto=1: on at the start); while on, the bot takes such an enemy by itself (every RES_LOOK_MS) and does
+//             the after action at once (attack)
+//   onus    - enemies holding me or a party member in their target (the ones on me first; the classes: optional)
 //   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
 //             who=target - the one it is cast on (the one being charged: the most casters first),
 //             who=caster - the caster (the classes: optional, of the one taken)
 //   names   - the priority players of the list, in its order (any class / clan)
+//   smart   - the assisters: the enemy who switches his target onto one of us (me / my party) first while the
+//             others switch onto the same one after him (an assist call). Only the target switches count - a cast,
+//             an AoE, a hit do not; switches at the same moment as his (< ASSIST_MIN_MS: an AoE, an auto target)
+//             do not either. Points: one per follower (1.5 when the one switched onto is me), halved every
+//             ASSIST_HALF_MS. The classes: optional. None with points in range -> the one targeting us now
 // Every mode: the priority players of the list first (prio_first=1), the skipped ones never; never a party
 // member / our clan / our alliance; within the group's range and height. An enemy: his clan OR alliance is
 // on the clans list (any case; the list empty -> anyone), or he is a priority player.
 // Pressed again while on its last pick -> the next one by the same order (a cycle: it ends cycle_ms after the
 // last press or when the target is changed by other means). Only the target now can be taken -> its after
 // action again.
-// auto=1 (reskill / cast): the group fires by itself on a new revive / a new cast of its skills (not more
-// often than auto_ms, not while the target is one of the group already).
+// auto=1 (cast): the group fires by itself on a new cast of its skills (not more often than auto_ms, not while the
+// target is one of the group already). reskill: see above.
+// The notices (what was taken, res-kill on / off): notify=<chat type> - a fake chat message only we see: 15 the command
+// channel commander (in the middle of the screen, as the siege commander's), 19 a screen announce, 3 party, 0 none.
 // A pick: the target; mark=1..4 -> that token on him (RequestActionUse $4E..$51, sniffed with token_sniffer);
 // after=attack -> the auto attack, after=skill:<ID> -> that skill (sent every RESEND_MS till it starts, up to
 // FIRE_MS); ctrl=1 -> both as with Ctrl held. Said in the bot window and (chat=1) as a fake party chat
 // message only we see. A key works only while the game window of THIS character is the active one.
 // The casts are read as force_sounds does (CharList(i).Cast / .Target every CAST_SCAN_MS); the revives:
-// a player seen dead, then alive.
+// a player seen dead, then alive within REV_GAP_MS (in sight all the time - not one back from the town later).
+//
+// The keys come first: the scans for the page (the state, the casts, the revives) look at the keys every
+// SCAN_CHUNK players and stop for a press (done the next time). The state is built only while a page watches
+// (the server says WATCH|1 / WATCH|0; an old server says nothing - always). The names / clans of the players
+// are read from the bot once per NAME_KEEP_MS (its string fields read often broke scripts), not every state.
+// "perf" in the state: the press -> SetTarget time, the slowest state / cast scan / loop of the last PERF_KEEP_MS.
+//
+// The stats (the page's Stats tab; "foes" in the state every FOES_MS): every player in sight followed from the
+// bot's own data (CharList(i).Target, .Cast - no packets, no system messages): how often an enemy switched onto
+// me / onto my party, how long he held me, his casts at me / at the party (and their skills), the assists he
+// started (and how many followed him), how often he followed another one, his assister points. Since the start /
+// the page's reset (STATRESET from the server).
 // =============================================================================
 
 const
@@ -49,6 +71,11 @@ const
   CAST_SCAN_MS  = 100;      // who casts what: looked at this often
   CAST_KEEP_MS  = 600;      // a cast seen this lately still counts (a channel flickers between the looks)
   REV_SCAN_MS   = 200;      // who is dead / up again: looked at this often
+  REV_GAP_MS    = 2500;     // seen dead this lately, now alive = got up (else he came back from the town)
+  SCAN_CHUNK    = 16;       // the scans look at the keys after this many players
+  NAME_KEEP_MS  = 5000;     // a player's name / clan / alliance for the state read again after this long
+  NAME_SLOTS    = 251;      // ... kept for this many players (a prime: the OID mod it is the place)
+  PERF_KEEP_MS  = 30000;    // "perf": the slowest of this long
   RESEND_MS     = 150;      // after=skill: sent again this often ...
   FIRE_MS       = 1500;     // ... till it starts, at most this long
   MAX_GROUPS    = 16;
@@ -68,6 +95,18 @@ const
   MODE_RES      = 1;
   MODE_CAST     = 2;
   MODE_NAMES    = 3;
+  MODE_SMART    = 4;
+  MODE_ONUS     = 5;
+  RES_LOOK_MS   = 100;      // a res-kill group that is on looks for an enemy up from the dead this often
+  ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
+  ASSIST_MIN_MS = 150;      // ... closer than this to his switch = the same moment (an AoE, an auto target): no follower
+  ASSIST_HALF_MS = 120000;  // an assister's points halve this often (the callers of now on top)
+  SMART_MIN     = 0.5;      // the points an assister needs (one follower = 1)
+  FOE_SLOTS     = 251;      // the players followed (their target, the stats): the OID mod it is the place
+  FOE_SEEN_MS   = 2000;     // not seen this long = out of sight: his target then is not a switch
+  FOES_MS       = 1000;     // the stats into the state this often
+  FOES_OUT      = 80;       // ... for this many enemies at most
+  US_MS         = 1000;     // who is "us" (me + the party members in sight) looked at this often
 
 function GetAsyncKeyState(vKey: integer): smallint; stdcall; external 'user32.dll';
 function GetForegroundWindow: cardinal; stdcall; external 'user32.dll';
@@ -87,7 +126,11 @@ var
   GMode, GRange, GHeight, GMark, GAfter, GAfterSk, GAutoMs, GWindow, GWho, GClsN, GSkN: array[0..15] of integer;
   GCls, GTier: array[0..1023] of integer;            // group g: GCls[g * MAX_CLS + k], its priority GTier (1 first)
   GSk: array[0..255] of integer;                     // group g: GSk[g * MAX_SK + k]
-  AutoWant: array[0..15] of boolean;                 // a new revive / cast for an auto group
+  AutoWant: array[0..15] of boolean;                 // a new cast for an auto cast group
+  GResMin, GResMax: array[0..15] of integer;         // reskill: up from the dead this long ago (ms), at least / at most
+  GResOn: array[0..15] of boolean;                   // reskill: on now (its key turns it on / off)
+  ResLookAt: cardinal;
+  NotifyType: integer;                               // the notices: the chat type (15 middle of the screen ... 0 none)
   AutoAt: array[0..15] of cardinal;                  // ... it fired then
   // the profile
   ProfName, ClanKey, ClanText, ChatName: string;     // ClanKey: ',clan one,clan two,' in lower case ('' = anyone)
@@ -110,9 +153,10 @@ var
   SnSk, SnCnt, SnCls: array[0..39] of integer;
   SnAt: array[0..39] of cardinal;
   SnN: integer;
-  // revives: the players seen dead; the ones seen getting up and when
+  // revives: the players seen dead (and when the last time); the ones seen getting up and when
   DeadOID: array[0..127] of integer;
-  DeadHead: integer;
+  DeadAt: array[0..127] of cardinal;
+  DeadHead, DeadCnt: integer;                        // DeadCnt: the slots in use (0: nobody to look for)
   RevOID: array[0..63] of integer;
   RevAt: array[0..63] of cardinal;
   RevHead: integer;
@@ -131,6 +175,32 @@ var
   SrvAt: cardinal;
   CfgAt: cardinal;                                   // the files were read then (0: read them now)
   StOut: string;                                     // the state being built
+  Watching: boolean;                                 // a page watches (WATCH|1): the state is built
+  StateAt: cardinal;                                 // the state was sent then (0: send it now)
+  // the players' name / clan / alliance as JSON for the state, read from the bot once per NAME_KEEP_MS
+  NcOID: array[0..250] of integer;
+  NcJs: array[0..250] of string;
+  NcAt: array[0..250] of cardinal;
+  // the players followed: their target (since when) and the stats against us since the start / the reset
+  FoOID, FoTgt, FoCls: array[0..250] of integer;
+  FoTgtAt, FoSeen, FoLast, FoScAt, FoOursAt: array[0..250] of cardinal;
+  FoOurs: array[0..250] of boolean;
+  FoSwMe, FoSwUs, FoTMe, FoCastMe, FoCastUs, FoInit, FoLed, FoFollow: array[0..250] of integer;
+  FoScore: array[0..250] of double;
+  FoJs: array[0..250] of string;
+  FoSk, FoSkN: array[0..1003] of integer;        // slot k: the skills cast at us FoSk[k * 4 + j], how often
+  // us: me + the party members in sight
+  UsOID: array[0..15] of integer;
+  UsN: integer;
+  // a burst of switches onto one of us (BuV): its first (the assister?), when, his followers, who switched in it
+  BuV, BuInit, BuN, BuMemN: array[0..15] of integer;
+  BuAt: array[0..15] of cardinal;
+  BuMem: array[0..255] of integer;               // burst b: BuMem[b * 16 + j]
+  SmartFb: boolean;                              // ScanGroup, smart: the fallback pass (one who targets us now)
+  FoesAt, UsAt: cardinal;
+  // perf: the press -> SetTarget time (the last one, the slowest), the slowest state / cast scan / loop
+  PfKey, PfKeyMax, PfDump, PfCast, PfLoop: integer;
+  PfAt: cardinal;
 
 // ===================== text =====================
 
@@ -161,11 +231,17 @@ begin
   result := result + '"';
 end;
 
-// into the bot's window and (chat=1) the party chat as a fake message only we see
+// a notice on the screen only (a fake chat message of type NotifyType only we see: 15 = in the middle of the screen)
+procedure ScreenSay(Txt: string);
+begin
+  if NotifyType > 0 then ChatSayType(NotifyType, ChatName, Copy(Txt, 1, 160));
+end;
+
+// into the bot's window and on the screen
 procedure Say(Txt: string);
 begin
   Engine.Msg('[PvP]', Txt, 128);
-  if ChatOn then ChatSayFrom(ChatName, Copy(Txt, 1, 200));
+  ScreenSay(Txt);
 end;
 
 function HexLE32(V: integer): string;
@@ -352,6 +428,13 @@ begin
   end;
 end;
 
+// a press waiting (the scans stop for it): the keys looked at now
+function KeyPending(): boolean;
+begin
+  if NextG < 0 then PollKeys();
+  result := NextG >= 0;
+end;
+
 // ===================== who is who =====================
 
 procedure RefreshMe();
@@ -439,40 +522,39 @@ end;
 
 // ===================== revives =====================
 
-function WasDead(OID: integer): boolean;
+// the slot of a player seen dead (-1 none)
+function DeadIdx(OID: integer): integer;
 var k: integer;
 begin
-  result := false;
+  result := -1;
+  if DeadCnt = 0 then exit;
   for k := 0 to DEAD_SLOTS - 1 do
     if DeadOID[k] = OID then begin
-      result := true;
+      result := k;
       exit;
     end;
 end;
 
-procedure ForgetDead(OID: integer);
+// OID seen dead now
+procedure RememberDead(OID: integer);
 var k: integer;
 begin
-  for k := 0 to DEAD_SLOTS - 1 do
-    if DeadOID[k] = OID then DeadOID[k] := 0;
-end;
-
-procedure RememberDead(OID: integer);
-begin
-  if WasDead(OID) then exit;
-  DeadOID[DeadHead] := OID;
-  DeadHead := (DeadHead + 1) mod DEAD_SLOTS;
+  k := DeadIdx(OID);
+  if k < 0 then begin
+    k := DeadHead;
+    if DeadOID[k] = 0 then DeadCnt := DeadCnt + 1;
+    DeadOID[k] := OID;
+    DeadHead := (DeadHead + 1) mod DEAD_SLOTS;
+  end;
+  DeadAt[k] := GetTickCount;
 end;
 
 // OID got up: noted; the auto res-kill groups fire
 procedure RememberRevive(OID: integer);
-var g: integer;
 begin
   RevOID[RevHead] := OID;
   RevAt[RevHead] := GetTickCount;
   RevHead := (RevHead + 1) mod REV_SLOTS;
-  for g := 0 to GroupN - 1 do
-    if GAuto[g] and (GMode[g] = MODE_RES) then AutoWant[g] := true;
 end;
 
 // ms since OID got up from the dead (the last time); 999999999 = not seen
@@ -484,18 +566,329 @@ begin
     if (RevOID[k] = OID) and (GetTickCount - RevAt[k] < result) then result := GetTickCount - RevAt[k];
 end;
 
-// who is dead now, who got up since the last look (numbers only)
+// somebody got up from the dead res_min_ms..res_max_ms of group g ago (before the whole scan: cheap)
+function ResPending(g: integer): boolean;
+var k: integer;
+  Ago: cardinal;
+begin
+  result := false;
+  for k := 0 to REV_SLOTS - 1 do begin
+    if RevOID[k] = 0 then continue;
+    Ago := GetTickCount - RevAt[k];
+    if (Ago >= cardinal(GResMin[g])) and (Ago <= cardinal(GResMax[g])) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// who is dead now, who got up since the last look (numbers only). Got up = alive now and seen dead within
+// REV_GAP_MS: one seen dead long ago (he went to the town, came back) is not a revive. Stops for a key press
 procedure ScanRevives();
-var i, OID: integer;
+var i, k, OID: integer;
 begin
   for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if (i mod SCAN_CHUNK = SCAN_CHUNK - 1) and KeyPending() then exit;
     OID := CharList(i).OID;
     if OID = 0 then continue;
     if CharList(i).Dead then RememberDead(OID)
-    else if WasDead(OID) then begin
-      ForgetDead(OID);
-      RememberRevive(OID);
+    else begin
+      k := DeadIdx(OID);
+      if k >= 0 then begin
+        if GetTickCount - DeadAt[k] <= REV_GAP_MS then RememberRevive(OID);
+        DeadOID[k] := 0;
+        DeadCnt := DeadCnt - 1;
+      end;
     end;
+  end;
+end;
+
+// '"n": .., "c": .., "a": ..' of player i (OID) for the state: read from the bot once per NAME_KEEP_MS. The place:
+// OID mod NAME_SLOTS, the next ones (up to 8) when taken by another; all taken -> the first one is reused
+function NameJson(i, OID: integer): string;
+var h, j, s, Spot: integer;
+begin
+  h := OID mod NAME_SLOTS;
+  if h < 0 then h := -h;
+  Spot := -1;
+  for j := 0 to 7 do begin
+    s := (h + j) mod NAME_SLOTS;
+    if NcOID[s] = OID then begin
+      if GetTickCount - NcAt[s] < NAME_KEEP_MS then begin
+        result := NcJs[s];
+        exit;
+      end;
+      Spot := s;
+      break;
+    end;
+    if (Spot < 0) and ((NcOID[s] = 0) or (GetTickCount - NcAt[s] > 60000)) then Spot := s;
+  end;
+  if Spot < 0 then Spot := h;
+  result := '"n": ' + JsonStr(CharList(i).Name) + ', "c": ' + JsonStr(CharList(i).Clan) + ', "a": ' +
+    JsonStr(CharList(i).Ally);
+  NcOID[Spot] := OID;
+  NcJs[Spot] := result;
+  NcAt[Spot] := GetTickCount;
+end;
+
+// ===================== who targets us: the players followed =====================
+
+function IsUs(OID: integer): boolean;
+var j: integer;
+begin
+  result := false;
+  if OID = 0 then exit;
+  for j := 0 to UsN - 1 do
+    if UsOID[j] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// us = me + the party members in sight
+procedure RefreshUs();
+var i: integer;
+begin
+  UsOID[0] := MyOID;
+  UsN := 1;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).IsMember and (UsN < 16) then begin
+      UsOID[UsN] := CharList(i).OID;
+      UsN := UsN + 1;
+    end;
+end;
+
+// the slot of OID among the players followed (-1 none). A place: OID mod FOE_SLOTS, the next ones when taken
+// (slots are never emptied, only reused: a free one ends the search)
+function FoIdx(OID: integer): integer;
+var h, j, s: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  h := OID mod FOE_SLOTS;
+  if h < 0 then h := -h;
+  for j := 0 to 15 do begin
+    s := (h + j) mod FOE_SLOTS;
+    if FoOID[s] = OID then begin
+      result := s;
+      exit;
+    end;
+    if FoOID[s] = 0 then exit;
+  end;
+end;
+
+// the stats of slot k from zero
+procedure FoClear(k: integer);
+var j: integer;
+begin
+  FoSwMe[k] := 0;
+  FoSwUs[k] := 0;
+  FoTMe[k] := 0;
+  FoCastMe[k] := 0;
+  FoCastUs[k] := 0;
+  FoInit[k] := 0;
+  FoLed[k] := 0;
+  FoFollow[k] := 0;
+  FoScore[k] := 0;
+  FoScAt[k] := GetTickCount;
+  FoLast[k] := 0;
+  for j := 0 to 3 do begin
+    FoSk[k * 4 + j] := 0;
+    FoSkN[k * 4 + j] := 0;
+  end;
+end;
+
+// a slot for player i (OID, new): a free place of his chain, else the one seen the longest ago there
+function FoSlot(i, OID: integer): integer;
+var h, j, s, Old: integer;
+  OldAt: cardinal;
+begin
+  h := OID mod FOE_SLOTS;
+  if h < 0 then h := -h;
+  Old := h;
+  OldAt := $FFFFFFFF;
+  result := -1;
+  for j := 0 to 15 do begin
+    s := (h + j) mod FOE_SLOTS;
+    if FoOID[s] = 0 then begin
+      result := s;
+      break;
+    end;
+    if FoSeen[s] < OldAt then begin
+      OldAt := FoSeen[s];
+      Old := s;
+    end;
+  end;
+  if result < 0 then result := Old;
+  FoOID[result] := OID;
+  FoClear(result);
+  FoCls[result] := CharList(i).ClassID;
+  FoOurs[result] := IsOurs(i);
+  FoOursAt[result] := GetTickCount;
+  FoJs[result] := '';
+end;
+
+// 2 ^ (-dt / ASSIST_HALF_MS): the whole halvings, the rest straight (close enough)
+function HalfOf(dt: cardinal): double;
+var n, j: integer;
+begin
+  result := 1;
+  n := dt div ASSIST_HALF_MS;
+  if n > 20 then begin
+    result := 0;
+    exit;
+  end;
+  for j := 1 to n do result := result * 0.5;
+  result := result * (1 - ((dt mod ASSIST_HALF_MS) / ASSIST_HALF_MS) / 2);
+end;
+
+// the assister points of slot k now
+function ScoreOf(k: integer): double;
+begin
+  result := FoScore[k] * HalfOf(GetTickCount - FoScAt[k]);
+end;
+
+procedure AddScore(k: integer; W: double);
+begin
+  FoScore[k] := ScoreOf(k) + W;
+  FoScAt[k] := GetTickCount;
+end;
+
+// the burst on V (one of us): its place (made: the oldest place reused)
+function BurstOf(V: integer): integer;
+var j, Old: integer;
+begin
+  Old := 0;
+  for j := 0 to 15 do begin
+    if BuV[j] = V then begin
+      result := j;
+      exit;
+    end;
+    if BuAt[j] < BuAt[Old] then Old := j;
+  end;
+  result := Old;
+  BuV[result] := V;
+  BuInit[result] := 0;
+  BuN[result] := 0;
+  BuMemN[result] := 0;
+  BuAt[result] := 0;
+end;
+
+function InBurst(j, OID: integer): boolean;
+var m: integer;
+begin
+  result := false;
+  for m := 0 to BuMemN[j] - 1 do
+    if BuMem[j * 16 + m] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// the enemy of slot k switched onto V (one of us) now: the first of a new burst on V, or one more of it - a
+// follower of the first when later than ASSIST_MIN_MS and the first still holds V (an assist takes his target)
+procedure SwitchToUs(k, V: integer);
+var j, f, OID: integer;
+  W: double;
+begin
+  OID := FoOID[k];
+  j := BurstOf(V);
+  if (BuInit[j] = 0) or (GetTickCount - BuAt[j] > ASSIST_WIN_MS) then begin
+    BuInit[j] := OID;
+    BuAt[j] := GetTickCount;
+    BuN[j] := 0;
+    BuMem[j * 16] := OID;
+    BuMemN[j] := 1;
+    exit;
+  end;
+  if InBurst(j, OID) then exit;                    // back onto him: counted already
+  if BuMemN[j] < 16 then begin
+    BuMem[j * 16 + BuMemN[j]] := OID;
+    BuMemN[j] := BuMemN[j] + 1;
+  end;
+  if GetTickCount - BuAt[j] < ASSIST_MIN_MS then exit;   // the same moment as the first: an AoE / an auto target
+  f := FoIdx(BuInit[j]);
+  if f < 0 then exit;
+  if FoTgt[f] <> V then exit;                      // the first is on another one now: not his assist
+  BuN[j] := BuN[j] + 1;
+  if BuN[j] = 1 then FoInit[f] := FoInit[f] + 1;
+  FoLed[f] := FoLed[f] + 1;
+  W := 1;
+  if V = MyOID then W := 1.5;                      // onto me: more
+  AddScore(f, W);
+  FoLast[f] := GetTickCount;
+  FoFollow[k] := FoFollow[k] + 1;
+end;
+
+// player i (OID) targets Tg now. A switch of an enemy onto us: counted, the assist bursts. A player new / back in
+// sight: his target taken as it is (no switch)
+procedure TrackTarget(i, OID, Tg: integer);
+var k: integer;
+begin
+  k := FoIdx(OID);
+  if k < 0 then begin
+    k := FoSlot(i, OID);
+    FoSeen[k] := 0;
+  end;
+  if FoJs[k] = '' then FoJs[k] := NameJson(i, OID);
+  if GetTickCount - FoOursAt[k] > 10000 then begin  // the party / the clan may change
+    FoOurs[k] := IsOurs(i);
+    FoOursAt[k] := GetTickCount;
+  end;
+  if GetTickCount - FoSeen[k] > FOE_SEEN_MS then begin   // new / back in sight
+    FoSeen[k] := GetTickCount;
+    FoTgt[k] := Tg;
+    FoTgtAt[k] := GetTickCount;
+    exit;
+  end;
+  FoSeen[k] := GetTickCount;
+  if Tg = FoTgt[k] then exit;
+  if FoTgt[k] = MyOID then FoTMe[k] := FoTMe[k] + integer(GetTickCount - FoTgtAt[k]);
+  FoTgt[k] := Tg;
+  FoTgtAt[k] := GetTickCount;
+  if FoOurs[k] or (Tg = 0) then exit;
+  if Tg = MyOID then FoSwMe[k] := FoSwMe[k] + 1
+  else if IsUs(Tg) then FoSwUs[k] := FoSwUs[k] + 1
+  else exit;
+  FoLast[k] := GetTickCount;
+  SwitchToUs(k, Tg);
+end;
+
+// a new cast of OID (skill Sk) at Tg: at one of us -> counted, its skill tallied (the 4 most cast kept)
+procedure CastAtUs(OID, Sk, Tg: integer);
+var k, j, Least: integer;
+begin
+  if not IsUs(Tg) then exit;
+  k := FoIdx(OID);
+  if k < 0 then exit;
+  if FoOurs[k] then exit;
+  if Tg = MyOID then FoCastMe[k] := FoCastMe[k] + 1 else FoCastUs[k] := FoCastUs[k] + 1;
+  FoLast[k] := GetTickCount;
+  Least := 0;
+  for j := 0 to 3 do begin
+    if FoSk[k * 4 + j] = Sk then begin
+      FoSkN[k * 4 + j] := FoSkN[k * 4 + j] + 1;
+      exit;
+    end;
+    if FoSkN[k * 4 + j] < FoSkN[k * 4 + Least] then Least := j;
+  end;
+  FoSk[k * 4 + Least] := Sk;
+  FoSkN[k * 4 + Least] := 1;
+end;
+
+// the page's reset: the stats from zero (the targets followed on)
+procedure FoResetAll();
+var k: integer;
+begin
+  for k := 0 to FOE_SLOTS - 1 do
+    if FoOID[k] <> 0 then begin
+      FoClear(k);
+      if FoTgt[k] <> 0 then FoTgtAt[k] := GetTickCount;
+    end;
+  for k := 0 to 15 do begin
+    BuV[k] := 0;
+    BuInit[k] := 0;
+    BuAt[k] := 0;
   end;
 end;
 
@@ -559,9 +952,10 @@ end;
 
 // who casts what now (as force_sounds reads it): a cast seen within CAST_KEEP_MS still counts. A new one (a
 // caster not casting that skill before) of a skill of an auto cast group -> that group fires
-procedure CastScan();
+procedure CastScan(Abortable: boolean);
 var i, k, g, n, OID, Sk, Tg, Cls: integer;
   IsNew: boolean;
+  T: TL2Live;
 begin
   n := 0;
   for k := 0 to CsN - 1 do
@@ -577,7 +971,14 @@ begin
     end;
   CsN := n;
   for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if Abortable and (i mod SCAN_CHUNK = SCAN_CHUNK - 1) and KeyPending() then exit;   // the key first
     if CharList(i).Dead then continue;
+    OID := CharList(i).OID;
+    if (OID = 0) or (OID = MyOID) then continue;
+    Tg := 0;
+    T := CharList(i).Target;                        // the object once (it may go meanwhile)
+    if T <> nil then Tg := T.OID;
+    TrackTarget(i, OID, Tg);                        // who switched onto us
     Sk := 0;
     try
       if CharList(i).Cast.EndTime > 0 then Sk := CharList(i).Cast.ID;
@@ -585,10 +986,6 @@ begin
       Sk := 0;
     end;
     if Sk <= 0 then continue;
-    OID := CharList(i).OID;
-    if OID = 0 then continue;
-    Tg := 0;
-    if CharList(i).Target <> nil then Tg := CharList(i).Target.OID;
     Cls := CharList(i).ClassID;
     k := CastIdx(OID);
     IsNew := true;
@@ -604,6 +1001,7 @@ begin
     CsCls[k] := Cls;
     CsAt[k] := GetTickCount;
     if not IsNew then continue;
+    CastAtUs(OID, Sk, Tg);
     if not IsOurs(i) then NoteSeen(Sk, Cls);
     for g := 0 to GroupN - 1 do
       if GAuto[g] and (GMode[g] = MODE_CAST) then
@@ -631,8 +1029,11 @@ end;
 // nearest one of the group out of range / height (-1 none)
 function ScanGroup(g, Cur: integer; UseCycle: boolean; var BestOID: integer; var BestD: double;
   var InRange: integer; var CurIn: boolean; var FarI: integer; var FarD: double): integer;
-var i, OID, Cls, PX, PY, PZ, T, Rk, Tag, Cnt, Md: integer;
-  D, Sc, BestSc: double;
+var i, OID, Cls, PX, PY, PZ, T, Rk, Tag, Cnt, Md, k, Tg: integer;
+  D, Sc, BestSc, Sm: double;
+  OnUs: boolean;
+  TL: TL2Live;
+  Ago: cardinal;
 begin
   result := -1;
   BestOID := 0;
@@ -654,8 +1055,26 @@ begin
       T := TierOf(g, Cls);
       if T = 0 then continue;
     end;
+    Sm := 0;
     if Md = MODE_RES then begin
-      if RevivedAgo(OID) > cardinal(GWindow[g] * 1000) then continue;
+      Ago := RevivedAgo(OID);
+      if (Ago < cardinal(GResMin[g])) or (Ago > cardinal(GResMax[g])) then continue;
+    end else if Md = MODE_ONUS then begin
+      TL := CharList(i).Target;                      // whom he holds in his target: me / a party member
+      Tg := 0;
+      if TL <> nil then Tg := TL.OID;
+      if not IsUs(Tg) then continue;
+      if Tg <> MyOID then Cnt := 1;                  // on a party member: after the ones on me
+    end else if Md = MODE_SMART then begin
+      k := FoIdx(OID);
+      OnUs := false;
+      if k >= 0 then begin
+        Sm := ScoreOf(k);
+        OnUs := IsUs(FoTgt[k]);
+      end;
+      if SmartFb then begin
+        if not OnUs then continue;                   // the fallback: one who targets us now
+      end else if Sm < SMART_MIN then continue;
     end else if Md = MODE_CAST then begin
       if GWho[g] = 1 then begin
         if not CastingFor(g, OID) then continue;
@@ -695,7 +1114,10 @@ begin
     if UseCycle then
       if InCycle(OID) then continue;
     if Cnt > 20 then Cnt := 20;
-    Sc := Rk * 100000000.0 + T * 10000000.0 + (20 - Cnt) * 100000.0 + D;
+    if Sm > 99 then Sm := 99;
+    if Md = MODE_SMART then Sc := Rk * 100000000.0 + T * 10000000.0 + (99 - Sm) * 100000.0 + D
+    else if Md = MODE_ONUS then Sc := Rk * 100000000.0 + T * 10000000.0 + Cnt * 1000000.0 + D
+    else Sc := Rk * 100000000.0 + T * 10000000.0 + (20 - Cnt) * 100000.0 + D;
     if Sc < BestSc then begin
       BestSc := Sc;
       BestD := D;
@@ -776,17 +1198,17 @@ begin
   result := '';
   if GAfter[g] = 1 then begin
     Engine.Attack(300, GCtrl[g]);
-    result := ' -> attack';
+    result := ' -> атака';
     exit;
   end;
   if (GAfter[g] <> 2) or (GAfterSk[g] <= 0) then exit;
   if not SkillList.ByID(GAfterSk[g], Sk) then begin
-    result := ' -> no skill ' + IntToStr(GAfterSk[g]);
+    result := ' -> нет скилла ' + IntToStr(GAfterSk[g]);
     exit;
   end;
   Left := Sk.EndTime;
   if Left > 1000 then begin
-    result := ' -> ' + Sk.Name + ' in reuse ' + IntToStr((Left + 999) div 1000) + ' s';
+    result := ' -> ' + Sk.Name + ' в откате ' + IntToStr((Left + 999) div 1000) + ' с';
     exit;
   end;
   PendSk := GAfterSk[g];
@@ -801,20 +1223,21 @@ end;
 
 // group g: a key press (IsAuto false) or its auto event. true = somebody was targeted
 function PickGroup(g: integer; IsAuto: boolean): boolean;
-var Best, BestOID, InRange, FarI, FarOID, Cur: integer;
+var Best, BestOID, InRange, FarI, FarOID, Cur, k: integer;
   BestD, FarD: double;
-  CurIn: boolean;
+  CurIn, Fb: boolean;
   Who, Rest, Pre: string;
 begin
+  Fb := false;
   result := false;
   RefreshMe();
-  if GMode[g] = MODE_CAST then CastScan();   // fresh
+  if GMode[g] = MODE_CAST then CastScan(false);   // fresh, whole
   Cur := TargetOID();
   Pre := GName[g] + ': ';
   if IsAuto then begin
     Best := ScanGroup(g, Cur, false, BestOID, BestD, InRange, CurIn, FarI, FarD);
     if CurIn or (Best < 0) then exit;   // on one of them already / none in range: quiet
-    Pre := GName[g] + ' (auto): ';
+    Pre := GName[g] + ' (сам): ';
     CycN := 0;
   end else begin
     // a new cycle unless this group key was pressed lately and we are still on its last pick
@@ -826,6 +1249,12 @@ begin
       CycN := 0;
       Best := ScanGroup(g, Cur, true, BestOID, BestD, InRange, CurIn, FarI, FarD);
     end;
+    if (Best < 0) and (not CurIn) and (GMode[g] = MODE_SMART) then begin   // no assister: one who targets us now
+      SmartFb := true;
+      Best := ScanGroup(g, Cur, true, BestOID, BestD, InRange, CurIn, FarI, FarD);
+      SmartFb := false;
+      Fb := Best >= 0;
+    end;
     CycG := g;
     CycAt := GetTickCount;
     if Best < 0 then begin
@@ -835,7 +1264,7 @@ begin
           CycN := 1;
         end;
         Rest := DoAfter(g, Cur);
-        Say(Pre + 'on ' + TargetName() + ' already - the only one' + Rest);
+        Say(Pre + 'уже на ' + TargetName() + ', он один' + Rest);
         exit;
       end;
       CycN := 0;
@@ -843,17 +1272,24 @@ begin
         FarOID := 0;
         if FarI < CharList.Count then FarOID := CharList(FarI).OID;
         Rest := '';
-        if FarD <= GRange[g] then Rest := ' (too high / low: more than ' + IntToStr(GHeight[g]) + ')';
-        Say(Pre + 'nobody within ' + IntToStr(GRange[g]) + ' - the nearest is ' + WhoText(FarI, FarOID) +
-          ' at ' + IntToStr(Round(FarD)) + Rest);
+        if FarD <= GRange[g] then Rest := ' (выше / ниже больше чем на ' + IntToStr(GHeight[g]) + ')';
+        Say(Pre + 'никого в ' + IntToStr(GRange[g]) + ', ближайший ' + WhoText(FarI, FarOID) + ' - ' +
+          IntToStr(Round(FarD)) + Rest);
       end else
-        Say(Pre + 'nobody around');
+        Say(Pre + 'никого рядом');
       exit;
     end;
   end;
 
   Who := WhoText(Best, BestOID);   // before the target: the list may change meanwhile
-  Engine.SetTarget(BestOID);
+  if not Engine.SetTarget(BestOID) then begin
+    Say(Pre + 'не взял ' + Who + ' (' + IntToStr(Round(BestD)) + ')');
+    exit;
+  end;
+  if not IsAuto then begin       // the press -> the target taken
+    PfKey := GetTickCount - LastAt;
+    if PfKey > PfKeyMax then PfKeyMax := PfKey;
+  end;
   CycG := g;
   CycAt := GetTickCount;
   CycOID[CycN] := BestOID;
@@ -863,12 +1299,39 @@ begin
   Rest := '';
   if GMode[g] = MODE_CAST then begin
     if GWho[g] = 0 then Rest := ' x' + IntToStr(ChargeCount(g, BestOID))
-    else Rest := ' (casting)';
+    else Rest := ' (кастует)';
+  end;
+  if GMode[g] = MODE_ONUS then begin
+    k := FoIdx(BestOID);
+    if (k >= 0) and (FoTgt[k] = MyOID) then Rest := ' (держит тебя)'
+    else Rest := ' (держит пати)';
+  end;
+  if GMode[g] = MODE_SMART then begin
+    k := FoIdx(BestOID);
+    if Fb then Rest := ' (ассистеров нет - кто держит нас)'
+    else if k >= 0 then Rest := ' (звал ассист ' + IntToStr(FoInit[k]) + ', за ним ' + IntToStr(FoLed[k]) + ')';
   end;
   Rest := Rest + DoAfter(g, BestOID);
-  if InRange > 1 then Rest := Rest + ', ' + IntToStr(InRange) + ' in range';
+  if InRange > 1 then Rest := Rest + ', в дальности ' + IntToStr(InRange);
   Say(Pre + Who + ' ' + IntToStr(Round(BestD)) + Rest);
   result := true;
+end;
+
+// the presses waiting: done now (between the scans too - a scan stopped for a press does not keep it waiting)
+procedure HandleKeys();
+var g: integer;
+begin
+  while NextG >= 0 do begin
+    g := NextG;
+    NextG := -1;
+    if g >= GroupN then continue;
+    if GMode[g] = MODE_RES then begin            // res-kill: its key turns it on / off
+      GResOn[g] := not GResOn[g];
+      AutoAt[g] := 0;
+      if GResOn[g] then Say(GName[g] + ': ВКЛ (встал ' + IntToStr(GResMin[g]) + '-' + IntToStr(GResMax[g]) + ' мс назад)')
+      else Say(GName[g] + ': ВЫКЛ');
+    end else PickGroup(g, false);
+  end;
 end;
 
 // ===================== the files =====================
@@ -939,6 +1402,8 @@ begin
   GAuto[n] := false;
   GAutoMs[n] := 3000;
   GWindow[n] := 15;
+  GResMin[n] := 0;
+  GResMax[n] := -1;                                  // not given: from window (s)
   GWho[n] := 0;
   GPrio[n] := true;
   GClsN[n] := 0;
@@ -962,6 +1427,8 @@ begin
   GAuto[b] := GAuto[a];
   GAutoMs[b] := GAutoMs[a];
   GWindow[b] := GWindow[a];
+  GResMin[b] := GResMin[a];
+  GResMax[b] := GResMax[a];
   GWho[b] := GWho[a];
   GPrio[b] := GPrio[a];
   GClsN[b] := GClsN[a];
@@ -981,6 +1448,8 @@ begin
   else if S = 'reskill' then result := MODE_RES
   else if S = 'cast' then result := MODE_CAST
   else if S = 'names' then result := MODE_NAMES
+  else if S = 'smart' then result := MODE_SMART
+  else if S = 'onus' then result := MODE_ONUS
   else result := -1;
 end;
 
@@ -1104,6 +1573,7 @@ begin
   ProfName := ProfId;
   ChatOn := true;
   ChatName := 'PvP';
+  NotifyType := 15;
   CycleMs := 6000;
   Clans := '';
   Players := '';
@@ -1129,7 +1599,11 @@ begin
       if (Fld = 'name') and (Val <> '') then ProfName := Val
       else if Fld = 'clans' then Clans := Val
       else if Fld = 'players' then Players := Val
-      else if Fld = 'chat' then ChatOn := Val <> '0'
+      else if Fld = 'chat' then begin
+        ChatOn := Val <> '0';
+        if not ChatOn then NotifyType := 0;
+      end
+      else if Fld = 'notify' then NotifyType := StrToIntDef(Val, 15)
       else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val
       else if Fld = 'cycle_ms' then CycleMs := StrToIntDef(Val, 6000);
       continue;
@@ -1150,6 +1624,8 @@ begin
     else if Fld = 'auto' then GAuto[n] := Val = '1'
     else if Fld = 'auto_ms' then GAutoMs[n] := StrToIntDef(Val, 3000)
     else if Fld = 'window' then GWindow[n] := StrToIntDef(Val, 15)
+    else if Fld = 'res_min_ms' then GResMin[n] := StrToIntDef(Val, 0)
+    else if Fld = 'res_max_ms' then GResMax[n] := StrToIntDef(Val, -1)
     else if Fld = 'who' then begin
       if LowerCase(Val) = 'caster' then GWho[n] := 1 else GWho[n] := 0;
     end
@@ -1207,6 +1683,9 @@ begin
     if (GMark[i] < 0) or (GMark[i] > 4) then GMark[i] := 0;
     if GWindow[i] < 1 then GWindow[i] := 1;
     if GWindow[i] > 600 then GWindow[i] := 600;
+    if GResMax[i] < 0 then GResMax[i] := GWindow[i] * 1000;   // an old profile: window (s)
+    if GResMin[i] < 0 then GResMin[i] := 0;
+    if GResMax[i] < GResMin[i] then GResMax[i] := GResMin[i];
     if GAutoMs[i] < 500 then GAutoMs[i] := 500;
     if k <> i then CopyGroup(i, k);
     GKey[k] := Code;
@@ -1214,6 +1693,7 @@ begin
     EvAt[k] := 0;
     AutoWant[k] := false;
     AutoAt[k] := 0;
+    GResOn[k] := (GMode[k] = MODE_RES) and GAuto[k];   // res-kill: on at the start if auto=1 (its key turns it)
     k := k + 1;
   end;
   GroupN := k;
@@ -1231,6 +1711,7 @@ begin
   L.Add('clans=PLAYHARDGOPRO|GhostRiders|DeathSentence|HeavenSent|StayGrounded|Slayers');
   L.Add('players=');
   L.Add('chat=1');
+  L.Add('notify=15');
   L.Add('chat_name=PvP');
   L.Add('cycle_ms=6000');
   L.Add('');
@@ -1268,7 +1749,9 @@ begin
   L.Add('range=1200');
   L.Add('height=400');
   L.Add('mark=0');
-  L.Add('after=');
+  L.Add('after=attack');
+  L.Add('res_min_ms=0');
+  L.Add('res_max_ms=3000');
   L.Add('ctrl=1');
   L.Add('prio_first=1');
   L.Add('window=15');
@@ -1394,7 +1877,8 @@ begin
   if Info = '' then Info := 'no keys';
   if First then Info := 'profile ' + ProfName + ': ' + Info
   else Info := 'profile ' + ProfName + ' read: ' + Info;
-  Say(Info);
+  Engine.Msg('[PvP]', Info, 128);
+  ScreenSay('PvP: профиль ' + ProfName + ', клавиш ' + IntToStr(GroupN));
 end;
 
 // ===================== the PvP server (pvp_server.py): the page live =====================
@@ -1437,6 +1921,7 @@ begin
     exit;
   end;
   SrvOn := true;
+  Watching := true;                                  // till the server says (an old one never does)
   SrvSend('HELLO|' + CharName);
   if SrvOn then begin
     SrvTold := false;
@@ -1468,7 +1953,16 @@ begin
     Inc(n);
     Line := Trim(Line);
     if Line = 'RELOAD' then CfgAt := 0  // the page saved: the files read now
-    else if Line = 'PING' then SrvSend('PONG');
+    else if Line = 'PING' then SrvSend('PONG')
+    else if Line = 'STATRESET' then begin           // the page: the stats from zero
+      FoResetAll();
+      FoesAt := 0;
+      Engine.Msg('[PvP]', 'the stats are reset', 0);
+    end
+    else if Copy(Line, 1, 6) = 'WATCH|' then begin   // a page watches / none any more
+      Watching := Copy(Line, 7, 1) <> '0';
+      if Watching then StateAt := 0;                 // the state now
+    end;
   end;
 end;
 
@@ -1478,6 +1972,55 @@ begin
 end;
 
 // ===================== for the page =====================
+
+// the stats for the page: the enemies with anything against us (FOES_OUT at most)
+procedure FoesJson();
+var k, j, n, Tm, OnU: integer;
+  S, Sk, Nm: string;
+begin
+  JAdd(' "foes": [');
+  n := 0;
+  for k := 0 to FOE_SLOTS - 1 do begin
+    if (FoOID[k] = 0) or FoOurs[k] then continue;
+    if FoSwMe[k] + FoSwUs[k] + FoCastMe[k] + FoCastUs[k] + FoLed[k] + FoFollow[k] = 0 then continue;
+    if n >= FOES_OUT then break;
+    Tm := FoTMe[k];
+    OnU := 0;
+    if FoTgt[k] = MyOID then begin
+      Tm := Tm + integer(GetTickCount - FoTgtAt[k]);
+      OnU := 1;
+    end else if IsUs(FoTgt[k]) then OnU := 2;
+    Sk := '';
+    for j := 0 to 3 do
+      if FoSkN[k * 4 + j] > 0 then begin
+        if Sk <> '' then Sk := Sk + ', ';
+        Sk := Sk + '[' + IntToStr(FoSk[k * 4 + j]) + ', ' + IntToStr(FoSkN[k * 4 + j]) + ']';
+      end;
+    Nm := FoJs[k];
+    if Nm = '' then Nm := '"n": "?", "c": "", "a": ""';
+    S := '{"o": ' + IntToStr(FoOID[k]) + ', ' + Nm + ', "k": ' + IntToStr(FoCls[k]) + ', "sm": ' + IntToStr(FoSwMe[k]) +
+      ', "su": ' + IntToStr(FoSwUs[k]) + ', "tm": ' + IntToStr(Tm) + ', "cm": ' + IntToStr(FoCastMe[k]) +
+      ', "cu": ' + IntToStr(FoCastUs[k]) + ', "ia": ' + IntToStr(FoInit[k]) + ', "le": ' + IntToStr(FoLed[k]) +
+      ', "fw": ' + IntToStr(FoFollow[k]) + ', "sc": ' + IntToStr(Round(ScoreOf(k) * 10)) + ', "on": ' + IntToStr(OnU) +
+      ', "seen": ' + IntToStr((GetTickCount - FoSeen[k]) div 1000) + ', "ago": ' + IntToStr((GetTickCount - FoLast[k]) div 1000) +
+      ', "sk": [' + Sk + ']}';
+    if n > 0 then S := ' ,' + S;
+    JAdd(S);
+    n := n + 1;
+  end;
+  JAdd(' ],');
+end;
+
+// the slowest times are kept PERF_KEEP_MS, then start anew
+procedure PerfAge();
+begin
+  if GetTickCount - PfAt < PERF_KEEP_MS then exit;
+  PfAt := GetTickCount;
+  PfKeyMax := PfKey;
+  PfDump := 0;
+  PfCast := 0;
+  PfLoop := 0;
+end;
 
 // our skills that are not passive, as JSON (built anew only when they change)
 function SkillsJson(): string;
@@ -1516,10 +2059,12 @@ end;
 procedure DumpState();
 var i, k, n, OID, Cls, PX, PY, PZ, UX, UY, UZ, F: integer;
   D: double;
-  Ago: cardinal;
-  S, Nm, Cl, Al, DeadText: string;
+  Ago, T0: cardinal;
+  S, Cl, Al, DeadText: string;
 begin
-  if not SrvOn then exit;              // no server: nobody to tell
+  if (not SrvOn) or (not Watching) then exit;   // no server / no page: nobody to tell
+  if NextG >= 0 then exit;                       // a press waits: the state the next time
+  T0 := GetTickCount;
   RefreshMe();
   DeadText := '0';
   if User.Dead then DeadText := '1';
@@ -1534,7 +2079,13 @@ begin
     ', "read": ' + JsonStr(CfgReadAt) + ', "groups": ' + IntToStr(GroupN) + ', "errors": [' + CfgErrJson + ']},');
   JAdd(' "me": {"oid": ' + IntToStr(MyOID) + ', "clan": ' + JsonStr(Cl) + ', "ally": ' + JsonStr(Al) +
     ', "target": ' + IntToStr(TargetOID()) + ', "dead": ' + DeadText + '},');
+  JAdd(' "perf": {"key": ' + IntToStr(PfKey) + ', "keymax": ' + IntToStr(PfKeyMax) + ', "dump": ' + IntToStr(PfDump) +
+    ', "cast": ' + IntToStr(PfCast) + ', "loop": ' + IntToStr(PfLoop) + '},');
   JAdd(' "skills": ' + SkillsJson() + ',');
+  if (FoesAt = 0) or (GetTickCount - FoesAt >= FOES_MS) then begin   // the stats: once a second is enough
+    FoesAt := GetTickCount;
+    FoesJson();
+  end;
   JAdd(' "casts": [');
   for k := 0 to SnN - 1 do begin
     if k = 0 then S := '  ' else S := ' ,';
@@ -1546,6 +2097,10 @@ begin
   n := 0;
   for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
     if n >= MAX_NEAR then break;
+    if (i mod SCAN_CHUNK = SCAN_CHUNK - 1) and KeyPending() then begin   // the key first: the state the next time
+      StOut := '';
+      exit;
+    end;
     OID := CharList(i).OID;
     if (OID = 0) or (OID = MyOID) then continue;
     PX := CharList(i).X;
@@ -1558,14 +2113,12 @@ begin
     if CharList(i).IsMember then F := 1
     else if IsOurs(i) then F := 4;
     if CharList(i).Dead then F := F + 2;
-    Nm := CharList(i).Name;
-    Cl := CharList(i).Clan;
-    Al := CharList(i).Ally;
-    S := '{"o": ' + IntToStr(OID) + ', "n": ' + JsonStr(Nm) + ', "c": ' + JsonStr(Cl) + ', "a": ' + JsonStr(Al) +
-      ', "k": ' + IntToStr(Cls) + ', "d": ' + IntToStr(Round(D)) + ', "x": ' + IntToStr(PX - UX) +
+    S := '{"o": ' + IntToStr(OID) + ', ' + NameJson(i, OID) + ', "k": ' + IntToStr(Cls) + ', "d": ' + IntToStr(Round(D)) + ', "x": ' + IntToStr(PX - UX) +
       ', "y": ' + IntToStr(PY - UY) + ', "h": ' + IntToStr(PZ - UZ) + ', "f": ' + IntToStr(F);
     k := CastIdx(OID);
     if k >= 0 then S := S + ', "s": ' + IntToStr(CsSk[k]) + ', "t": ' + IntToStr(CsTgt[k]);
+    k := FoIdx(OID);
+    if (k >= 0) and (FoTgt[k] <> 0) then S := S + ', "g": ' + IntToStr(FoTgt[k]);
     Ago := RevivedAgo(OID);
     if Ago < 120000 then S := S + ', "rv": ' + IntToStr(Ago);
     if n = 0 then S := '  ' + S else S := ' ,' + S;
@@ -1575,11 +2128,12 @@ begin
   JAdd(' ]}');
   SrvSend('STATE|' + StOut);
   StOut := '';
+  if GetTickCount - T0 > cardinal(PfDump) then PfDump := GetTickCount - T0;
 end;
 
 var
   g: integer;
-  StateAt, CastScanAt, RevScanAt: cardinal;
+  CastScanAt, RevScanAt, LoopAt, T0: cardinal;
 
 begin
   NextG := -1;
@@ -1613,6 +2167,44 @@ begin
   SrvTold := false;
   SrvAt := 0;
   StOut := '';
+  Watching := true;
+  StateAt := 0;
+  PfKey := 0;
+  PfKeyMax := 0;
+  PfDump := 0;
+  PfCast := 0;
+  PfLoop := 0;
+  PfAt := 0;
+  for g := 0 to NAME_SLOTS - 1 do begin
+    NcOID[g] := 0;
+    NcJs[g] := '';
+    NcAt[g] := 0;
+  end;
+  for g := 0 to FOE_SLOTS - 1 do begin
+    FoOID[g] := 0;
+    FoTgt[g] := 0;
+    FoSeen[g] := 0;
+    FoJs[g] := '';
+    FoOurs[g] := false;
+  end;
+  for g := 0 to 15 do begin
+    BuV[g] := 0;
+    BuInit[g] := 0;
+    BuAt[g] := 0;
+    BuN[g] := 0;
+    BuMemN[g] := 0;
+  end;
+  UsN := 0;
+  SmartFb := false;
+  NotifyType := 15;
+  ResLookAt := 0;
+  FoesAt := 0;
+  UsAt := 0;
+  DeadCnt := 0;
+  for g := 0 to DEAD_SLOTS - 1 do begin
+    DeadOID[g] := 0;
+    DeadAt[g] := 0;
+  end;
   for g := 0 to 2 do ModAt[g] := 0;
   while User.Name = '' do Delay(500);   // in the game
   CharName := User.Name;
@@ -1622,8 +2214,9 @@ begin
 
   CheckCfg();
   SayCfg(true);
+  RefreshUs();
   ScanRevives();
-  CastScan();
+  CastScan(false);
   SrvConnect();
   DumpState();
   CfgAt := GetTickCount;
@@ -1633,22 +2226,30 @@ begin
 
   Script.NewThread(@KeyEvents_Thread);
 
+  LoopAt := GetTickCount;
   while Delay(KEY_POLL_MS) do begin
+    if GetTickCount - LoopAt > cardinal(PfLoop + KEY_POLL_MS) then PfLoop := GetTickCount - LoopAt - KEY_POLL_MS;
+    LoopAt := GetTickCount;
+    PerfAge();
     PollKeys();
-    while NextG >= 0 do begin
-      g := NextG;
-      NextG := -1;
-      if g < GroupN then PickGroup(g, false);
-    end;
+    HandleKeys();
     AfterTick();
+    if GetTickCount - UsAt >= US_MS then begin
+      UsAt := GetTickCount;
+      RefreshUs();
+    end;
     if GetTickCount - CastScanAt >= CAST_SCAN_MS then begin
       CastScanAt := GetTickCount;
+      T0 := GetTickCount;
       RefreshMe();
-      CastScan();
+      CastScan(true);
+      if GetTickCount - T0 > cardinal(PfCast) then PfCast := GetTickCount - T0;
+      HandleKeys();
     end;
     if GetTickCount - RevScanAt >= REV_SCAN_MS then begin
       RevScanAt := GetTickCount;
       ScanRevives();
+      HandleKeys();
     end;
     for g := 0 to GroupN - 1 do
       if AutoWant[g] then begin
@@ -1656,18 +2257,26 @@ begin
         if GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g]) then
           if PickGroup(g, true) then AutoAt[g] := GetTickCount;
       end;
+    // res-kill groups that are on: somebody up from the dead in their window -> taken + the after action (attack)
+    if GetTickCount - ResLookAt >= RES_LOOK_MS then begin
+      ResLookAt := GetTickCount;
+      for g := 0 to GroupN - 1 do
+        if (GMode[g] = MODE_RES) and GResOn[g] and (GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g])) then
+          if ResPending(g) then
+            if PickGroup(g, true) then AutoAt[g] := GetTickCount;
+    end;
     SrvPoll();                         // the PvP server: RELOAD -> the files read now
     if (CfgAt = 0) or (GetTickCount - CfgAt >= CFG_CHECK_MS) then begin
       CfgAt := GetTickCount;
       if CheckCfg() then begin
         SayCfg(false);
-        DumpState();
-        StateAt := GetTickCount;
+        StateAt := 0;                                 // the state now
       end;
     end;
-    if GetTickCount - StateAt >= STATE_MS then begin
+    if (StateAt = 0) or (GetTickCount - StateAt >= STATE_MS) then begin
       StateAt := GetTickCount;
       DumpState();
+      HandleKeys();
     end;
   end;
   SrvClose();
