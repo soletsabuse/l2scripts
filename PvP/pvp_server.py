@@ -17,10 +17,13 @@ keys still work):
 
 Page API (same origin; a change needs the header X-PvP: 1 - another site in the browser cannot make one):
     GET    /api/state                   {"active", "profiles": {id: text}, "bots": {name: state}, "equip": {char: text}}
+    GET    /api/status                  {"active", "online": [names], "pages", "pid"} - small, for PvpPanel (the tray app);
+                                        it opens no events, so the bots do not start building their state for it
     PUT    /api/profile?id=<id>         body: the profile text            -> written, the bots told
     DELETE /api/profile?id=<id>
     PUT    /api/active?id=<id>
     PUT    /api/cmd?c=statreset         every bot: its stats from zero
+    PUT    /api/cmd?c=quit              the server stops (PvpPanel: restart it with a new version)
     GET    /api/events                  server-sent events: state, gone, profiles, equip
     GET    /api/skillnames              {id: name} of every skill (Library\\Nav\\skilldb.txt, made from the bot's L2DB)
 
@@ -34,7 +37,7 @@ import os
 import re
 import sys
 import time
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 PROF_DIR = os.path.join(DIR, "profiles")
@@ -49,6 +52,20 @@ BOT_PORT = 7791
 WATCH_S = 1.0          # the files are looked at this often (a change made outside the page)
 BOT_GONE_S = 6.0       # a bot that sent nothing this long is dropped
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+SOUND_DIR = os.path.join(DIR, "sounds")      # the res-kill sounds (.wav): listed, played and stored for the page
+SOUND_RE = re.compile(r"^[A-Za-z0-9 _\-().\u0400-\u04FF]{1,80}\.wav$", re.I)
+
+
+def valid_sound(n):
+    return bool(SOUND_RE.match(n or "")) and not n.startswith((".", " ")) and ".." not in n
+
+
+def sounds_json():
+    try:
+        names = sorted((n for n in os.listdir(SOUND_DIR) if valid_sound(n)), key=str.lower)
+    except OSError:
+        names = []
+    return json.dumps(names, ensure_ascii=False)
 
 bots = {}              # name -> {"writer", "state", "at"}
 pages = set()          # asyncio.Queue of every open page (server-sent events)
@@ -360,8 +377,25 @@ async def http_conn(reader, writer):
         if method == "GET" and path == "/api/state":
             reply(writer, 200, state_json(), "application/json; charset=utf-8")
             return
+        if method == "GET" and path == "/api/status":
+            reply(writer, 200, json.dumps({"active": active(), "online": sorted(bots.keys()), "pages": len(pages),
+                                           "pid": os.getpid()}, ensure_ascii=False), "application/json; charset=utf-8")
+            return
         if method == "GET" and path == "/api/skillnames":
             reply(writer, 200, skill_names_json(), "application/json; charset=utf-8")
+            return
+        if method == "GET" and path == "/api/sounds":
+            reply(writer, 200, sounds_json(), "application/json; charset=utf-8")
+            return
+        if method == "GET" and path.startswith("/sounds/"):
+            name = unquote(path[len("/sounds/"):])
+            try:
+                if not valid_sound(name):
+                    raise OSError
+                with open(os.path.join(SOUND_DIR, name), "rb") as f:
+                    reply(writer, 200, f.read(), "audio/wav")
+            except OSError:
+                reply(writer, 404, "no such sound")
             return
         if method == "GET" and path == "/api/events":
             await events(writer)
@@ -383,6 +417,24 @@ async def http_conn(reader, writer):
                     write_text(p, dec(body))
                 await changed_files()
                 reply(writer, 200, "ok")
+                return
+            if path == "/api/sound" and method == "PUT":
+                name = (q.get("name") or [""])[0]
+                if not valid_sound(name) or body[:4] != b"RIFF" or body[8:12] != b"WAVE":
+                    reply(writer, 400, "not a .wav")
+                    return
+                os.makedirs(SOUND_DIR, exist_ok=True)
+                dst = os.path.join(SOUND_DIR, name)
+                with open(dst + ".tmp", "wb") as f:
+                    f.write(body)
+                os.replace(dst + ".tmp", dst)
+                log("sound", name, "saved,", len(body), "bytes")
+                reply(writer, 200, "ok")
+                return
+            if path == "/api/cmd" and (q.get("c") or [""])[0] == "quit":
+                log("quit asked (PvpPanel)")
+                reply(writer, 200, "ok")
+                asyncio.get_running_loop().call_later(0.3, os._exit, 0)
                 return
             if path == "/api/cmd" and (q.get("c") or [""])[0] == "statreset":
                 await to_bots("STATRESET")

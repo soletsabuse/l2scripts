@@ -6,7 +6,8 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //   pvp.html           the page - opened through the PvP server: http://127.0.0.1:7790
 //   pvp_server.py      the PvP server (pvp_server.bat starts it with no window and opens the page)
 //   profiles\<id>.pvp  the profiles, any number of them
-//   pvp.ini            active=<id>: the profile EVERY character uses (no profile per character)
+//   pvp.ini            active=<id>: the profile of every character without one of his own; a profile named like
+//                      the character (profiles\<his name>.pvp, any case) is his own
 // The script reads the profile files itself (a change counts within a second, no restart) - the keys work with
 // the server down too. With the server up it is told at once (RELOAD) when the page saves, and it sends what it
 // sees (STATE: the profile it uses and what it made of it, the players around - clan, class, place, cast, revive,
@@ -16,11 +17,17 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //   class   - enemies of the classes of the group, by the class priority (1 first), then the nearest
 //   reskill - enemies up from the dead res_min_ms..res_max_ms ago (the classes: optional). Its key turns it ON / OFF
 //             (auto=1: on at the start); while on, the bot takes such an enemy by itself (every RES_LOOK_MS) and does
-//             the after action at once (attack)
+//             the after action at once (attack). kill_sound=<file.wav> (in Library\PvP\sounds): a successful res-kill
+//             - an enemy up from the dead dies again within kill_ms (default 20000) with no buffs seen on him (fewer
+//             than KILL_BUFFED; the server may not show enemy buffs at all) -> that sound + a notice
 //   onus    - enemies holding me or a party member in their target (the ones on me first; the classes: optional)
 //   assist  - the target of a player: assist=<1st>|<2nd>|<3rd> ('' = the party leader) - the first of them in sight, alive
-//             and (assist_aggro 2) not aggroed; aggroed / killed / gone -> the next one. Its key takes his target + the
-//             after action; auto=1: follows - his target changed (or the next one took over) -> taken at once.
+//             and (assist_aggro 2) not aggroed; aggroed / killed / gone -> the next one. Its key turns it ON / OFF
+//             (auto=1: on at the start); while on, it follows: his target now, then his target changed (or the next
+//             one took over) -> taken at once + the after action. The list is a chain: a character on it follows
+//             only the ones above him (the first one leads himself, the next one leads when the ones above are out).
+//             volley=<ID>|..: the one we follow starts one of these skills -> the same skill of ours at his target at
+//             once (a volley; only when ours is ready; ctrl= of the group)
 //             assist_aggro: 2 an aggroed assister is skipped (an enemy in sight holds him in the target), 1 no assist
 //             while I am aggroed, 0 no check
 // CP potions (cp_item, '0' none): a thread of its own looks at our CP every CP_LOOK_MS; below cp_pct % -> the potion,
@@ -34,8 +41,9 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             an AoE, a hit do not; switches at the same moment as his (< ASSIST_MIN_MS: an AoE, an auto target)
 //             do not either. Points: one per follower (1.5 when the one switched onto is me), halved every
 //             ASSIST_HALF_MS. The classes: optional. None with points in range -> the one targeting us now
-// Every mode: the priority players of the list first (prio_first=1), the skipped ones never; never a party
-// member / our clan / our alliance; within the group's range and height. An enemy: his clan OR alliance is
+// Every mode: the priority players of the list first (prio_first=1; default 0), the skipped ones never; never a party
+// member / our clan / our alliance; within the group's range (range=0: the profile's range= of the general part,
+// default 1200) and height. An enemy: his clan OR alliance is
 // on the clans list (any case; the list empty -> anyone), or he is a priority player.
 // Pressed again while on its last pick -> the next one by the same order (a cycle: it ends cycle_ms after the
 // last press or when the target is changed by other means). Only the target now can be taken -> its after
@@ -49,7 +57,7 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 // channel commander (in the middle of the screen, as the siege commander's), 19 a screen announce, 3 party, 0 none.
 // A pick: the target; mark=1..4 -> that token on him (RequestActionUse $4E..$51, sniffed with token_sniffer);
 // after=attack -> the auto attack, after=skill:<ID> -> that skill (sent every RESEND_MS till it starts, up to
-// FIRE_MS); ctrl=1 -> both as with Ctrl held. Said in the bot window and (chat=1) as a fake party chat
+// FIRE_MS); ctrl=1 -> both as with Ctrl held (default 0). Said in the bot window and (chat=1) as a fake party chat
 // message only we see. A key works only while the game window of THIS character is the active one.
 // The casts are read as force_sounds does (CharList(i).Cast / .Target every CAST_SCAN_MS); the revives:
 // a player seen dead, then alive within REV_GAP_MS (in sight all the time - not one back from the town later).
@@ -91,6 +99,7 @@ const
   MAX_GROUPS    = 16;
   MAX_CLS       = 64;       // classes of one group
   MAX_SK        = 16;       // skills of one cast group
+  MAX_VOL       = 8;        // volley skills of one assist group
   MAX_PL        = 64;       // players on the list
   MAX_CYCLE     = 32;       // a cycle remembers this many picks
   MAX_NEAR      = 150;      // players into the state for the page ...
@@ -99,6 +108,7 @@ const
   DEAD_SLOTS    = 128;
   REV_SLOTS     = 64;
   SEEN_MAX      = 40;       // the skills cast nearby, for the page
+  SOUND_DIR     = 'sounds\';      // ... the sounds (kill_sound=)
   PROF_DIR      = 'profiles\';    // in the folder of the script (Library\PvP): the profiles
   SEL_NAME      = 'pvp.ini';        // ... the active one
   MODE_CLASS    = 0;
@@ -110,6 +120,7 @@ const
   MODE_ASSIST   = 6;
   ASSIST_LOOK_MS = 100;     // an assist group that follows (auto) looks at his target this often
   CP_LOOK_MS    = 15;       // the CP potions: our CP looked at this often (a thread of its own)
+  KILL_BUFFED   = 5;        // a revived enemy seen with this many buffs: rebuffed, his death is no res-kill
   RES_LOOK_MS   = 100;      // a res-kill group that is on looks for an enemy up from the dead this often
   AUTO_HOLD_MS  = 1000;     // after a key pick the auto picks wait this long (your choice is not taken over)
   ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
@@ -140,9 +151,12 @@ var
   GMode, GRange, GHeight, GMark, GAfter, GAfterSk, GAutoMs, GWindow, GWho, GClsN, GSkN: array[0..15] of integer;
   GCls, GTier: array[0..1023] of integer;            // group g: GCls[g * MAX_CLS + k], its priority GTier (1 first)
   GSk: array[0..255] of integer;                     // group g: GSk[g * MAX_SK + k]
+  GVol: array[0..127] of integer;                    // assist group g, volley=: GVol[g * MAX_VOL + k]
+  GVolN: array[0..15] of integer;
+  VolG, VolOID, VolSk, VolTgt: integer;              // a volley seen by CastScan, done by VolleyTick (VolG -1: none)
   AutoWant: array[0..15] of boolean;                 // a new cast for an auto cast group
   GResMin, GResMax: array[0..15] of integer;         // reskill: up from the dead this long ago (ms), at least / at most
-  GResOn: array[0..15] of boolean;                   // reskill: on now (its key turns it on / off)
+  GResOn: array[0..15] of boolean;                   // reskill / assist: on now (its key turns it on / off)
   ResLookAt: cardinal;
   ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
   // assist: whom (name, '' = the party leader), the aggro check, his OID found (re-found by name now and then), his
@@ -168,6 +182,7 @@ var
   ProfName, ClanKey, ClanText, ChatName: string;     // ClanKey: ',clan one,clan two,' in lower case ('' = anyone)
   ChatOn: boolean;
   CycleMs: integer;
+  ProfRange: integer;                                // range= of the general part: the groups with range=0 take it
   PlName: array[0..63] of string;                    // the players list, names in lower case
   PlTag, PlRank: array[0..63] of integer;            // 1 priority (PlRank: its place among them), 2 never
   PlN: integer;
@@ -191,6 +206,9 @@ var
   DeadHead, DeadCnt: integer;                        // DeadCnt: the slots in use (0: nobody to look for)
   RevOID: array[0..63] of integer;
   RevAt: array[0..63] of cardinal;
+  RevBuf, RevDone: array[0..63] of boolean;          // ... buffed seen since / his res-kill looked at already
+  GKillSnd: array[0..15] of string;                  // reskill: kill_sound= (a file of sounds\, '' none)
+  GKillMs: array[0..15] of integer;                  // ... kill_ms=: he dies again this soon after getting up
   RevHead: integer;
   // after a pick: a skill being sent
   PendSk, PendTgt, PendL0: integer;
@@ -552,6 +570,18 @@ begin
     end;
 end;
 
+// skill Sk is on the volley= list of group g
+function VolHas(g, Sk: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to GVolN[g] - 1 do
+    if GVol[g * MAX_VOL + k] = Sk then begin
+      result := true;
+      exit;
+    end;
+end;
+
 // ===================== revives =====================
 
 // the slot of a player seen dead (-1 none)
@@ -586,6 +616,8 @@ procedure RememberRevive(OID: integer);
 begin
   RevOID[RevHead] := OID;
   RevAt[RevHead] := GetTickCount;
+  RevBuf[RevHead] := false;
+  RevDone[RevHead] := false;
   RevHead := (RevHead + 1) mod REV_SLOTS;
 end;
 
@@ -1038,6 +1070,15 @@ begin
     for g := 0 to GroupN - 1 do
       if GAuto[g] and (GMode[g] = MODE_CAST) then
         if SkInGroup(g, Sk) then AutoWant[g] := true;
+    // a volley skill: an assist group that is on has it -> VolleyTick (is he the one it follows?)
+    for g := 0 to GroupN - 1 do
+      if (VolG < 0) and (GMode[g] = MODE_ASSIST) and GResOn[g] then
+        if VolHas(g, Sk) then begin
+          VolG := g;
+          VolOID := OID;
+          VolSk := Sk;
+          VolTgt := Tg;
+        end;
   end;
 end;
 
@@ -1429,6 +1470,11 @@ begin
     exit;
   end;
   for s := 0 to GAsN[g] - 1 do begin
+    if GAsName[g * 3 + s] = LowerCase(CharName) then begin   // me: only the ones above me are followed, I lead
+      if s = 0 then AsWhy := 'ты первый в списке - ведёшь сам'
+      else AsWhy := 'выше тебя в списке все сагрены / убиты / не видно - ведёшь сам';
+      exit;
+    end;
     i := AssistSlot(g, s);
     if i < 0 then continue;                          // not in sight
     if CharList(i).Dead then continue;               // killed
@@ -1498,13 +1544,13 @@ begin
   result := true;
 end;
 
-// assist groups that follow (auto): his target changed -> taken (when the aggro check lets; else later)
+// assist groups that are on (their key / auto=1): his target changed -> taken (when the aggro check lets; else later)
 procedure AssistTick();
 var g, i, OID: integer;
   TL: TL2Live;
 begin
   for g := 0 to GroupN - 1 do begin
-    if (GMode[g] <> MODE_ASSIST) or (not GAuto[g]) then continue;
+    if (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) then continue;
     i := AssistActive(g);                    // the first one usable now: the next one when he is aggroed / killed
     if i < 0 then continue;
     OID := 0;
@@ -1517,6 +1563,82 @@ begin
     end;
     if AssistPick(g, true) then AsLast[g] := OID
     else if (CharIdxOf(OID) >= 0) and IsOurs(CharIdxOf(OID)) then AsLast[g] := OID;   // a friend: nothing to wait for
+  end;
+end;
+
+// a volley (an assist group on, volley=): the one it follows started one of its skills -> his target + the same skill
+// of ours (sent till it starts, as the after skill). Ours not there / in its reuse -> nothing
+procedure VolleyTick();
+var g, i, k, Tg, Left: integer;
+  Sk: TL2Skill;
+begin
+  g := VolG;
+  if g < 0 then exit;
+  VolG := -1;
+  if (g >= GroupN) or (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) then exit;
+  i := AssistActive(g);
+  if i < 0 then exit;
+  if CharList(i).OID <> VolOID then exit;            // another one of the list: not the one we follow now
+  Tg := VolTgt;
+  if (Tg = 0) or (Tg = MyOID) then exit;
+  k := CharIdxOf(Tg);
+  if k >= 0 then
+    if IsOurs(k) then exit;                          // his skill at a friend
+  if not SkillList.ByID(VolSk, Sk) then exit;        // we have no such skill
+  Left := Sk.EndTime;
+  if Left > 1000 then begin
+    Engine.Msg('[PvP]', GName[g] + ': volley ' + Sk.Name + ' - ours in its reuse', 0);
+    exit;
+  end;
+  if TargetOID() <> Tg then
+    if not Engine.SetTarget(Tg) then exit;
+  AsLast[g] := Tg;                                   // his target is ours: AssistTick does not take it again
+  PendSk := VolSk;
+  PendTgt := Tg;
+  PendL0 := Left;
+  PendCtrl := GCtrl[g];
+  PendSent := 0;
+  PendStart := GetTickCount;
+  AfterTick();
+  Engine.Msg('[PvP]', GName[g] + ': volley ' + Sk.Name, 0);
+end;
+
+// a successful res-kill (a res-kill group on with kill_sound=): an enemy up from the dead dies again within its
+// kill_ms, not seen rebuffed meanwhile (KILL_BUFFED) -> the sound + a notice. Each revive looked at once
+procedure KillSoundTick();
+var k, i, g, Snd, n, Rk: integer;
+  SndPath: string;
+begin
+  Snd := -1;
+  for g := 0 to GroupN - 1 do
+    if (Snd < 0) and (GMode[g] = MODE_RES) and GResOn[g] and (GKillSnd[g] <> '') then Snd := g;
+  if Snd < 0 then exit;
+  for k := 0 to REV_SLOTS - 1 do begin
+    if (RevOID[k] = 0) or RevDone[k] then continue;
+    if GetTickCount - RevAt[k] > cardinal(GKillMs[Snd]) then begin   // he lived on: no res-kill
+      RevDone[k] := true;
+      continue;
+    end;
+    i := CharIdxOf(RevOID[k]);
+    if i < 0 then continue;
+    if not CharList(i).Dead then begin
+      n := 0;
+      try
+        n := CharList(i).Buffs.Count;
+      except
+        n := 0;
+      end;
+      if n >= KILL_BUFFED then RevBuf[k] := true;
+      continue;
+    end;
+    RevDone[k] := true;                              // dead again: looked at once
+    if RevBuf[k] or IsOurs(i) then continue;
+    if PlayerTag(LowerCase(CharList(i).Name), Rk) = 2 then continue;   // never touched
+    if (PlayerTag(LowerCase(CharList(i).Name), Rk) <> 1) and (not IsFoeClan(i)) then continue;   // not an enemy
+    SndPath := Script.Path + SOUND_DIR + GKillSnd[Snd];
+    if FileExists(SndPath) then PlaySound(SndPath, false)
+    else Engine.Msg('[PvP]', 'no sound file ' + SndPath, 0);
+    Say('Рескилл: ' + CharList(i).Name + '!');
   end;
 end;
 
@@ -1563,7 +1685,8 @@ end;
 
 // the presses waiting: done now (between the scans too - a scan stopped for a press does not keep it waiting)
 procedure HandleKeys();
-var g: integer;
+var g, j: integer;
+  S, C: string;
 begin
   while NextG >= 0 do begin
     g := NextG;
@@ -1574,8 +1697,19 @@ begin
       AutoAt[g] := 0;
       if GResOn[g] then Say(GName[g] + ': ВКЛ (встал ' + IntToStr(GResMin[g]) + '-' + IntToStr(GResMax[g]) + ' мс назад)')
       else Say(GName[g] + ': ВЫКЛ');
-    end else if GMode[g] = MODE_ASSIST then AssistPick(g, false)
-    else PickGroup(g, false);
+    end else if GMode[g] = MODE_ASSIST then begin   // assist: its key turns the following on / off
+      GResOn[g] := not GResOn[g];
+      AsLast[g] := 0;                                 // on: his target now is taken at once (AssistTick)
+      if GResOn[g] then begin
+        S := '';
+        for j := 1 to Length(GAssist[g]) do begin
+          C := Copy(GAssist[g], j, 1);
+          if C = '|' then S := S + ', ' else S := S + C;
+        end;
+        if S = '' then S := 'лидер пати';
+        Say(GName[g] + ': ВКЛ (ассист ' + S + ')');
+      end else Say(GName[g] + ': ВЫКЛ');
+    end else PickGroup(g, false);
   end;
 end;
 
@@ -1638,12 +1772,12 @@ begin
   GName[n] := 'group ' + IntToStr(n + 1);
   GKeyText[n] := '';
   GMode[n] := MODE_CLASS;
-  GRange[n] := 1200;
+  GRange[n] := 0;                                    // 0: the profile's range
   GHeight[n] := 400;
   GMark[n] := 0;
   GAfter[n] := 0;
   GAfterSk[n] := 0;
-  GCtrl[n] := true;
+  GCtrl[n] := false;                                 // not given: off
   GAuto[n] := false;
   GAutoMs[n] := 3000;
   GWindow[n] := 15;
@@ -1652,9 +1786,12 @@ begin
   GAsAggro[n] := 2;
   GResMax[n] := -1;                                  // not given: from window (s)
   GWho[n] := 0;
-  GPrio[n] := true;
+  GPrio[n] := false;                                 // not given: off
   GClsN[n] := 0;
   GSkN[n] := 0;
+  GVolN[n] := 0;
+  GKillSnd[n] := '';
+  GKillMs[n] := 20000;
 end;
 
 // group a into the place of group b (b < a: b is free by then)
@@ -1688,6 +1825,11 @@ begin
   end;
   for k := 0 to GSkN[a] - 1 do
     GSk[b * MAX_SK + k] := GSk[a * MAX_SK + k];
+  GVolN[b] := GVolN[a];
+  for k := 0 to GVolN[a] - 1 do
+    GVol[b * MAX_VOL + k] := GVol[a * MAX_VOL + k];
+  GKillSnd[b] := GKillSnd[a];
+  GKillMs[b] := GKillMs[a];
 end;
 
 function ModeOf(S: string): integer;
@@ -1739,6 +1881,20 @@ begin
     if (ID <= 0) or (GSkN[n] >= MAX_SK) then continue;
     GSk[n * MAX_SK + GSkN[n]] := ID;
     GSkN[n] := GSkN[n] + 1;
+  end;
+end;
+
+// 'volley=987|...' into group n
+procedure SetVolley(n: integer; Txt: string; P: TStringList);
+var j, ID: integer;
+begin
+  GVolN[n] := 0;
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    ID := StrToIntDef(Trim(P[j]), 0);
+    if (ID <= 0) or (GVolN[n] >= MAX_VOL) then continue;
+    GVol[n * MAX_VOL + GVolN[n]] := ID;
+    GVolN[n] := GVolN[n] + 1;
   end;
 end;
 
@@ -1816,9 +1972,9 @@ var P: TStringList;
 begin
   P := TStringList.Create;
   CfgErrJson := '';
-  KeepN := 0;        // the res-kill groups on / off now: kept over the reading (by name)
+  KeepN := 0;        // the res-kill / assist groups on / off now: kept over the reading (by name)
   for i := 0 to GroupN - 1 do
-    if (GMode[i] = MODE_RES) and (KeepN < 16) then begin
+    if ((GMode[i] = MODE_RES) or (GMode[i] = MODE_ASSIST)) and (KeepN < 16) then begin
       KeepName[KeepN] := LowerCase(GName[i]);
       KeepOn[KeepN] := GResOn[i];
       Inc(KeepN);
@@ -1827,6 +1983,7 @@ begin
   NextG := -1;
   CycN := 0;
   PendSk := 0;
+  VolG := -1;
   ProfName := ProfId;
   ChatOn := true;
   ChatName := 'PvP';
@@ -1835,6 +1992,7 @@ begin
   CpPct := 95;
   CpGap := 150;
   CycleMs := 6000;
+  ProfRange := 1200;
   Clans := '';
   Players := '';
   n := -1;   // the group being read; -1: the general part
@@ -1865,6 +2023,7 @@ begin
       end
       else if Fld = 'notify' then NotifyType := StrToIntDef(Val, 15)
       else if Fld = 'cp_item' then CpItem := StrToIntDef(Val, 0)
+      else if Fld = 'range' then ProfRange := StrToIntDef(Val, 1200)
       else if Fld = 'cp_pct' then CpPct := StrToIntDef(Val, 95)
       else if Fld = 'cp_gap_ms' then CpGap := StrToIntDef(Val, 150)
       else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val
@@ -1879,7 +2038,7 @@ begin
       if Md < 0 then CfgErr(GName[n] + ': unknown mode "' + Val + '" - classes taken')
       else GMode[n] := Md;
     end
-    else if Fld = 'range' then GRange[n] := StrToIntDef(Val, 1200)
+    else if Fld = 'range' then GRange[n] := StrToIntDef(Val, 0)
     else if Fld = 'height' then GHeight[n] := StrToIntDef(Val, 400)
     else if Fld = 'mark' then GMark[n] := StrToIntDef(Val, 0)
     else if Fld = 'after' then SetAfter(n, Val)
@@ -1896,6 +2055,9 @@ begin
     end
     else if Fld = 'prio_first' then GPrio[n] := Val <> '0'
     else if Fld = 'classes' then SetClasses(n, Val, P)
+    else if Fld = 'volley' then SetVolley(n, Val, P)
+    else if Fld = 'kill_sound' then GKillSnd[n] := Val
+    else if Fld = 'kill_ms' then GKillMs[n] := StrToIntDef(Val, 20000)
     else if Fld = 'skills' then SetSkills(n, Val, P);
   end;
   SetClans(Clans, P);
@@ -1946,6 +2108,9 @@ begin
       continue;
     end;
     if (GAfter[i] = 2) and (GAfterSk[i] <= 0) then GAfter[i] := 0;
+    if GRange[i] <= 0 then begin                       // no own range: the profile's
+      if ProfRange > 0 then GRange[i] := ProfRange else GRange[i] := 1200;
+    end;
     if GRange[i] < 100 then GRange[i] := 100;
     if GHeight[i] < 50 then GHeight[i] := 50;
     if (GMark[i] < 0) or (GMark[i] > 4) then GMark[i] := 0;
@@ -1955,6 +2120,7 @@ begin
     if GResMin[i] < 0 then GResMin[i] := 0;
     if GResMax[i] < GResMin[i] then GResMax[i] := GResMin[i];
     if GAutoMs[i] < 500 then GAutoMs[i] := 500;
+    if GKillMs[i] < 1000 then GKillMs[i] := 1000;
     if k <> i then CopyGroup(i, k);
     GKey[k] := Code;
     GWas[k] := true;   // a key held right now is not a press
@@ -1971,8 +2137,9 @@ begin
         AsFindAt[k * 3 + GAsN[k]] := 0;
         GAsN[k] := GAsN[k] + 1;
       end;
-    GResOn[k] := (GMode[k] = MODE_RES) and GAuto[k];   // res-kill: on at the start if auto=1 (its key turns it)
-    if GMode[k] = MODE_RES then
+    // res-kill / assist: on at the start if auto=1 (its key turns it on / off)
+    GResOn[k] := ((GMode[k] = MODE_RES) or (GMode[k] = MODE_ASSIST)) and GAuto[k];
+    if (GMode[k] = MODE_RES) or (GMode[k] = MODE_ASSIST) then
       for j := 0 to KeepN - 1 do
         if KeepName[j] = LowerCase(GName[k]) then GResOn[k] := KeepOn[j];   // as it was before the reading
     k := k + 1;
@@ -1998,18 +2165,19 @@ begin
   L.Add('cp_gap_ms=150');
   L.Add('chat_name=PvP');
   L.Add('cycle_ms=6000');
+  L.Add('range=1200');
   L.Add('');
   L.Add('[group]');
   L.Add('on=1');
   L.Add('name=Healers');
   L.Add('mode=class');
   L.Add('key=X');
-  L.Add('range=1200');
+  L.Add('range=0');
   L.Add('height=400');
   L.Add('mark=3');
   L.Add('after=');
-  L.Add('ctrl=1');
-  L.Add('prio_first=1');
+  L.Add('ctrl=0');
+  L.Add('prio_first=0');
   L.Add('classes=16:1|30:1|43:1|97:1|105:1|112:1');
   L.Add('');
   L.Add('[group]');
@@ -2017,12 +2185,12 @@ begin
   L.Add('name=Mages');
   L.Add('mode=class');
   L.Add('key=Z');
-  L.Add('range=1200');
+  L.Add('range=0');
   L.Add('height=400');
   L.Add('mark=3');
   L.Add('after=');
-  L.Add('ctrl=1');
-  L.Add('prio_first=1');
+  L.Add('ctrl=0');
+  L.Add('prio_first=0');
   L.Add('classes=12:2|13:1|27:1|40:2|94:2|95:1|103:1|110:2');
   L.Add('');
   L.Add('[group]');
@@ -2030,14 +2198,14 @@ begin
   L.Add('name=Res-kill');
   L.Add('mode=reskill');
   L.Add('key=C');
-  L.Add('range=1200');
+  L.Add('range=0');
   L.Add('height=400');
   L.Add('mark=0');
   L.Add('after=attack');
   L.Add('res_min_ms=0');
   L.Add('res_max_ms=3000');
-  L.Add('ctrl=1');
-  L.Add('prio_first=1');
+  L.Add('ctrl=0');
+  L.Add('prio_first=0');
   L.Add('window=15');
   L.Add('auto=0');
   L.Add('auto_ms=3000');
@@ -2048,12 +2216,12 @@ begin
   L.Add('name=Forces');
   L.Add('mode=cast');
   L.Add('key=V');
-  L.Add('range=1200');
+  L.Add('range=0');
   L.Add('height=400');
   L.Add('mark=1');
   L.Add('after=');
-  L.Add('ctrl=1');
-  L.Add('prio_first=1');
+  L.Add('ctrl=0');
+  L.Add('prio_first=0');
   L.Add('skills=426|427');
   L.Add('who=target');
   L.Add('auto=0');
@@ -2065,7 +2233,7 @@ begin
   if not Told then Engine.Msg('[PvP]', 'First profile "main" -> ' + ProfPath, 0);
 end;
 
-// which profile: 'active=<id>' of pvp.ini (the same for every character), else 'main'
+// which profile: 'active=<id>' of pvp.ini (every character without his own), else 'main'
 function PickProfile(L: TStringList; var How: string): string;
 var i, p0: integer;
   S, Fld, Val, Act: string;
@@ -2092,7 +2260,7 @@ end;
 // the selector and the profile: read anew when changed. true = the profile was read anew (or went missing)
 function CheckCfg(): boolean;
 var L: TStringList;
-  Id, How: string;
+  Id, How, Own: string;
 begin
   result := false;
   L := TStringList.Create;
@@ -2110,6 +2278,11 @@ begin
   if Id = '' then begin
     Id := 'main';
     How := 'default';
+  end;
+  Own := LowerCase(FileTag(CharName));              // a profile named like the character: his own
+  if (CharName <> '') and FileExists(Script.Path + PROF_DIR + Own + '.pvp') then begin
+    Id := Own;
+    How := 'char';
   end;
   SelHow := How;
   if Id <> ProfId then begin
@@ -2156,7 +2329,10 @@ begin
     K := GKeyText[g];
     if GKey[g] = 0 then K := 'auto';
     Info := Info + K + ' ' + GName[g];
-    if (GKey[g] <> 0) and GAuto[g] then Info := Info + ' (+auto)';
+    if (GKey[g] <> 0) and GAuto[g] then begin
+      if (GMode[g] = MODE_RES) or (GMode[g] = MODE_ASSIST) then Info := Info + ' (on at start)'
+      else Info := Info + ' (+auto)';
+    end;
   end;
   if Info = '' then Info := 'no keys';
   if First then Info := 'profile ' + ProfName + ': ' + Info
@@ -2433,6 +2609,7 @@ begin
   DeadHead := 0;
   RevHead := 0;
   PendSk := 0;
+  VolG := -1;
   ChatOn := true;
   ChatName := 'PvP';
   CycleMs := 6000;
@@ -2541,6 +2718,7 @@ begin
       RefreshMe();
       CastScan(true);
       if GetTickCount - T0 > cardinal(PfCast) then PfCast := GetTickCount - T0;
+      VolleyTick();                    // the one we follow started a volley skill: ours at once
       HandleKeys();
     end;
     if GetTickCount - RevScanAt >= REV_SCAN_MS then begin
@@ -2571,6 +2749,7 @@ begin
         if (GMode[g] = MODE_RES) and GResOn[g] and (GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g])) then
           if ResPending(g) then
             if PickGroup(g, true) then AutoAt[g] := GetTickCount;
+      KillSoundTick();                 // an enemy up from the dead died again unbuffed -> the sound
     end;
     SrvPoll();                         // the PvP server: RELOAD -> the files read now
     if (CfgAt = 0) or (GetTickCount - CfgAt >= CFG_CHECK_MS) then begin

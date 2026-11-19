@@ -37,6 +37,8 @@ begin
   // cast on us whenever its buff is gone, in a fight too (the nukes wait for its cast to start)
   AddSelfBuff(25261, 0, 10);   // Empowering Echo
   AddSelfBuff(1287, 0, 10);   // Seed of Wind
+  // only while a player hits us (SetPvpAnswer on): put on at once, before the answer, kept on until it is over
+  AddPvpBuff(25255, 0, 0);    // Mana Shield
 
   // ===== buff items: AddBuffItem(item, its buff ID (0 = not known), a word of the buff name) =====
   // used whenever its buff is not on us; buff ID 0 -> the buff on us named with that word, else the buff that

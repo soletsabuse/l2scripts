@@ -1,0 +1,27 @@
+<Window x:Class="PvpPanel.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="PvP Panel" Width="1360" Height="900" MinWidth="1180" MinHeight="740"
+        Background="#090C11" WindowStartupLocation="CenterScreen">
+    <Grid>
+        <!-- the page of the server (pvp.html) - the same as in the browser -->
+        <wv2:WebView2 x:Name="Web" />
+
+        <!-- the server is down / the page cannot be shown -->
+        <Border x:Name="Down" Background="#090C11" Visibility="Collapsed">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" MaxWidth="480">
+                <TextBlock x:Name="DownTitle" Text="PvP server not running" Foreground="#E6E9F0" FontSize="22"
+                           FontWeight="SemiBold" HorizontalAlignment="Center" />
+                <TextBlock x:Name="DownText" Foreground="#8B93A3" FontSize="13" TextWrapping="Wrap"
+                           TextAlignment="Center" Margin="0,10,0,20"
+                           Text="The server is built into the panel (ports 7790 and 7791). The bots work without it - their keys read the profiles themselves - but the page and switching profiles on the fly need it." />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Button x:Name="StartBtn" Content="Start server" Padding="18,8" Click="StartBtn_Click" />
+                    <Button x:Name="BrowserBtn" Content="Open in browser" Padding="18,8" Margin="10,0,0,0"
+                            Visibility="Collapsed" Click="BrowserBtn_Click" />
+                </StackPanel>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

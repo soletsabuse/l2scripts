@@ -79,6 +79,9 @@ procedure SetBlessing(SkillID: integer);
 // own buffs: SkillID cast on us whenever its buff is gone (or has under BeforeSec seconds left; 0 = only when gone),
 // in a fight too - no target change (a self buff); BuffID 0 = the same ID as the skill
 procedure AddSelfBuff(SkillID, BuffID, BeforeSec: integer);
+// the same, but only while a player hits us and SetPvpAnswer is on (a shield...): put on at once when he
+// attacks, before our answer, and kept on until the answer is over
+procedure AddPvpBuff(SkillID, BuffID, BeforeSec: integer);
 // a buff item (elixir, potion): used whenever its buff is not on us. BuffID 0 = not known: the buff on us whose name
 // holds BuffName as a word ('Flu', 'Malaria'...), else the buff that appears on us right after the use (learned)
 procedure AddBuffItem(ItemID, BuffID: integer; BuffName: string);
@@ -201,6 +204,7 @@ var
   LastBlessTry: cardinal;           // gave up buffing the summon: its buff is not checked until then
   SbSkill, SbBuff, SbBefore: array of integer;   // AddSelfBuff: skill, its buff on us (0 = the skill's), recast s before its end
   SbNext: array of cardinal;                      // ... not tried before this
+  SbPvp: array of boolean;                        // ... only while a player hits us (AddPvpBuff)
   SbPendK: integer;                               // ... the one sent: the fight waits for its cast (-1 = none)
   SbPendAt, SbPendSent, SbPendLeft: cardinal;     // ... sent first / last, its buff time then
   BiItem, BiBuff, BiTries: array of integer;      // AddBuffItem: item, its buff (0 = not known yet), uses with no buff after
@@ -392,10 +396,19 @@ begin
   SetLength(SbBuff, n + 1);
   SetLength(SbBefore, n + 1);
   SetLength(SbNext, n + 1);
+  SetLength(SbPvp, n + 1);
   SbSkill[n] := SkillID;
   SbBuff[n] := BuffID;
   SbBefore[n] := BeforeSec;
   SbNext[n] := 0;
+  SbPvp[n] := false;
+end;
+
+procedure AddPvpBuff(SkillID, BuffID, BeforeSec: integer);
+begin
+  if SkillID <= 0 then exit;
+  AddSelfBuff(SkillID, BuffID, BeforeSec);
+  SbPvp[Length(SbPvp) - 1] := true;
 end;
 
 procedure AddBuffItem(ItemID, BuffID: integer; BuffName: string);
@@ -2196,7 +2209,8 @@ begin
     k := SbPendK;
     B := SbBuff[k];
     if B <= 0 then B := SbSkill[k];
-    if (SkillLeft(SbSkill[k]) > 0) or (BuffOn(B) and (BuffTime(B) > SbPendLeft)) or
+    // started: its reuse, or its buff on us (a toggle shows no time: on at all when it was gone)
+    if (SkillLeft(SbSkill[k]) > 0) or (BuffOn(B) and ((SbPendLeft = 0) or (BuffTime(B) > SbPendLeft))) or
        (GetTickCount - SbPendAt > SELF_CAST_MS) then
       SbPendK := -1
     else begin
@@ -2237,6 +2251,7 @@ begin
   // buff skills
   for k := 0 to Length(SbSkill) - 1 do begin
     if GetTickCount < SbNext[k] then continue;
+    if SbPvp[k] and (PvpOID = 0) then continue;   // AddPvpBuff: only while a player hits us
     B := SbBuff[k];
     if B <= 0 then B := SbSkill[k];
     TLeft := 0;
@@ -2385,6 +2400,9 @@ begin
     CheckWeapon();     // anti-disarm
     ChampionTick();    // champion respawned in the zone -> alert
     PlayerTick();      // a player close by -> blink
+    // a player hits us: own buffs first (AddPvpBuff - the shield goes on before our answer)
+    if PvpOID <> 0 then
+      if SelfBuffTick() then continue;
     if PvpStep() then continue;   // SetPvpAnswer: a player hits us -> our nukes at him
 
     // "Can't see target." -> walk to that mob (FindPath), fighting whoever hits us on the way
