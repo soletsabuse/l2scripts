@@ -7,7 +7,7 @@ uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';
 begin
   SetNavGrid('KIKU.navgrid');
   SetDebugLog(true, true);             // the debug log Library\Logs\dbg_<nick>_<time>_N.log: sight, fight, patrol, every run
-  SetPvpAnswer(300, 800);              // a player (not party / clan) hits us -> hit him back after 300..800 ms
+  SetPvpAnswer(111, 333);              // a player (not party / clan) hits us -> hit him back after 300..800 ms
   SetLiveMap(true);                    // Library\Nav\<nick>.navlive: nav_view.html, button Live - where it runs, live
   SetNavStrict(true);                  // runs on green only, red is never crossed (by itself once the map has blue sight cells)
   RunFarm();

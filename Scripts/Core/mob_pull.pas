@@ -58,6 +58,18 @@ procedure PullClearHeals();
 // free) and the near ones on the way back to the spot, the pack runs (and hits) as short as can be
 procedure PullAddAoeSkill(SkillID: integer; AtTarget: boolean; Range, Radius, MinMobs, EveryMs: integer);
 procedure PullClearAoeSkills();
+// a rush skill: a dash at a mob (the server flies us to it; a run speed buff after it). Not a pull skill of its own:
+// on the runs of the pull it is cast whenever ready at a mob that lies on our way - the mob we run to, or any mob of
+// the pull list (free, or already on us) that brings us closer to where we go by at least half the dash (forward,
+// never back). Range = its cast range; MinDash: no shorter dash (0 = 100). Any number: the first ready one goes
+procedure PullAddRushSkill(SkillID, Range, MinDash: integer);
+function PullRushOn(): boolean;                  // a rush skill is set
+// the rush now, if one is worth it on the way to GX, GY: FreeOk = free mobs of the pull may be dashed at too (else
+// only the ones on us). The pull calls it itself; the caller on its own runs (the pack to the farm spot) - every tick,
+// it never waits. true = a rush is on: the caller does not click this tick (its start is waited for / it started and
+// we clicked on our way already), the next tick it clicks its run at once
+function PullRushTick(GX, GY: integer; FreeOk: boolean): boolean;
+function PullRushCount(): integer;               // rushes since the script start (the log)
 procedure PullSweepEndsClear();                  // the run of the next pull: no end point (it ends at its last area)
 procedure PullSweepEndAdd(X, Y: integer);        // ... it may end at this point (up to 8): the shortest way is taken
 function PullSweepEndPicked(): integer;          // ... the end point the last run took (index of the adds), -1 none
@@ -84,7 +96,8 @@ function PullIsAggro(i: integer): boolean;       // NpcList(i) is on us (shooter
 function PullMobTarget(i: integer): integer;     // OID of whom NpcList(i) targets, 0 = none / gone
 // NpcList(i) is "on us" only from before - it held us when we came back to life (res) / when the script started,
 // and has not hit us since: the bot keeps its target / last attack, the server never says it dropped us.
-// Not on us (and free to pull again) until it hits us, casts at us, or we hit / provoke it
+// Not on us (and free to pull again) until it hits us, casts at us, we attack it (a shot, a hit: its MyAtkTime),
+// we tap / provoke it, or it comes within MP_STALE_NEAR of us (it chases: an archer's mobs never get to hit)
 function PullIsStale(i: integer): boolean;
 function PullCountAggro(): integer;
 function PullIsShooter(OID: integer): boolean;    // the mob is on the ignore list (PullIgnoreID) / a skipped champion
@@ -170,6 +183,16 @@ var
   MpAoeLast, MpAoeHold: array of cardinal;   // ... went last / did not go: not tried before this
   MpAoeTold: array of boolean;    // ... "no such skill" said
   MpAoeRunAt: cardinal;           // ... one went on the run then (its cast may hold us: no "stuck" for a while)
+  MpRushSk, MpRushRng, MpRushMin: array of integer;   // PullAddRushSkill: skill, cast range, the shortest dash
+  MpRushHold: array of cardinal;  // ... sent and did not start / not on this character: not tried before this
+  MpRushPOID: integer;            // PullRushTick: the rush sent now at this mob (0 = none) ...
+  MpRushPSk, MpRushPK: integer;   // ... its skill, its row
+  MpRushPAt, MpRushPSent: cardinal;   // ... sent first / last (sent again until its reuse shows it started)
+  MpRushPOurs: boolean;           // ... the mob was on us already (else: free - ours once it started)
+  MpRushPD, MpRushPGain, MpRushPWG: integer;   // ... for the log: its distance, how much closer, the goal away
+  MpRushBadOID: integer;          // ... it did not start at this mob (a wall the map does not know...) ...
+  MpRushBadUntil: cardinal;       // ... not at it again before this
+  MpRushN: integer;               // rushes done (the log)
   MpPrvOID: array[0..127] of integer;   // MpPrvAdd: provoked by our AoE (ours, it comes) ...
   MpPrvAt: array[0..127] of cardinal;   // ... then
   MpPrvHead: integer;
@@ -247,6 +270,7 @@ var
   // attack time then (a new attack on us = on us for real); 0 = the entry is done
   MpStOID: array[0..95] of integer;
   MpStAt: array[0..95] of cardinal;
+  MpStMy: array[0..95] of cardinal;       // ... and our last attack on it then (a new one = we fight it)
   MpStN: integer;
   MpStSnapped, MpStWasDead: boolean;
   MpStLook: cardinal;
@@ -260,6 +284,7 @@ var
   // tap weapon
   MpTapOn: boolean;
   MpTapMain: integer;
+  MpTapSameTold: boolean;        // "farm weapon = tap weapon" said (a hit with the weapon in hands: said once)
   MpWearID: integer;
   MpWearUseAt, MpWearRefAt: cardinal;
   MpWearOK: boolean;
@@ -342,7 +367,7 @@ begin
   MpPackMult := 2;         // this many packs on us -> pull ends at once
   MpStopMs := 300;         // not moving this long = stopped -> click again
   MpReclickDist := 80;     // the mob moved this far from our click point -> click again
-  MpTickMs := 50;
+  MpTickMs := 30;          // the pull tick: HP / the pack / the run looked at this often
   MpGridTol := 48;         // grid area: a mob this close to a walkable cell still counts
   MpPullRange := 0;        // a free mob farther than this from us is not pulled (0 = any distance)
   MpLeash := 0;            // a pack mob farther than this from us loses us: wait for it zigzagging (0 = off)
@@ -553,6 +578,35 @@ begin
   MpAoeLast[n] := 0;
   MpAoeHold[n] := 0;
   MpAoeTold[n] := false;
+end;
+
+procedure PullAddRushSkill(SkillID, Range, MinDash: integer);
+var n: integer;
+begin
+  MpInit();
+  if SkillID <= 0 then exit;
+  n := Length(MpRushSk);
+  SetLength(MpRushSk, n + 1);
+  SetLength(MpRushRng, n + 1);
+  SetLength(MpRushMin, n + 1);
+  SetLength(MpRushHold, n + 1);
+  MpRushSk[n] := SkillID;
+  MpRushRng[n] := Range;
+  if MpRushRng[n] <= 0 then MpRushRng[n] := 400;
+  MpRushMin[n] := MinDash;
+  if MpRushMin[n] <= 0 then MpRushMin[n] := 100;
+  if MpRushMin[n] > MpRushRng[n] - 20 then MpRushMin[n] := MpRushRng[n] - 20;
+  MpRushHold[n] := 0;
+end;
+
+function PullRushOn(): boolean;
+begin
+  result := Length(MpRushSk) > 0;
+end;
+
+function PullRushCount(): integer;
+begin
+  result := MpRushN;
 end;
 
 procedure PullClearAoeSkills();
@@ -1149,11 +1203,12 @@ begin
     if MpStN > 95 then break;
     MpStOID[MpStN] := NpcList(i).OID;
     MpStAt[MpStN] := NpcList(i).AtkTime;
+    MpStMy[MpStN] := NpcList(i).MyAtkTime;
     MpStN := MpStN + 1;
   end;
   if MpStN > 0 then
     Engine.Msg('[Pull]', IntToStr(MpStN) + ' mobs still "on us" from before (death / the start): not counted ' +
-      'until they hit us', 0);
+      'until they hit us, we attack them or they come close', 0);
 end;
 
 function MpStaleIdx(OID: integer): integer;
@@ -1185,6 +1240,8 @@ begin
 end;
 
 function PullIsStale(i: integer): boolean;
+const
+  MP_STALE_NEAR = 250;                        // a mob "from before" this close to us chases us: on us for real
 var OID, s: integer;
   C: TL2Cast;                                 // (TL2Cast, not TL2Effect as the help says)
 begin
@@ -1195,8 +1252,9 @@ begin
   OID := NpcList(i).OID;
   s := MpStaleIdx(OID);
   if s < 0 then exit;
-  if ((NpcList(i).AtkOID = User.OID) and (NpcList(i).AtkTime <> MpStAt[s])) or MpWasHit(OID) or MpProvoked(OID) then begin
-    MpStOID[s] := 0;                          // it hits us again / we hit or provoked it: on us for real
+  if ((NpcList(i).AtkOID = User.OID) and (NpcList(i).AtkTime <> MpStAt[s])) or MpWasHit(OID) or MpProvoked(OID) or
+     (NpcList(i).MyAtkTime <> MpStMy[s]) or (MpDist(NpcList(i).X, NpcList(i).Y) < MP_STALE_NEAR) then begin
+    MpStOID[s] := 0;                          // it hits us / we attack, tap or provoke it / it came to us: on us for real
     exit;
   end;
   C := NpcList(i).Cast;
@@ -1747,10 +1805,12 @@ begin
     MpTapMain := MpFarmWeapon;
     if MpTapMain <= 0 then MpTapMain := MpCurrentWeapon();
     MpTapOn := true;
-    if MpTapMain = MpTapWeapon then
-      Engine.Msg('[Weapon]', 'Farm weapon = tap weapon ' + IntToStr(MpTapMain) +
-        ' (started with it in hands?) - set the farm weapon in the script', 128)
-    else
+    if MpTapMain = MpTapWeapon then begin
+      if not MpTapSameTold then
+        Engine.Msg('[Weapon]', 'Farm weapon = tap weapon ' + IntToStr(MpTapMain) +
+          ' - the tap is a hit with it (another tap weapon: set the farm weapon in the script)', 128);
+      MpTapSameTold := true;
+    end else
       Engine.Msg('[Weapon]', 'Pull: tap weapon ' + IntToStr(MpTapWeapon) + ', farm weapon ' +
         IntToStr(MpTapMain) + ' after it', 0);
   end;
@@ -1779,7 +1839,7 @@ begin
   W := MpTapMain;
   if (W <= 0) or MpWear(W) then begin
     MpTapOn := false;
-    Engine.Msg('[Weapon]', 'Farm weapon ' + IntToStr(W) + ' is on', 0);
+    if W <> MpTapWeapon then Engine.Msg('[Weapon]', 'Farm weapon ' + IntToStr(W) + ' is on', 0);
   end;
 end;
 
@@ -2710,6 +2770,167 @@ begin
   end;
 end;
 
+// the rush sent (PullRushTick): its start is watched every tick of the caller - no waiting in here, the caller goes
+// on (HP, the pack...) but does not click meanwhile (a click before the cast starts would stop it). Not started:
+// sent again every tap_resend_ms; none in tap_fire_ms standing (4 times that while the server runs us into its range)
+// -> not at that mob for 5 s. Started (its reuse): a free mob it went at is ours (hit - it comes) and at once a click
+// on our way - the server keeps that move until the cast ends and runs it then INSTEAD of the hit the skill would
+// start (no swing at the mob after the dash). true = the caller skips its click this tick (the start is waited for /
+// we clicked just now)
+function MpRushGoOn(GX, GY: integer): boolean;
+var T: cardinal;
+  Has: boolean;
+  Idx, UZ: integer;
+  Nm, S: string;
+begin
+  result := false;
+  T := GetTickCount;
+  if User.Dead or MpStop or (T - MpRushPAt > 6000) then begin   // stopped / not called for long: forgotten
+    MpRushPOID := 0;
+    exit;
+  end;
+  Idx := MpIdx(MpRushPOID);
+  Nm := '';
+  if Idx >= 0 then Nm := PullNpcName(Idx);
+  if MpSkillLeft(MpRushPSk, Has) > 0 then begin
+    Inc(MpRushN);
+    S := 'on us';
+    if not MpRushPOurs then begin
+      MpHitAdd(MpRushPOID);            // a free mob it went at: ours now, it comes
+      S := 'free';
+    end;
+    UZ := User.Z;
+    MpChase(GX, GY, UZ, true);         // on our way at once: the server runs it after the cast, no hit
+    PlLog('rush ' + IntToStr(MpRushPSk) + ' at ' + IntToStr(MpRushPOID) + ' ' + Nm + ' (d ' + IntToStr(MpRushPD) + ', ' +
+      IntToStr(MpRushPGain) + ' closer to the goal ' + IntToStr(MpRushPWG) + ' away, ' + S + ') - started after ' +
+      IntToStr(T - MpRushPAt) + ' ms, on at once');
+    Dbg('[Pull]', 'rush ' + IntToStr(MpRushPSk) + ' at ' + IntToStr(MpRushPOID) + ' started after ' + IntToStr(T - MpRushPAt) +
+      ' ms, we at ' + IntToStr(User.X) + ',' + IntToStr(User.Y) + ' - clicked on to ' + IntToStr(GX) + ',' + IntToStr(GY));
+    MpRushPOID := 0;
+    MpMoveReset();
+    result := true;
+    exit;
+  end;
+  if (T - MpRushPAt > cardinal(MpTapFireMs)) and ((MpStillMs() >= 300) or (T - MpRushPAt > cardinal(MpTapFireMs) * 4)) then begin
+    MpRushBadOID := MpRushPOID;
+    MpRushBadUntil := T + 5000;
+    if (MpRushPK >= 0) and (MpRushPK < Length(MpRushHold)) then MpRushHold[MpRushPK] := T + 300;
+    PlLog('rush ' + IntToStr(MpRushPSk) + ' at ' + IntToStr(MpRushPOID) + ' ' + Nm + ' (d ' + IntToStr(MpRushPD) +
+      '): no start in ' + IntToStr(T - MpRushPAt) + ' ms - not at it for 5 s');
+    Dbg('[Pull]', 'rush ' + IntToStr(MpRushPSk) + ' at ' + IntToStr(MpRushPOID) + ' did not start in ' + IntToStr(T - MpRushPAt) + ' ms');
+    MpRushPOID := 0;
+    MpMoveReset();
+    exit;
+  end;
+  if T - MpRushPSent >= cardinal(MpTapResendMs) then begin
+    Engine.DUseSkill(MpRushPSk, false, false);
+    MpRushPSent := T;
+  end;
+  result := true;
+end;
+
+// the rush (PullAddRushSkill) now, if one is worth it on the way to GX, GY: every tick of the caller (as often as it
+// can go). One sent already -> its start watched (MpRushGoOn). Else the first ready rush skill; a live mob within its
+// range and not nearer than its MinDash, in sight and on a line we may run (a dash over red / onto a ledge: no), not
+// ignored / a skipped champion / on another floor, on us / hit / provoked - or free (FreeOk: a mob the pull may
+// take); the dash must bring us closer to GX, GY (the way along the map) by at least half its length (forward, never
+// back) - of those the one that brings us the closest. Target, DUseSkill, true (the caller does not click until it
+// started: MpRushGoOn)
+function PullRushTick(GX, GY: integer; FreeOk: boolean): boolean;
+var k, Sk, SkK, Rng, MinD, i, OID, BestOID, UX, UY, MX, MY: integer;
+  D, WG, W, Gain, BestGain, BestD: double;
+  Has, Ours, IsFree, BestOurs, WGDone: boolean;
+  Nm: string;
+begin
+  result := false;
+  if Length(MpRushSk) = 0 then exit;
+  if MpRushPOID <> 0 then begin
+    result := MpRushGoOn(GX, GY);
+    exit;
+  end;
+  if User.Dead or MpStop then exit;
+  Sk := 0;
+  SkK := -1;
+  Rng := 0;
+  MinD := 0;
+  for k := 0 to Length(MpRushSk) - 1 do begin
+    if GetTickCount < MpRushHold[k] then continue;
+    if MpSkillLeft(MpRushSk[k], Has) > 0 then continue;      // reuse
+    if (SkillList.Count > 0) and (not Has) then begin
+      Engine.Msg('[Pull]', 'No rush skill ' + IntToStr(MpRushSk[k]) + ' on this character - not used', 128);
+      MpRushHold[k] := GetTickCount + 600000;
+      continue;
+    end;
+    Sk := MpRushSk[k];
+    SkK := k;
+    Rng := MpRushRng[k];
+    MinD := MpRushMin[k];
+    break;
+  end;
+  if Sk = 0 then exit;
+  UX := User.X;
+  UY := User.Y;
+  WG := 0;
+  WGDone := false;                     // the way to the goal: only once a mob passed the cheap checks
+  BestOID := 0;
+  BestGain := 0;
+  BestD := 0;
+  BestOurs := false;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if NpcList(i).Dead then continue;
+    MX := NpcList(i).X;
+    MY := NpcList(i).Y;
+    D := MpDist(MX, MY);
+    if (D > Rng) or (D < MinD) then continue;
+    OID := NpcList(i).OID;
+    if (OID = MpRushBadOID) and (GetTickCount < MpRushBadUntil) then continue;
+    if PullIsShooterAt(i) or MpNameIgnored(i) then continue;
+    if not MpZOk(NpcList(i).Z) then continue;
+    Ours := PullIsAggro(i) or MpWasHit(OID) or MpProvoked(OID);
+    IsFree := false;
+    if (not Ours) and FreeOk then IsFree := MpFreeOK(i);
+    if (not Ours) and (not IsFree) then continue;
+    if NavIsReady() then begin
+      if not NavSee(UX, UY, MX, MY) then continue;
+      if not NavWalkLine(UX, UY, MX, MY) then continue;
+    end;
+    if not WGDone then begin
+      WG := MpWay(UX, UY, GX, GY, true);
+      WGDone := true;
+    end;
+    if WG < MinD then exit;            // the goal is nearer than a dash: no use
+    W := MpWay(MX, MY, GX, GY, true);
+    Gain := WG - W;
+    if Gain < D * 0.5 then continue;   // not forward on our way
+    if Gain > BestGain then begin
+      BestGain := Gain;
+      BestOID := OID;
+      BestD := D;
+      BestOurs := Ours;
+    end;
+  end;
+  if BestOID = 0 then exit;
+  i := MpIdx(BestOID);
+  Nm := '';
+  if i >= 0 then Nm := PullNpcName(i);
+  Dbg('[Pull]', 'rush ' + IntToStr(Sk) + ' at ' + IntToStr(BestOID) + ' ' + Nm + ' d=' + IntToStr(Round(BestD)) + ' ours ' +
+    IntToStr(Ord(BestOurs)) + ': ' + IntToStr(Round(BestGain)) + ' closer to ' + IntToStr(GX) + ',' + IntToStr(GY) +
+    ' (' + IntToStr(Round(WG)) + ' away)');
+  Engine.SetTarget(BestOID);
+  Engine.DUseSkill(Sk, false, false);
+  MpRushPOID := BestOID;
+  MpRushPSk := Sk;
+  MpRushPK := SkK;
+  MpRushPAt := GetTickCount;
+  MpRushPSent := MpRushPAt;
+  MpRushPOurs := BestOurs;
+  MpRushPD := Round(BestD);
+  MpRushPGain := Round(BestGain);
+  MpRushPWG := Round(WG);
+  MpMoveReset();                       // the "standing" of its start counts from here
+  result := true;
+end;
+
 // the run: the whole pull is one run planned at its start (MpSwSnap / MpSwCover / MpSwPlan) - point after point the
 // AoE skill is pressed on the run as soon as every mob of the point left is in its reach (the earliest place: no need
 // to get to the point), then at once on to the next. Mobs that came by themselves / an earlier press took: the point
@@ -2839,6 +3060,11 @@ begin
       if GetTickCount - T0 > 30000 then begin
         MpMsg('Pull run: point ' + IntToStr(p + 1) + ' not reached in 30 s, on');
         break;
+      end;
+      if PullRushTick(TX, TY, true) then begin   // a dash on the way to the point (its start waited for: no click)
+        First := true;                 // the next click at once
+        Delay(MpTickMs);
+        continue;
       end;
       if First then MpMoveReset();     // a new run: the "stuck" clock afresh
       MpChase(TX, TY, TZ, First);      // through it, never stopping (waiting there: through it and back)
@@ -3187,6 +3413,11 @@ begin
             OID := 0;
             continue;
           end;
+          if PullRushTick(MX, MY, Cnt < MpPack) then begin   // a dash on the way (at it / a mob toward it)
+            LastSend := 0;                 // its start waited for (no click) / it went: the run clicks again at once
+            Delay(MpTickMs);
+            continue;
+          end;
           if MpTapSkill <= 0 then TapOk := MpTapReady();   // the tap weapon goes on while we run, not at the mob
           MpChase(MX, MY, MZ, LastSend = 0);
           LastSend := GetTickCount;
@@ -3409,6 +3640,11 @@ begin
         OID := 0;
         continue;
       end;
+      if PullRushTick(MX, MY, Cnt < MpPack) then begin   // a dash on the way (at it / a mob toward it)
+        LastSend := 0;                     // its start waited for (no click) / it went: the run clicks again at once
+        Delay(MpTickMs);
+        continue;
+      end;
       MpChase(MX, MY, MZ, LastSend = 0);   // by the nav map if it is behind a wall
       LastSend := GetTickCount;
     end else if Cnt > 0 then begin
@@ -3442,10 +3678,11 @@ end;
 
 // the pull with its log: what it saw at the start, the pull itself (MpPullBody), what it left at the end
 function PullRun(): integer;
-var e: integer;
+var e, Rush0: integer;
   S: string;
 begin
   MpInit();
+  Rush0 := MpRushN;
   PlLog('=== PULL START at ' + IntToStr(User.X) + ',' + IntToStr(User.Y) + ': pack ' + IntToStr(MpPack) + ', room polygon ' +
     IntToStr(PpN) + ' points, tap skills ' + IntToStr(Length(MpTapSks)) + ', AoE skills ' + IntToStr(Length(MpAoeSk)) +
     ', ours now ' + IntToStr(PullCountOurs()));
@@ -3456,7 +3693,9 @@ begin
   PlSnapshot('seen at the start');
   PlTickAt := 0;
   result := MpPullBody();
-  PlLog('=== PULL END: ' + IntToStr(result) + ' ours, ' + IntToStr(PullCountOurs()) + ' counted now');
+  S := '';
+  if Length(MpRushSk) > 0 then S := ', rushes ' + IntToStr(MpRushN - Rush0);
+  PlLog('=== PULL END: ' + IntToStr(result) + ' ours, ' + IntToStr(PullCountOurs()) + ' counted now' + S);
   PlSnapshot('left at the end');
   PlFlush();
 end;

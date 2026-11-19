@@ -135,6 +135,12 @@ unit SpotFarmPackNav;
 //                                          //   at each area (at most every 10000 ms; the 2nd number is not used); "at the
 //                                          //   target" -> every mob gets it from its range, no body pull (as the mage
 //                                          //   pull skills). K pull_skill skill 0 every
+//     AddRushSkill(25213, 0);              // optional, any number: a dash at a mob (the server flies us to it, a speed
+//                                          //   buff after) - cast whenever ready on the runs of the pull and of the pack
+//                                          //   to the farm spot, at a mob on our way (the one we run to, or any mob of the
+//                                          //   pull list - free or already on us - that brings us closer by half the
+//                                          //   dash: forward, never back); range from skills.json, no dash shorter than
+//                                          //   the 2nd number (0 = 100). K rush_skill skill min
 //     SetSecondTeleport(30233, ['teleport_request', 'teleport_...']);  // optional: after the Aden
 //                                          //   teleport run to this NPC and send these bypasses one after another
 //   Every move of this library goes as a mouse-click packet: the server builds the path (hills, walls).
@@ -226,6 +232,7 @@ procedure SetMageSpam(Ms: integer);
 procedure AddMageBuff(SkillID, BuffID, BeforeSec: integer);
 procedure AddFightSkill(SkillID, EveryMs, PerMobMs, MinMobs: integer);
 procedure AddPullSkill(SkillID, MinMobs, EveryMs: integer);
+procedure AddRushSkill(SkillID, MinDash: integer);
 procedure AddSpotBuff(SkillID, BuffID: integer);
 procedure AddOwnBuff(SkillID, BuffID, OnMe, When, Toggle, MaxMobs: integer);
 procedure SetChampionsLast(Enable: boolean);
@@ -367,6 +374,7 @@ const
   SP_NODMG_MS       = 12000;    // spoil farm: mob HP does not drop this long -> skip it (even if it "hits" us)
   SP_SWEEP_TRIES    = 3;        // spoil farm: sweep casts on one corpse
   PK_TICK_MS        = 50;       // pack farm: main loop tick
+  PK_RUN_TICK_MS    = 30;       // the run to the spot in steps (the pack on us: HP, the dash looked at this often)
   PK_REACH          = 25;       // pack farm: corner / drop reached when we stand this close to the point
   PK_TOUCH          = 120;      // pack farm: this close to a free mob = it should aggro (body pull)
   PK_TOUCH_WAIT_MS  = 800;      // pack farm: nobody on us yet, next to a mob this long without aggro -> tap it once
@@ -585,6 +593,7 @@ var
   PkChampsLast: boolean;             // champs_last: the fight kills the usual mobs first, the champions after them
   PkChampsLastSet: boolean;
   PkInFight: boolean;             // PkFight runs (SbAtSpot: a map with no spots - the spot buffs go in a fight)
+  PkRoundClean: boolean;          // PkFightRound (melee) ended as the pack died (not: nobody came / stopped)
   PackEnabled: boolean;           // SetPackFarm called: the script farms packs, the interface stays OFF
   PkPackSize, PkMassSpoil, PkMassSweep: integer;
   PkMobIDs: array of integer;     // mobs to pull; empty = any mob in the zone
@@ -720,6 +729,8 @@ var
   FsDebHead: integer;
   // pull skills (AddPullSkill / K pull_skill): skill, free mobs in its area at least, at most every ms
   PsID, PsMin, PsEvery: array of integer;
+  // rush skills (AddRushSkill / K rush_skill): a dash at a mob, cast on the runs of the pull / to the farm spot
+  RsID, RsMin: array of integer;
 
 // ===================== Bow kite (SetBowKite / K kite) =====================
   KtOn: boolean;                  // the fight of an archer: shot, its arrow lands, a short step away, the next shot
@@ -1228,6 +1239,20 @@ begin
   PsID[n] := SkillID;
   PsMin[n] := MinMobs;
   PsEvery[n] := EveryMs;
+end;
+
+// a rush skill (PsSetup in RunFarm -> Core\mob_pull.pas PullAddRushSkill): a dash at a mob, cast whenever ready on the
+// runs of the pull and of the pack to the farm spot at a mob on our way; its range from skills.json; MinDash: no
+// shorter dash (0 = 100)
+procedure AddRushSkill(SkillID, MinDash: integer);
+var n: integer;
+begin
+  if SkillID <= 0 then exit;
+  n := Length(RsID);
+  SetLength(RsID, n + 1);
+  SetLength(RsMin, n + 1);
+  RsID[n] := SkillID;
+  RsMin[n] := MinDash;
 end;
 
 // at the corner: run to and hit pack mobs up to Radius from the corner point (0 = stand in the
@@ -1949,6 +1974,8 @@ begin
       StrToIntDef(PtField(V, 3), 1))
   else if K = 'pull_skill' then        // skill [free mobs in its area at least] [at most every ms]
     AddPullSkill(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0), StrToIntDef(PtField(V, 2), 0))
+  else if K = 'rush_skill' then        // skill [the shortest dash, 0 = 100]
+    AddRushSkill(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0))
   else if K = 'dagger' then SetPackDagger(StrToIntDef(PtField(V, 0), 0), StrToIntDef(PtField(V, 1), 0))
   else if K = 'corner_radius' then SetCornerRadius(StrToIntDef(V, 0))
   else if K = 'auto_corner' then SetAutoCorner(StrToIntDef(V, 0))
@@ -5343,19 +5370,20 @@ begin
   if not PkLeadTo(SX, SY, SZ, PK_REACH) then NavRun(SX, SY, SZ, PK_REACH);
 end;
 
-// the run to a farm spot / the pull start. A mage (K mage): in steps - our HP low -> a drain / heal of the
-// fight (PullHealTick: the skills used "our HP below") on the way, the pack hits us all the way; the last
-// bit / a stuck run -> NavRun as before. The others: NavRun at once
+// the run to a farm spot / the pull start. A mage (K mage) / rush skills (K rush_skill): in steps - our HP low -> a
+// drain / heal of the fight (PullHealTick: the skills used "our HP below") on the way, the pack hits us all the way;
+// a rush skill ready -> a dash at a mob on our way (with mobs on us only: on us, or free of the room - never a lone
+// run to the pull start pulling early); the last bit / a stuck run -> NavRun as before. The others: NavRun at once
 procedure PkRunSpot(X, Y, Z, Near: integer);
 var Started: cardinal;
   Lim: integer;
 begin
   Lim := PATH_REACHED;
   if Near > Lim then Lim := Near;
-  if Length(MgID) > 0 then begin
+  if (Length(MgID) > 0) or PullRushOn() then begin
     Started := GetTickCount;
     if NavDebugOn() then
-      Dbg('[Move]', 'mage: run to the spot ' + IntToStr(X) + ',' + IntToStr(Y) + ' d=' + IntToStr(Round(PkDist(X, Y))) +
+      Dbg('[Move]', 'run to the spot in steps ' + IntToStr(X) + ',' + IntToStr(Y) + ' d=' + IntToStr(Round(PkDist(X, Y))) +
         ', ' + IntToStr(PkCountAggro()) + ' on us');
     NavStepReset();
     while (not AoeMustStop()) and (not User.Dead) and (PkDist(X, Y) > Lim) do begin
@@ -5365,13 +5393,22 @@ begin
         NavClickForget();
         continue;
       end;
+      // a dash on the way, forward: free mobs of the room only with the pack on us (never a lone run pulling early);
+      // true = its start waited for (no click: it would stop the cast) / it went and clicked on - the next step clicks
+      if PullRushOn() then
+        if PullRushTick(X, Y, PkCountAggro() > 0) then begin
+          NavMoveReset();
+          NavClickForget();
+          Delay(PK_RUN_TICK_MS);
+          continue;
+        end;
       NavStep(X, Y, Z, true);
       if NavStillMs() > PK_POINT_STUCK_MS then break;   // NavRun below gets us out
-      Delay(PK_TICK_MS);
+      Delay(PK_RUN_TICK_MS);
     end;
     if AoeMustStop() or User.Dead then exit;
     if NavDebugOn() then
-      Dbg('[Move]', 'mage: run to the spot - steps done after ' + IntToStr(GetTickCount - Started) + ' ms, d=' +
+      Dbg('[Move]', 'run to the spot - steps done after ' + IntToStr(GetTickCount - Started) + ' ms, d=' +
         IntToStr(Round(PkDist(X, Y))) + ' still ' + IntToStr(NavStillMs()) + ' ms');
     if (Near > 0) and (PkDist(X, Y) <= Near) then exit;   // near it is enough
   end;
@@ -5511,7 +5548,7 @@ end;
 // a mob of the pack we fight: alive, on us, within PK_FIGHT_RANGE, not a shooter. Skipped
 // (wall) mobs count too: once the pack is at the corner it is finished, not left for a new pull
 function PkFightMob(i: integer): boolean;
-var Atk, Tgt, NX, NY, NZ, OID: integer;
+var Atk, Tgt, NX, NY, NZ, OID, Lim: integer;
 begin
   result := false;
   if i >= NpcList.Count then exit;     // the list got shorter while we walk it
@@ -5525,7 +5562,9 @@ begin
   NX := NpcList(i).X;
   NY := NpcList(i).Y;
   NZ := NpcList(i).Z;
-  result := (PkDist(NX, NY) <= PK_FIGHT_RANGE) and PkZOk(NZ);
+  Lim := PK_FIGHT_RANGE;                      // an archer: a mob on us within the kite range is shot (not "no fight mob"
+  if KtOn and (KtRange > Lim) then Lim := KtRange;   // and a new fight every tick until it comes within 700)
+  result := (PkDist(NX, NY) <= Lim) and PkZOk(NZ);
 end;
 
 // no spoil messages: a mob counts as spoiled once it was under PkSpoilPerMob (2) of our mass spoils
@@ -5842,6 +5881,23 @@ begin
   result := true;                      // the target is a corpse now
 end;
 
+// PkFinalSweep: a corpse of this fight (round its places, F2 = that distance squared) that was under our mass spoil but
+// has no "sweepable" flag yet - it died a moment ago, the flag comes a bit after the death
+function PkCorpseFlagDue(F2: double): boolean;
+var i, OID: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if (not NpcList(i).Dead) or NpcList(i).Sweepable then continue;
+    OID := NpcList(i).OID;
+    if PkSwept(OID) then continue;
+    if PkSpoilHits(OID) = 0 then continue;
+    if not PkNearFight(NpcList(i).X, NpcList(i).Y, F2) then continue;
+    result := true;
+    exit;
+  end;
+end;
+
 // after the pack: every sweepable corpse not swept yet round the places of the fight (within PK_SWEEP_FAR of where
 // we are or of any place of it - PkFightPlace: the corner of the pack AND where a ranged mob was hunted down far off;
 // they lie apart round the spot, not only within the sweep reach of where we stand): the corpse with the most others within
@@ -5852,11 +5908,15 @@ procedure PkFinalSweep();
 const
   PK_SWEEP_FAR = 700;                  // corpses this far from a place of the fight are swept too
   PK_SWEEP_MAX_MS = 35000;             // the final sweep at most this long (spoiled corpses vanish anyway)
-var i, j, n, BestN, BestOID, BX, BY, BZ, OID, NX, NY, Fails, RunOID, Done: integer;
+  PK_SWEEP_FLAG_MS = 2000;             // a spoiled corpse with no "sweepable" flag yet is waited for this long
+var i, j, n, BestN, BestOID, BX, BY, BZ, OID, NX, NY, Fails, RunOID, Done, Left, Unreached: integer;
   T0, RunSince: cardinal;
   R2, F2: double;
+  Why: string;
 begin
   if (PkMassSweep = 0) or (not HasSkill(PkMassSweep)) then exit;
+  Why := 'time over';
+  Unreached := 0;
   PkFightPlace();                      // where the fight ended is one of its places too
   R2 := PkSq(AOE_SWEEP_RANGE);
   F2 := PkSq(PK_SWEEP_FAR);
@@ -5866,7 +5926,13 @@ begin
   RunSince := 0;
   Done := 0;
   while (not User.Dead) and (not NeedReturn) and (GetTickCount - T0 < PK_SWEEP_MAX_MS) do begin
-    if PkCountAggro() > 0 then break;  // a mob on us: the fight first
+    // a mob on us within the fight reach: the fight first (PkFight fights it and sweeps again after it). One on us
+    // farther / on another floor does not stop the sweep - it comes along (it ended the sweep at once before: the
+    // last corpse of the pack was left every time such a one was there)
+    if PkCountFight() > 0 then begin
+      Why := 'a mob on us came within the fight reach';
+      break;
+    end;
     // the corpse with the most sweepable corpses within the sweep reach round it
     BestOID := 0;
     BestN := 0;
@@ -5894,7 +5960,16 @@ begin
         BZ := NpcList(i).Z;
       end;
     end;
-    if BestOID = 0 then break;         // none left
+    if BestOID = 0 then begin          // none sweepable now
+      // the last one killed (the fight ended with its death): a corpse gets its "sweepable" flag a moment after the
+      // death (as SpAfterKill waits for it) - a corpse of this fight that was under our mass spoil and is not
+      // sweepable yet is waited for, at most PK_SWEEP_FLAG_MS from the fight end; then it was not spoiled - none left
+      if (GetTickCount - T0 < PK_SWEEP_FLAG_MS) and PkCorpseFlagDue(F2) then begin
+        Delay(PK_TICK_MS);
+        continue;
+      end;
+      break;
+    end;
     // next to it: the sweep reaches it and the ones round it
     if PkDist(BX, BY) > AOE_SWEEP_RANGE * 0.6 then begin
       if BestOID <> RunOID then begin
@@ -5906,6 +5981,7 @@ begin
         PkSweptOID[PkSweptHead] := BestOID;
         PkSweptHead := (PkSweptHead + 1) mod 64;
         if DbgOn() then Dbg('[Sweep]', 'corpse ' + IntToStr(BestOID) + ' not reached in 4 s - left');
+        Inc(Unreached);
         RunOID := 0;
         continue;
       end;
@@ -5925,13 +6001,25 @@ begin
       Inc(Fails);
       if Fails >= 3 then begin
         Engine.Msg('[Pack]', 'Mass sweep ' + IntToStr(PkMassSweep) + ' does not go (MP?) - the corpses left', 128);
+        Why := 'the mass sweep does not go';
         break;
       end;
       Delay(500);
     end;
   end;
+  // corpses left to sweep round the fight: said in the chat with why (to see what keeps them)
+  Left := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if (not NpcList(i).Dead) or (not NpcList(i).Sweepable) then continue;
+    if PkSwept(NpcList(i).OID) then continue;
+    if PkNearFight(NpcList(i).X, NpcList(i).Y, F2) then Inc(Left);
+  end;
+  if (Left > 0) and (not User.Dead) then
+    Engine.Msg('[Pack]', 'Final sweep: ' + IntToStr(Left) + ' spoiled corpses left - ' + Why + ' (' + IntToStr(Done) +
+      ' sweeps, ' + IntToStr(Unreached) + ' corpses not reached, ' + IntToStr(PkCountAggro()) + ' on us, ' +
+      IntToStr(PkCountFight()) + ' within the fight reach)', 128);
   if DbgOn() then Dbg('[Sweep]', 'final sweep: ' + IntToStr(Done) + ' casts in ' + IntToStr(GetTickCount - T0) + ' ms, ' +
-    IntToStr(PkFpN) + ' places of the fight');
+    IntToStr(PkFpN) + ' places of the fight, ' + IntToStr(Left) + ' left (' + Why + ')');
   PkCorpseSince := 0;
 end;
 
@@ -7914,7 +8002,7 @@ begin
   if (not User.Dead) and (PkMassSweep > 0) and HasSkill(PkMassSweep) then PkFinalSweep();
 end;
 
-procedure PkFight();
+procedure PkFightRound();
 var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, BestOID: integer;
   NextSpoil, IdleSince, SpoilCastAt, RangedSince, BestAt: cardinal;
   NearD0: double;
@@ -7923,18 +8011,15 @@ var OID, NewOID, Casts, Main, Idx, TX, TY, TZ, RunOID, Reach, HuntOID, NearOID, 
   DbgAt: cardinal;
 begin
   PkInFight := true;                   // SbAtSpot: a map with no spots - the spot buffs go in a fight
+  PkRoundClean := false;
   PkFpN := 0;                          // the places of this fight: from here on
   PkFightPlace();
   if MgOn() then begin                 // a mage: skills, no auto attack / spoil
     PkMageFight();
-    PkInFight := false;
-    SbFightEnd();
     exit;
   end;
   if KtOn then begin                   // an archer (K kite): shot, a short step away, shot ...
     PkKiteFight();
-    PkInFight := false;
-    SbFightEnd();
     exit;
   end;
   FsReset();                           // no fight skill pending from the last fight
@@ -7975,6 +8060,7 @@ begin
     Running := false;
     PkCheckShooters();
     if PkCountFight() = 0 then begin  // the pack is dead
+      PkRoundClean := true;
       Dbg('[Fight]', 'end: no fight mob left');
       PkDbgFight('[Fight]');
       break;
@@ -8156,6 +8242,23 @@ begin
     PkDaggerOn := false;
   end;
   if not User.Dead then PkFinalSweep();
+end;
+
+// the fight of the pack and its final sweep (PkFightRound); a mob on us came within the fight reach during the sweep
+// (it stops the sweep) -> the fight goes on right here and the corpses are swept after it, up to 4 rounds - never off
+// to the next room / pull with spoiled corpses left
+procedure PkFight();
+var k: integer;
+begin
+  for k := 1 to 4 do begin
+    PkFightRound();
+    if User.Dead or NeedReturn or FarmPaused or (not IsOnline()) then break;
+    if MgOn() or KtOn then break;      // a mage / an archer: its own fight end, one round as before
+    if not PkRoundClean then break;    // ended otherwise (nobody came to the corner...): no new round for it
+    if PkCountFight() = 0 then break;  // nobody came on us during the sweep: done
+    Engine.Msg('[Pack]', IntToStr(PkCountFight()) + ' on us came during the final sweep - the fight goes on here, the ' +
+      'corpses swept after it', 0);
+  end;
   PkInFight := false;
   SbFightEnd();                        // "in the fight at the spot" / "few mobs on us" buffs off: full speed on
 end;
@@ -9402,16 +9505,47 @@ end;
 // RunFarm (after the mage set-up): the pull skills (AddPullSkill / K pull_skill) go to the pull by skills.json -
 // AoE at the target / round us -> Core\mob_pull.pas PullAddAoeSkill (the pull is one planned run pressing it at
 // each area of mobs, at most every its ms); at the target -> a tap skill: every mob gets it from a bit inside its
-// cast range, no body pull (after the mage pull skills if any); on us -> not a pull skill
+// cast range, no body pull (after the mage pull skills if any); on us -> not a pull skill. The rush skills (AddRushSkill /
+// K rush_skill) -> PullAddRushSkill with a bit inside their cast range; a pull skill that is a rush skill too: a rush only
 procedure PsSetup();
-var k, j, T, R, Rad: integer;
+var k, j, T, R, Rad, MinD: integer;
   Nm, S: string;
-  Taps: boolean;
+  Taps, IsRush: boolean;
 begin
+  S := '';
+  for k := 0 to Length(RsID) - 1 do begin
+    j := SdFind(RsID[k]);
+    R := 0;
+    Nm := '';
+    if j >= 0 then begin
+      R := SdR[j];
+      Nm := SdN[j];
+    end else
+      Engine.Msg('[Init]', 'Rush skill ' + IntToStr(RsID[k]) + ' is not in ' + MG_SKILL_FILE + ' - taken with the range 400', 128);
+    if R <= 0 then R := 400;
+    R := R * 9 div 10;
+    if Nm = '' then Nm := 'skill ' + IntToStr(RsID[k]);
+    MinD := RsMin[k];
+    if MinD <= 0 then MinD := 100;
+    if MinD > R - 20 then MinD := R - 20;
+    PullAddRushSkill(RsID[k], R, MinD);
+    if S <> '' then S := S + '; ';
+    S := S + Nm + ' (' + IntToStr(RsID[k]) + ') at a mob ' + IntToStr(MinD) + '..' + IntToStr(R) + ' away';
+  end;
+  if S <> '' then
+    Engine.Msg('[Init]', 'Rush skills: ' + S + ' - cast whenever ready on the runs of the pull / to the farm spot at a mob on ' +
+      'our way, forward (the one we run to, or a mob of the list - free or on us - that brings us closer)', 0);
   if Length(PsID) = 0 then exit;
   S := '';
   Taps := false;
   for k := 0 to Length(PsID) - 1 do begin
+    IsRush := false;
+    for j := 0 to Length(RsID) - 1 do
+      if RsID[j] = PsID[k] then IsRush := true;
+    if IsRush then begin
+      Engine.Msg('[Init]', 'Pull skill ' + IntToStr(PsID[k]) + ' is a rush skill too - used as a rush only', 128);
+      continue;
+    end;
     j := SdFind(PsID[k]);
     if j >= 0 then begin
       T := SdT[j];

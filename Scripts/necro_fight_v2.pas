@@ -76,6 +76,12 @@ procedure SetSummon(SummonSkillID: integer);
 procedure SetConfig(Name: string);
 procedure SetPull(Range, MinMobs, MaxMobs, TapSkillID: integer);
 procedure SetBlessing(SkillID: integer);
+// own buffs: SkillID cast on us whenever its buff is gone (or has under BeforeSec seconds left; 0 = only when gone),
+// in a fight too - no target change (a self buff); BuffID 0 = the same ID as the skill
+procedure AddSelfBuff(SkillID, BuffID, BeforeSec: integer);
+// a buff item (elixir, potion): used whenever its buff is not on us. BuffID 0 = not known: the buff on us whose name
+// holds BuffName as a word ('Flu', 'Malaria'...), else the buff that appears on us right after the use (learned)
+procedure AddBuffItem(ItemID, BuffID: integer; BuffName: string);
 procedure AddPetSkill(ActionID, Kind, Param: integer);
 procedure SetPetAttack(MinMobMaxHP: integer);
 procedure SetTargetRange(Range: integer);
@@ -218,6 +224,19 @@ var
   PullTapRange: integer;                   // SetPullTapRange (0 = MaxCastRange)
   BlessSkill: integer;                     // SetBlessing: a buff that survives the summon's death (Noblesse 1323)
   LastBlessTry: cardinal;           // gave up buffing the summon: its buff is not checked until then
+  SbSkill, SbBuff, SbBefore: array of integer;   // AddSelfBuff: skill, its buff on us (0 = the skill's), recast s before its end
+  SbNext: array of cardinal;                      // ... not tried before this
+  SbPendK: integer;                               // ... the one sent: the fight waits for its cast (-1 = none)
+  SbPendAt, SbPendSent, SbPendLeft: cardinal;     // ... sent first / last, its buff time then
+  BiItem, BiBuff, BiTries: array of integer;      // AddBuffItem: item, its buff (0 = not known yet), uses with no buff after
+  BiName: array of string;                        // ... the word of its buff name
+  BiNext: array of cardinal;                      // ... not tried before this
+  BiTold: array of boolean;                       // ... "no such item" said
+  BiPendK: integer;                               // ... used, its buff to learn (-1 = none)
+  BiPendAt: cardinal;
+  BiSnapIDs: array[0..63] of integer;             // ... the buffs on us right before its use, and their time
+  BiSnapEnd: array[0..63] of cardinal;
+  BiSnapN: integer;
   HasSafePoint: boolean;
   SafeX, SafeY, SafeZ: integer;
   SupplyItems, SupplyMin, SupplyMax: array of integer;
@@ -397,6 +416,40 @@ end;
 procedure SetBlessing(SkillID: integer);
 begin
   BlessSkill := SkillID;
+end;
+
+procedure AddSelfBuff(SkillID, BuffID, BeforeSec: integer);
+var n: integer;
+begin
+  if SkillID <= 0 then exit;
+  n := Length(SbSkill);
+  SetLength(SbSkill, n + 1);
+  SetLength(SbBuff, n + 1);
+  SetLength(SbBefore, n + 1);
+  SetLength(SbNext, n + 1);
+  SbSkill[n] := SkillID;
+  SbBuff[n] := BuffID;
+  SbBefore[n] := BeforeSec;
+  SbNext[n] := 0;
+end;
+
+procedure AddBuffItem(ItemID, BuffID: integer; BuffName: string);
+var n: integer;
+begin
+  if ItemID <= 0 then exit;
+  n := Length(BiItem);
+  SetLength(BiItem, n + 1);
+  SetLength(BiBuff, n + 1);
+  SetLength(BiTries, n + 1);
+  SetLength(BiName, n + 1);
+  SetLength(BiNext, n + 1);
+  SetLength(BiTold, n + 1);
+  BiItem[n] := ItemID;
+  BiBuff[n] := BuffID;
+  BiTries[n] := 0;
+  BiName[n] := BuffName;
+  BiNext[n] := 0;
+  BiTold[n] := false;
 end;
 
 procedure AddPetSkill(ActionID, Kind, Param: integer);
@@ -2343,6 +2396,231 @@ begin
   end;
 end;
 
+// ===================== Own buffs (AddSelfBuff) and buff items (AddBuffItem) =====================
+
+// the buff is on us (whatever time it shows: a buff with no time known counts as on)
+function BuffOn(ID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to User.Buffs.Count - 1 do
+    if User.Buffs.Items(i).ID = ID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// Key is a whole word of Nm (upper case both): 'FLU' in 'HOT SPRINGS FLU', not in 'INFLUENCE'
+function NameHasWord(Nm, Key: string): boolean;
+var p, L, N: integer;
+  C: string;
+begin
+  result := false;
+  L := Length(Key);
+  N := Length(Nm);
+  if L = 0 then exit;
+  for p := 1 to N - L + 1 do begin
+    if Copy(Nm, p, L) <> Key then continue;
+    if p > 1 then begin
+      C := Copy(Nm, p - 1, 1);
+      if (C >= 'A') and (C <= 'Z') then continue;
+    end;
+    if p + L <= N then begin
+      C := Copy(Nm, p + L, 1);
+      if (C >= 'A') and (C <= 'Z') then continue;
+    end;
+    result := true;
+    exit;
+  end;
+end;
+
+// the buff of a buff item on us: its ID (AddBuffItem / learned) - else the buff whose name holds its BuffName as a
+// whole word; 0 = none
+function BiBuffOn(k: integer): integer;
+var i, ID: integer;
+  Nm, Key: string;
+begin
+  result := 0;
+  if BiBuff[k] > 0 then begin
+    if BuffOn(BiBuff[k]) then result := BiBuff[k];
+    exit;
+  end;
+  Key := UpperCase(BiName[k]);
+  if Key = '' then exit;
+  for i := 0 to User.Buffs.Count - 1 do begin
+    Nm := UpperCase(User.Buffs.Items(i).Name);
+    if NameHasWord(Nm, Key) then begin
+      ID := User.Buffs.Items(i).ID;
+      result := ID;
+      exit;
+    end;
+  end;
+end;
+
+// the buffs on us now and their time: a buff item whose buff is not known - the new one after its use (or the one
+// its use refreshed) is its buff
+procedure BiSnap();
+var i: integer;
+begin
+  BiSnapN := 0;
+  for i := 0 to User.Buffs.Count - 1 do
+    if BiSnapN < 64 then begin
+      BiSnapIDs[BiSnapN] := User.Buffs.Items(i).ID;
+      BiSnapEnd[BiSnapN] := User.Buffs.Items(i).EndTime;
+      Inc(BiSnapN);
+    end;
+end;
+
+// the buff was on us at BiSnap and was not refreshed since (its time did not jump up)
+function BiInSnap(ID: integer; EndNow: cardinal): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to BiSnapN - 1 do
+    if BiSnapIDs[i] = ID then begin
+      result := EndNow <= BiSnapEnd[i] + 10000;
+      exit;
+    end;
+end;
+
+// a buff ID of our own buff skills (AddSelfBuff): never taken as the buff of an item
+function SbIsOwn(ID: integer): boolean;
+var k, B: integer;
+begin
+  result := false;
+  for k := 0 to Length(SbSkill) - 1 do begin
+    B := SbBuff[k];
+    if B <= 0 then B := SbSkill[k];
+    if B = ID then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// own buffs and buff items, every tick of the main loop, in a fight too (whatever is gone is put on at once).
+// A buff skill: its buff gone / under its BeforeSec -> the skill on us (no target change); the fight waits until its
+// cast starts (its reuse / the buff on us, at most SELF_CAST_MS) - a nuke packet meanwhile would replace it. A buff
+// item: its buff gone -> the item (no cast, the fight goes on); not there -> said once, looked at every minute; no
+// buff after it (its reuse...) -> again every ITEM_RETRY_MS. true = the fight waits this tick
+function SelfBuffTick(): boolean;
+const
+  SELF_RETRY_MS = 3000;          // a buff skill sent, its buff still not on -> sent again after this
+  SELF_CAST_MS  = 2500;          // ... the fight waits at most this long for its cast to start
+  ITEM_RETRY_MS = 30000;         // a buff item used, its buff still not on (its reuse...) -> used again after this
+  ITEM_LEARN_MS = 4000;          // ... its buff not known: the one new buff on us within this is its buff
+var k, B, i, ID, NewID, NewN: integer;
+  Sk: TL2Skill;
+  TLeft: cardinal;
+  S: string;
+begin
+  result := false;
+  // a buff skill sent: the fight waits until it started
+  if SbPendK >= 0 then begin
+    k := SbPendK;
+    B := SbBuff[k];
+    if B <= 0 then B := SbSkill[k];
+    if (SkillLeft(SbSkill[k]) > 0) or (BuffOn(B) and (BuffTime(B) > SbPendLeft)) or
+       (GetTickCount - SbPendAt > SELF_CAST_MS) then
+      SbPendK := -1
+    else begin
+      if GetTickCount - SbPendSent >= 300 then begin
+        Engine.DUseSkill(SbSkill[k], false, false);
+        SbPendSent := GetTickCount;
+      end;
+      result := true;
+      exit;
+    end;
+  end;
+  // a buff item used whose buff is not known: the one new buff on us is its buff
+  if BiPendK >= 0 then begin
+    k := BiPendK;
+    if BiBuff[k] > 0 then BiPendK := -1
+    else if GetTickCount - BiPendAt > ITEM_LEARN_MS then begin
+      BiPendK := -1;
+      if BiTries[k] <= 1 then
+        Engine.Msg('[SelfBuff]', 'Item ' + IntToStr(BiItem[k]) + ' (' + BiName[k] + '): no new buff on us after it (its ' +
+          'reuse?) - tried again every ' + IntToStr(ITEM_RETRY_MS div 1000) + ' s', 0);
+    end else begin
+      NewID := 0;
+      NewN := 0;
+      for i := 0 to User.Buffs.Count - 1 do begin
+        ID := User.Buffs.Items(i).ID;
+        if BiInSnap(ID, User.Buffs.Items(i).EndTime) or SbIsOwn(ID) then continue;
+        NewID := ID;
+        Inc(NewN);
+      end;
+      if NewN = 1 then begin
+        BiBuff[k] := NewID;
+        BiPendK := -1;
+        Engine.Msg('[SelfBuff]', 'Item ' + IntToStr(BiItem[k]) + ' (' + BiName[k] + ') gives buff ' + IntToStr(NewID) +
+          ' - watched from now on', 0);
+      end;
+    end;
+  end;
+  // buff skills
+  for k := 0 to Length(SbSkill) - 1 do begin
+    if GetTickCount < SbNext[k] then continue;
+    B := SbBuff[k];
+    if B <= 0 then B := SbSkill[k];
+    TLeft := 0;
+    if BuffOn(B) then begin
+      TLeft := BuffTime(B);
+      if (SbBefore[k] <= 0) or (TLeft = 0) or (TLeft > cardinal(SbBefore[k]) * 1000) then continue;   // on
+    end;
+    if not SkillList.ByID(SbSkill[k], Sk) then begin
+      if SkillList.Count > 0 then begin
+        Engine.Msg('[SelfBuff]', 'No skill ' + IntToStr(SbSkill[k]) + ' on this character - not cast', 128);
+        SbNext[k] := GetTickCount + 600000;
+      end;
+      continue;
+    end;
+    if SkillLeft(SbSkill[k]) > 0 then continue;   // its reuse
+    if TLeft = 0 then S := 'not on us' else S := IntToStr(TLeft div 1000) + ' s left';
+    Engine.Msg('[SelfBuff]', 'Buff ' + IntToStr(B) + ' ' + S + ' - casting skill ' + IntToStr(SbSkill[k]), 0);
+    Engine.DUseSkill(SbSkill[k], false, false);
+    SbNext[k] := GetTickCount + SELF_RETRY_MS;
+    SbPendK := k;
+    SbPendAt := GetTickCount;
+    SbPendSent := SbPendAt;
+    SbPendLeft := TLeft;
+    result := true;
+    exit;
+  end;
+  // buff items
+  for k := 0 to Length(BiItem) - 1 do begin
+    if GetTickCount < BiNext[k] then continue;
+    B := BiBuffOn(k);
+    if B > 0 then begin
+      BiTries[k] := 0;
+      if BiBuff[k] <= 0 then begin       // found by its name: watched by its ID from now on
+        BiBuff[k] := B;
+        Engine.Msg('[SelfBuff]', 'Item ' + IntToStr(BiItem[k]) + ' (' + BiName[k] + '): its buff on us is ' + IntToStr(B), 0);
+      end;
+      continue;
+    end;
+    if ItemCount(BiItem[k]) <= 0 then begin
+      if not BiTold[k] then
+        Engine.Msg('[SelfBuff]', 'No item ' + IntToStr(BiItem[k]) + ' (' + BiName[k] + ') in the inventory - its buff is not put on', 128);
+      BiTold[k] := true;
+      BiNext[k] := GetTickCount + 60000;
+      continue;
+    end;
+    BiTold[k] := false;
+    if BiBuff[k] <= 0 then begin
+      BiSnap();
+      BiPendK := k;
+      BiPendAt := GetTickCount;
+    end;
+    if BiTries[k] = 0 then            // said once: in its reuse it is tried again every ITEM_RETRY_MS silently
+      Engine.Msg('[SelfBuff]', 'No buff of item ' + IntToStr(BiItem[k]) + ' (' + BiName[k] + ') on us - using it', 0);
+    Inc(BiTries[k]);
+    Engine.UseItem(BiItem[k]);
+    BiNext[k] := GetTickCount + ITEM_RETRY_MS;
+    exit;                              // one per tick; an item has no cast - the fight goes on
+  end;
+end;
+
 // ===================== Main loop =====================
 
 procedure RunNecro();
@@ -2404,6 +2682,8 @@ begin
   SetLength(PetLast, Length(PetSkillID));
   for k := 0 to Length(PetLast) - 1 do PetLast[k] := 0;
   PendSkill := -1;
+  SbPendK := -1;                // no own buff cast / buff item use pending
+  BiPendK := -1;
   PatrolIdx := 0;
   PatrolLeg := false;
   PatrolWaitUntil := 0;
@@ -2474,6 +2754,9 @@ begin
 
     // blessing (SetBlessing) on the summon and on us, as soon as the summon is out
     BlessingTick();
+
+    // own buffs / buff items (AddSelfBuff / AddBuffItem): whatever is gone is put on, in a fight too
+    if SelfBuffTick() then continue;
 
     // pack gathering (SetPull): gather / go to another group; the fight runs when it is done
     if PullTick() then continue;

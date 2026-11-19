@@ -994,7 +994,7 @@ const PULL_ADV = [
   ['tap_fire_ms', 'Tap skill: no start of its cast in this (out of sight) - closer, ms', 1200], ['tap_resend_ms', 'Tap skill: sent again this often until it starts, ms', 150],
   ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
   ['hit_range', 'Hit range', 80], ['stuck_ms', 'Stuck, ms', 1500], ['aggro_dist', 'Aggro farther than this does not count', 1500],
-  ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 50]];
+  ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 30]];
 const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', patrol: '1', skip_champions: '0', champs_last: '1', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1', kite: '0', pvp: '0', live: '0' };
 const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
   'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max', 'kite_step', 'kite_range', 'kite_wait', 'kite_near', 'fight', 'pvp_delay'];
@@ -1064,7 +1064,7 @@ function skillsText() {
     (Math.floor(+s.range) || 0) + ', "radius": ' + (Math.floor(+s.rad) || 0) + ', "name": "' + clean(s.name) + '"' +
     (ICON_OK.test(s.icon || '') ? ', "icon": "' + s.icon + '"' : '') + ' }');
   return ['{',
-    '  "about": "Skills of the fight and the pull, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage / fight_skill / pull_skill lines of a .navgrid name skills of this list",',
+    '  "about": "Skills of the fight and the pull, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage / fight_skill / pull_skill / rush_skill lines of a .navgrid name skills of this list",',
     '  "types": {',
     '    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",',
     '    "AOE": "cast at the target from range, hits every mob within radius of it",',
@@ -1128,7 +1128,7 @@ async function saveSkills() {
 }
 // the skill list changed: the fields that pick from it are drawn again (the list itself only when asked)
 function skillsUiRefresh(self) {
-  for (const k of ['mage', 'mage_tap', 'mage_buff', 'fight_skill', 'pull_skill', ...(self ? ['_skills'] : [])]) {
+  for (const k of ['mage', 'mage_tap', 'mage_buff', 'fight_skill', 'pull_skill', 'rush_skill', ...(self ? ['_skills'] : [])]) {
     const el = document.querySelector('#cfg .fld[data-k="' + k + '"]'), f = CARDS.flatMap(c => c.f || []).find(x => x.k === k);
     if (el && f) el.replaceWith(fieldUi(f));
   }
@@ -1224,14 +1224,20 @@ const CARDS = [
     { k: 'tap_always', show: isPull, l: 'Tap every mob', type: 'bool', h: 'pull every mob with a hit, no run-by' },
     { k: 'dagger.id', show: isMelee, l: 'Dagger for a fat mob', type: 'num', h: 'one fat mob left — the dagger' },
     { k: 'dagger.hp', show: isMelee, l: 'Fat from MaxHP', type: 'num', ph: '0', h: '0 — the champion threshold' }] },
-  { ic: 'magnet', c: '#2ec4b6', show: () => isPull() && notProf(), t: 'Pull skills', sub: 'An AoE that aggroes everything round, or a skill cast at every mob', f: [
+  { ic: 'magnet', c: '#2ec4b6', show: () => isPull() && notProf(), t: 'Pull skills', sub: 'An AoE that aggroes everything round, a skill cast at every mob, a dash on the way', f: [
     { k: 'pull_skill', l: 'Skills of the pull', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add pull skill',
       cols: [['Skill', 'skill', s => s.type !== 'SELF', '3fr'],
         ['At most every, s', 'num', r => skAoe(r) || !skillById(r[0]) ? '0 — when ready' : '—', '1.2fr']],
       newRow: () => { const used = (cfg.pull_skill || []).map(r => r[0]), free = s => +s.id && !used.includes(s.id);
         const s = skillDb.find(s => free(s) && (s.type === 'SELF_AOE' || s.type === 'AOE')) || skillDb.find(s => free(s) && s.type === 'TARGET'); return [s ? s.id : '', '']; },
       note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card: here they are picked from it' }),
-      h: 'AoE (round us / at the target — how it is cast and its radius: the Skills card): the pull is ONE run planned at its start. The free mobs of the room (no rooms: as many as the pack lacks) are grouped into areas of its radius — the most mobs per press — and the areas are put in the shortest order from the entry to a farm spot of the room (the spot that makes the whole way shortest; no spot — it ends at the last area). On the run it is pressed as soon as every mob of the next area is in its reach and «At most every» allows — no stop, at once on to the next area; the mobs it took are ours and never pressed / run at again. Not ready yet at an area (reuse): through it and back, never standing. Then the pack is led to that farm spot and killed. Never while an ignored mob / a skipped champion is in its area; only mobs in sight (no wall of the map between). «At the target» — every mob of the pull gets it from its cast range instead of the run-by (as the pull skills of a mage); «At most every» is not used then' }] },
+      h: 'AoE (round us / at the target — how it is cast and its radius: the Skills card): the pull is ONE run planned at its start. The free mobs of the room (no rooms: as many as the pack lacks) are grouped into areas of its radius — the most mobs per press — and the areas are put in the shortest order from the entry to a farm spot of the room (the spot that makes the whole way shortest; no spot — it ends at the last area). On the run it is pressed as soon as every mob of the next area is in its reach and «At most every» allows — no stop, at once on to the next area; the mobs it took are ours and never pressed / run at again. Not ready yet at an area (reuse): through it and back, never standing. Then the pack is led to that farm spot and killed. Never while an ignored mob / a skipped champion is in its area; only mobs in sight (no wall of the map between). «At the target» — every mob of the pull gets it from its cast range instead of the run-by (as the pull skills of a mage); «At most every» is not used then' },
+    { k: 'rush_skill', l: 'Rush skills — a dash on the way', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add rush skill',
+      cols: [['Skill', 'skill', s => s.type === 'TARGET', '3fr'],
+        ['Shortest dash', 'num', '100', '1.4fr']],
+      newRow: () => { const used = (cfg.rush_skill || []).map(r => r[0]), ok = s => +s.id && s.type === 'TARGET' && !used.includes(s.id);
+        const s = skillDb.find(s => ok(s) && /boost|rush|charge|dash|leap|jump/i.test(s.name || '')) || skillDb.find(ok); return [s ? s.id : '', '']; },
+      h: 'a skill that flies us to a mob (Blazing Boost…: «at the target», its range — the Skills card). Not a pull of its own: on every run of the pull and of the pack to the farm spot it is cast as soon as it is ready at a mob on our way — the mob we run to, or any mob of the pull list, free or already on us, that brings us closer to where we go (along the map) by at least half the dash — forward, never back; on the way home to the farm spot with the pack too. Looked at every tick of the pull, as often as its reuse allows. Only in sight and on green, never at an ignored mob / a skipped champion. Right as it starts we click on our way: the move waits on the server for the end of its cast and goes instead of a hit at the mob. The free mob it went at is ours (it comes); the run to the pull start with nothing on us — not used. Shortest dash: a mob nearer than this is not dashed at (empty — 100). A skill both here and in «Skills of the pull» — a rush only' }] },
   { ic: 'spark', c: '#ffd166', t: 'Buffs', sub: 'Buffer service and own buffs', f: [
     { k: 'buff.id', l: 'Buff ID (watched)', type: 'num', ph: '1204', h: 'empty — 1204 with the bypasses below (as on all our chars); 0 — no buff' },
     { k: 'buff.bypass', l: 'Buff bypasses', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'one per line, in this order' },
@@ -1286,6 +1292,7 @@ function cfgParse(line) {
     case 'mage_buff': list('mage_buff', [f[0] || '', +f[1] ? f[1] : '', f[2] && f[2] !== '-1' ? f[2] : '', f[3] === '1' ? '1' : '0']); break;
     case 'fight_skill': list('fight_skill', [f[0] || '', ms2s(f[1]), ms2s(f[2]), +f[3] > 1 ? f[3] : '']); break;   // skill every_ms permob_ms min
     case 'pull_skill': list('pull_skill', [f[0] || '', ms2s(f[2])]); break;   // skill min(not used) every_ms
+    case 'rush_skill': list('rush_skill', [f[0] || '', +f[1] > 0 ? f[1] : '']); break;   // skill [the shortest dash]
     case 'supply': list('supply', [f[0] || '', f[1] || '', f[2] || '']); break;
     default: if (SIMPLE.includes(key) || key in BOOLS) cfg[key] = rest; else cfgExtra.push(line.trim());
   }
@@ -1321,6 +1328,8 @@ function cfgLines() {
   for (const r of cfg.fight_skill || []) if (+r[0]) put('fight_skill', +r[0], s2ms(r[1]), s2ms(r[2]), +r[3] > 1 ? Math.floor(+r[3]) : 1);
   // pull skills: skill, free mobs in its area at least (0 = the default 3), at most every ms
   for (const r of cfg.pull_skill || []) if (+r[0]) put('pull_skill', +r[0], 0, s2ms(r[1]));
+  // rush skills: skill, the shortest dash (empty — the default 100: not written)
+  for (const r of cfg.rush_skill || []) if (+r[0]) put('rush_skill', +r[0], ...(+r[1] > 0 ? [Math.floor(+r[1])] : []));
   // a mage / an archer has no spoil / sweep: empty fields mean 0 then, not 302 / 444. The pack line goes in every mode
   // but Profile (the script farm starts by it, the mob IDs are in it): no pack size - 6 (used by Packs / Auto only)
   const mg = fightOf() !== 'MELEE';
@@ -1383,6 +1392,9 @@ function importScript(text) {
     cfg.fight_skill.push([String(p[0]), ms2s(p[1]), ms2s(p[2]), +p[3] > 1 ? String(p[3]) : '']); n++; });
   call('AddPullSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!psk) { cfg.pull_skill = []; psk = true; }
     cfg.pull_skill.push([String(p[0]), ms2s(p[2])]); n++; });
+  let rsk = false;   // AddRushSkill(skill, the shortest dash)
+  call('AddRushSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!rsk) { cfg.rush_skill = []; rsk = true; }
+    cfg.rush_skill.push([String(p[0]), +p[1] > 0 ? String(p[1]) : '']); n++; });
   call('AddMageSkill', a => { const m = a.match(/^\s*(-?\d+)\s*,\s*(\d+)\s*,\s*'(\w*)'\s*,\s*(-?\d+)/); if (!m) return;
     if (!ms) { cfg.mage = []; ms = true; } mageAdd(m[1], m[2], m[3], m[4]); n++; });
   let mt = false;   // SetMageTap(0) = body pull; SetMageTap(x) + AddMageTap(y)... = the pull skills in order
@@ -1573,9 +1585,10 @@ function farmSummary() {
     s += ' ' + (ft === 'BOW' ? 'Shoots from up to ' + R + '; after every shot a step of ' + S + ' away while a mob on it is closer than ' + (+v('kite_near') || R - S) + '.'
       : ft === 'MAGE' ? 'Kills with the ' + (cfg.mage || []).filter(r => +r[0]).length + ' skills of the Mage card, no auto attack.'
       : 'Hits with the auto attack' + (v('pack.spoil') === '0' ? '' : ', mass spoil ' + (v('pack.spoil') || 302) + ' and sweep ' + (v('pack.sweep') || 444)) + '.');
-    const fsk = (cfg.fight_skill || []).filter(r => +r[0]).length, psk = (cfg.pull_skill || []).filter(r => +r[0]).length;
+    const fsk = (cfg.fight_skill || []).filter(r => +r[0]).length, psk = (cfg.pull_skill || []).filter(r => +r[0]).length, rsk = (cfg.rush_skill || []).filter(r => +r[0]).length;
     if (fsk && ft !== 'MAGE') s += ' Presses ' + fsk + ' fight skill' + (fsk > 1 ? 's' : '') + ' (debuffs…) between the ' + (ft === 'BOW' ? 'shots' : 'hits') + '.';
     if (psk && isPull()) s += ' Pulls with ' + psk + ' skill' + (psk > 1 ? 's' : '') + ' of the Pull skills card.';
+    if (rsk && isPull()) s += ' Dashes at mobs on its way (' + rsk + ' rush skill' + (rsk > 1 ? 's' : '') + ').';
   }
   if (m === 'ROOMS' && !rooms.length) W.push('Rooms picked, but no rooms on the map — draw them with the Room tool');
   if (m === 'ROOMS' && ft === 'BOW') { const pk = rooms.filter(r => r.mode !== 'SINGLE').map(r => r.name);
@@ -1600,13 +1613,15 @@ function cfgChips() {
   chip('mode: ' + (MODE[mode] || mode) + (cfgProfile() ? '' : ' · ' + FIGHT_NAME[fightOf()]), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
   const mg = (cfg.mage || []).filter(r => +r[0]);
   const mb = (cfg.mage_buff || []).filter(r => +r[0]);
-  const fsk = (cfg.fight_skill || []).filter(r => +r[0]), psk = (cfg.pull_skill || []).filter(r => +r[0]);
-  const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb, ...fsk, ...psk].map(r => r[0]).filter(x => +x && !skillById(x)))];
+  const fsk = (cfg.fight_skill || []).filter(r => +r[0]), psk = (cfg.pull_skill || []).filter(r => +r[0]), rsk = (cfg.rush_skill || []).filter(r => +r[0]);
+  const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb, ...fsk, ...psk, ...rsk].map(r => r[0]).filter(x => +x && !skillById(x)))];
   if (mg.length) chip(cfgProfile() ? 'mage skills: not used in Profile mode' : 'mage: ' + mg.length + ' skills, no auto attack', cfgProfile() ? 'warn' : 'ok');
   if (fsk.length && !cfgProfile()) chip(fightOf() === 'MAGE' ? 'fight skills: not used by a mage (its own rows in the Mage card)' : 'fight skills: ' + fsk.length,
     fightOf() === 'MAGE' ? 'warn' : 'ok');
   if (psk.length && !cfgProfile()) chip(isPull() ? 'pull skills: ' + psk.length : 'pull skills: not used one by one (no pull)', isPull() ? 'ok' : 'warn');
-  if ((mg.length || fsk.length || psk.length) && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
+  if (rsk.length && !cfgProfile()) chip(isPull() ? 'rush skills: ' + rsk.length + ' (a dash on the way)' : 'rush skills: not used one by one (no pull)', isPull() ? 'ok' : 'warn');
+  { const both = rsk.map(r => r[0]).filter(id => psk.some(p => p[0] === id)); if (both.length) chip('skill ' + both.join(', ') + ' is a pull and a rush skill — a rush only', 'warn'); }
+  if ((mg.length || fsk.length || psk.length || rsk.length) && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
   else if (miss.length) chip('not in ' + SKILL_FILE + ': ' + miss.join(', ') + ' — cast at the target from 600', 'warn');
   if (mb.length) chip(cfgProfile() ? 'own buffs of the Mage card: not used in Profile mode' : 'own buffs: ' + mb.length + ' (with no mob on us)', cfgProfile() ? 'warn' : 'ok');
   if (mg.length && !cfgProfile() && !mg.some(r => r[1] === 'HP_BELOW'))

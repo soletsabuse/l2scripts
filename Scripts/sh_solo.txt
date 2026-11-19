@@ -31,6 +31,16 @@ begin
   // how often a skill packet is sent (ms)
   SetSpamMs(100);
   SetPvpAnswer(700, 1500);
+
+  // ===== own buffs: AddSelfBuff(skill, its buff ID on us (0 = the skill's), recast N s before its end (0 = when gone)) =====
+  // cast on us whenever its buff is gone, in a fight too (the nukes wait for its cast to start)
+  AddSelfBuff(1457, 0, 10);   // Empowering Echo
+  AddSelfBuff(1287, 0, 10);   // Seed of Wind
+
+  // ===== buff items: AddBuffItem(item, its buff ID (0 = not known), a word of the buff name) =====
+  // used whenever its buff is not on us; buff ID 0 -> the buff on us named with that word, else the buff that
+  // appears right after the item is used (learned, said in the chat). No item -> said once
+  AddBuffItem(28593, 29124, 'Malaria');      // Elixir of Malaria -> Hot Springs Malaria
   // ===== summon =====
   //SetSummon(1154);   // summon skill (summoned when missing)
 
