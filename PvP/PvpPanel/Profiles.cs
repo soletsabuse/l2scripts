@@ -32,6 +32,9 @@ namespace PvpPanel
 
         public static bool ValidId(string id) => IdRe.IsMatch(id);
 
+        /// <summary>A line for a bot: windows-1251 (its strings are ANSI).</summary>
+        public static byte[] BotBytes(string s) => Cp1251.GetBytes(s);
+
         /// <summary>The bot / the files: utf-8 if it is, else windows-1251.</summary>
         public static string Decode(byte[] b)
         {

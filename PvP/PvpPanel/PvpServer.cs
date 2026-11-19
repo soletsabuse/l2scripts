@@ -21,7 +21,8 @@ namespace PvpPanel
     ///   127.0.0.1:7791 (TCP)     the bots, one line per message, CRLF:
     ///       bot -> server:  HELLO|&lt;character&gt;   STATE|&lt;json&gt;   PONG
     ///       server -> bot:  RELOAD   PING   WATCH|1 / WATCH|0 (a page watches / none: the bot builds its STATE only
-    ///                       while 1)   STATRESET
+    ///                       while 1)   STATRESET   K (read: the bot's next line is not held back by Nagle)
+    ///       assist via the server (Relay.cs): bot -> N|T|&lt;oid&gt;|&lt;name&gt;; server -> N|LINK, N|ROOM, N|T, N|RTT
     /// Page API (a change needs the header X-PvP: 1, the Host must be 127.0.0.1 / localhost):
     ///   GET /api/state  {"active", "profiles": {id: text}, "bots": {name: state}, "equip": {char: text}}
     ///   GET /api/status {"active", "online", "pages", "pid"}   GET /api/skillnames {id: name}
@@ -78,6 +79,7 @@ namespace PvpPanel
         int _watchSaid = -1;
         string _filesSig = "", _equipSig = "";
         string? _skillNames;
+        RelayLink? _relay;
 
         public bool Running { get; private set; }
         public string LastError { get; private set; } = "";
@@ -119,6 +121,8 @@ namespace PvpPanel
             _ = AcceptLoop(web, c => HttpConn(c, ct), ct);
             _ = AcceptLoop(bot, c => BotConn(c, ct), ct);
             _ = WatcherLoop(ct);
+            _relay = new RelayLink(ToBotNamed, Log);
+            _ = _relay.RunAsync(ct);
             Log("PvP server (PvpPanel): page http://127.0.0.1:" + HttpPort + "/  bots 127.0.0.1:" + BotPort + "  folder " + Paths.PvpDir);
             Changed?.Invoke();
             return true;
@@ -200,6 +204,7 @@ namespace PvpPanel
                     var line = ProfileFiles.Decode(raw).TrimEnd('\r', '\n');
                     if (line.StartsWith("STATE|", StringComparison.Ordinal) && me != null)
                     {
+                        _ = SendTo(me, "K");                                  // its last bytes read: its next line goes at once
                         var json = line.Substring(6);
                         if (!ValidJson(json)) continue;
                         lock (_lock)
@@ -225,7 +230,13 @@ namespace PvpPanel
                         me = nb;
                         Log("bot " + name + " in from " + peer);
                         await SendTo(nb, "WATCH|" + WatchNow());              // a page watches now or not
+                        if (_relay != null) await _relay.JoinAsync(name);    // assist via the server: in the room
                         Changed?.Invoke();
+                    }
+                    else if (line.StartsWith("N|T|", StringComparison.Ordinal) && me != null)
+                    {
+                        _ = SendTo(me, "K");
+                        if (_relay != null) await _relay.TargetAsync(me.Name, line.Substring(4));   // its target: to the room
                     }
                     else if (line == "PONG" && me != null)
                         lock (_lock) me.At = DateTime.UtcNow;
@@ -247,6 +258,7 @@ namespace PvpPanel
                     }
                 if (removed && me != null)
                 {
+                    if (_relay != null) await _relay.LeaveAsync(me.Name);
                     ToPages("gone", "{\"name\":" + J(me.Name) + "}");
                     Log("bot " + me.Name + " out");
                     Changed?.Invoke();
@@ -265,9 +277,17 @@ namespace PvpPanel
             catch (JsonException) { return false; }
         }
 
+        /// <summary>A line to the bot of this character (the relay's lines); none: nothing.</summary>
+        Task ToBotNamed(string name, string line)
+        {
+            Bot? b;
+            lock (_lock) _bots.TryGetValue(name, out b);
+            return b == null ? Task.CompletedTask : SendTo(b, line);
+        }
+
         static async Task SendTo(Bot b, string line)
         {
-            var data = Encoding.ASCII.GetBytes(line + "\r\n");
+            var data = ProfileFiles.BotBytes(line + "\r\n");
             await b.WriteLock.WaitAsync();
             try
             {

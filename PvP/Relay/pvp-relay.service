@@ -1,0 +1,28 @@
+[Unit]
+Description=PvP relay (passes the targets between the PvP panels of a party)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 -u /opt/pvp-relay/relay.py
+Environment=RELAY_PORT=7795
+LoadCredential=key:/etc/pvp-relay/key
+DynamicUser=yes
+Restart=always
+RestartSec=1
+Nice=-5
+MemoryMax=128M
+LimitNOFILE=4096
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

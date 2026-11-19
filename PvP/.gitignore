@@ -3,3 +3,4 @@ pvp_server.log
 pvp_server.log.old
 profiles/*.tmp
 __pycache__/
+relay.ini

@@ -12,6 +12,7 @@ namespace PvpPanel
         public static string Server => Path.Combine(PvpDir, "pvp_server.py");
         public static string ProfilesDir => Path.Combine(PvpDir, "profiles");
         public static string SoundsDir => Path.Combine(PvpDir, "sounds");          // the res-kill sounds (.wav)
+        public static string RelayIni => Path.Combine(PvpDir, "relay.ini");        // the relay (assist via the server): host, port, key, room
         public static string Ini => Path.Combine(PvpDir, "pvp.ini");
         public static string PanelIni => Path.Combine(PvpDir, "pvp_panel.ini");
         public static string Page => Path.Combine(PvpDir, "pvp.html");

@@ -32,6 +32,10 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             once (a volley; only when ours is ready; ctrl= of the group)
 //             assist_aggro: 2 an aggroed assister is skipped (an enemy in sight holds him in the target), 1 no assist
 //             while I am aggroed, 0 no check
+//             assist_src=net (assist via the server): not his game target - his bot sends it (PvpPanel -> the relay
+//             -> the PvpPanel of every PC of the party), so he may be far, out of sight, dead. The one followed: the
+//             first of the list in the room of the relay (above me). The same PC: straight from the panel. Every bot
+//             sends its own target as soon as it changes (N|T), whatever its groups
 // CP potions (cp_item, '0' none): a thread of its own looks at our CP every CP_LOOK_MS; below cp_pct % -> the potion,
 // again not sooner than cp_gap_ms (the server's flood guard); the potions left: looked at every second (told when none)
 //   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
@@ -126,6 +130,9 @@ const
   KILL_BUFFED   = 5;        // a revived enemy seen with this many buffs: rebuffed, his death is no res-kill
   RES_LATE_MS   = 2000;     // res-kill held by your key press: still taken this long past its window, then let go
   RES_KEEP_MS   = 4000;     // the one res-kill took: assist / volley leave him to us this long (alive, our target)
+  NET_STEP_MS   = 10;       // the loop's pause in steps this long: the server's lines, our target, the keys looked at
+  NET_TRY_MS    = 100;      // assist via the server: SetTarget of his target failed -> tried again this often
+  NET_SLOTS     = 32;       // the room: the targets of this many characters kept
   AUTO_HOLD_MS  = 1000;     // after a key pick the auto picks wait this long (your choice is not taken over)
   ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
   ASSIST_MIN_MS = 150;      // ... closer than this to his switch = the same moment (an AoE, an auto target): no follower
@@ -166,6 +173,20 @@ var
   ResOID: integer;                                   // the last res-kill pick (assist / volley leave him to us) ...
   ResAt, ResNoteAt: cardinal;                        // ... taken then; the last res-kill note (the page) and when
   ResNote: string;
+  // assist via the server (PvpPanel and the relay): the room, the target of each character in it
+  GAsNet: array[0..15] of boolean;                   // assist group: via the server (assist_src=net)
+  NetLink: integer;                                  // -1 never heard (an old panel / pvp_server.py), 0 no relay, 1 linked
+  NetRtt: integer;                                   // ms to the relay and back (-1 not known)
+  NetWhy, NetRoom, NetRoomShow: string;              // why not linked; the room ',a,b,' (lower case) / as it came
+  NtN: integer;
+  NtName, NtShow, NtTName: array[0..31] of string;   // a character of the room (lower case / as it is), his target's name
+  NtOID: array[0..31] of integer;                    // ... his target (0 none)
+  NtAt: array[0..31] of cardinal;                    // ... when it came
+  NetSent: integer;                                  // our target as sent last (-1: send it now)
+  NetTook, NetWant: array[0..15] of integer;         // a net assist group: his target taken / being taken (-1 none yet)
+  NetTryAt: array[0..15] of cardinal;                // ... its SetTarget tried then
+  NetDirty: boolean;                                 // a target / the room came: the net groups look now
+  NetSlot: integer;                                  // NetCaller: his place in the list
   ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
   // assist: whom (name, '' = the party leader), the aggro check, his OID found (re-found by name now and then), his
   // target seen last (the follow acts on a change)
@@ -513,6 +534,46 @@ function TargetName(): string;
 begin
   result := '?';
   if User.Target <> nil then result := User.Target.Name;
+end;
+
+// the PvP server link (the rest of it: below, "the PvP server"); here as the picks send our new target at once
+procedure SrvClose();
+begin
+  if Srv <> nil then begin
+    Srv.CloseSocket;
+    Srv.Free;
+    Srv := nil;
+  end;
+  SrvOn := false;
+  NetLink := -1;                                     // the relay: not known till the panel says
+  NetRoom := '';
+  NetRoomShow := '';
+  NtN := 0;
+end;
+
+procedure SrvSend(S: string);
+begin
+  if not SrvOn then exit;
+  Srv.SendString(S + #13#10);
+  if Srv.LastError <> 0 then begin
+    SrvClose();
+    SrvAt := GetTickCount;
+    Engine.Msg('[PvP]', 'PvP server: the link is lost - trying again', 0);
+  end;
+end;
+
+// our target changed: to the server at once (N|T|<oid>|<name>) - the PCs of the room may follow it
+procedure NetTgtTick();
+var Cur: integer;
+  Nm: string;
+begin
+  if not SrvOn then exit;
+  Cur := TargetOID();
+  if Cur = NetSent then exit;
+  NetSent := Cur;
+  Nm := '';
+  if Cur <> 0 then Nm := TargetName();
+  SrvSend('N|T|' + IntToStr(Cur) + '|' + Nm);
 end;
 
 // player i is of our side: a party member, our clan, our alliance
@@ -1390,6 +1451,7 @@ begin
     Say(Pre + 'не взял ' + Who + ' (' + IntToStr(Round(BestD)) + ')');
     exit;
   end;
+  NetTgtTick();                        // the room gets our new target now
   if GMode[g] = MODE_RES then begin    // the risen one: the after skill / volley at the old one dropped; assist /
     PendSk := 0;                       // volley leave him to us (ResKeeps)
     ResOID := BestOID;
@@ -1468,6 +1530,72 @@ begin
   if i < 0 then exit;
   if CharList(i).Dead then exit;
   result := true;
+end;
+
+// the room of the relay: the slot of a character (lower case), -1 none
+function NetIdx(Lw: string): integer;
+var k: integer;
+begin
+  result := -1;
+  for k := 0 to NtN - 1 do
+    if NtName[k] = Lw then begin
+      result := k;
+      exit;
+    end;
+end;
+
+// assist via the server, group g: the one it follows now - the first of its list in the room, above me ('' none; NetSlot
+// his place). No list: the party leader. Dead / far / out of sight does not matter: his bot sends his target
+function NetCaller(g: integer): string;
+var s: integer;
+  L: TL2Char;
+  Me: string;
+begin
+  result := '';
+  NetSlot := -1;
+  Me := LowerCase(CharName);
+  if GAsN[g] = 0 then begin
+    L := Party.Leader;
+    if L = nil then exit;
+    if L.OID = MyOID then exit;
+    if Pos(',' + LowerCase(L.Name) + ',', NetRoom) > 0 then result := LowerCase(L.Name);
+    exit;
+  end;
+  for s := 0 to GAsN[g] - 1 do begin
+    if GAsName[g * 3 + s] = Me then exit;            // only the ones above me: I lead
+    if Pos(',' + GAsName[g * 3 + s] + ',', NetRoom) > 0 then begin
+      result := GAsName[g * 3 + s];
+      NetSlot := s;
+      exit;
+    end;
+  end;
+end;
+
+// the CharList index of the one group g follows via the server (in sight: his casts are seen), -1 none
+function NetCallerIdx(g: integer): integer;
+var C: string;
+  i: integer;
+begin
+  result := -1;
+  C := NetCaller(g);
+  if C = '' then exit;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if LowerCase(CharList(i).Name) = C then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// an NPC / a mob of this OID in sight
+function NpcSeen(OID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then
+    if NpcList(i).OID = OID then begin
+      result := true;
+      exit;
+    end;
 end;
 
 // CharList index of assister s (0..2) of group g: by his OID found before, by name not more often than a second (the
@@ -1581,6 +1709,7 @@ begin
     Say(Pre + 'не взял ' + Who);
     exit;
   end;
+  NetTgtTick();
   if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
   if GMark[g] > 0 then SendMark(GMark[g]);
   Rest := DoAfter(g, OID);
@@ -1595,7 +1724,7 @@ var g, i, OID: integer;
   TL: TL2Live;
 begin
   for g := 0 to GroupN - 1 do begin
-    if (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) then continue;
+    if (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) or GAsNet[g] then continue;   // via the server: NetTick
     i := AssistActive(g);                    // the first one usable now: the next one when he is aggroed / killed
     if i < 0 then continue;
     OID := 0;
@@ -1621,7 +1750,7 @@ begin
   if g < 0 then exit;
   VolG := -1;
   if (g >= GroupN) or (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) then exit;
-  i := AssistActive(g);
+  if GAsNet[g] then i := NetCallerIdx(g) else i := AssistActive(g);
   if i < 0 then exit;
   if CharList(i).OID <> VolOID then exit;            // another one of the list: not the one we follow now
   Tg := VolTgt;
@@ -1651,6 +1780,57 @@ begin
   PendStart := GetTickCount;
   AfterTick();
   Engine.Msg('[PvP]', GName[g] + ': volley ' + Sk.Name, 0);
+end;
+
+// assist via the server (groups on, assist_src=net): the one it follows (NetCaller) has a new target -> taken + the
+// after action. It waits while that target is not in sight (taken as soon as he is), your key pick a moment ago, the
+// res-kill target first; SetTarget failed -> again in NET_TRY_MS. Never me, never a friend
+procedure NetTick();
+var g, k, i, W: integer;
+  C, Who, Rest: string;
+begin
+  NetDirty := false;
+  for g := 0 to GroupN - 1 do begin
+    if (GMode[g] <> MODE_ASSIST) or (not GAsNet[g]) or (not GResOn[g]) then continue;
+    C := NetCaller(g);
+    if C = '' then continue;                         // nobody above me in the room
+    k := NetIdx(C);
+    if k < 0 then continue;                          // no target from him yet
+    W := NtOID[k];
+    if W = NetTook[g] then continue;                 // done already
+    if W <> NetWant[g] then begin                    // a new one: tried at once
+      NetWant[g] := W;
+      NetTryAt[g] := 0;
+    end;
+    if (W = 0) or (W = MyOID) or (W = TargetOID()) then begin
+      NetTook[g] := W;
+      AsLast[g] := W;
+      continue;
+    end;
+    i := CharIdxOf(W);
+    if i >= 0 then
+      if IsOurs(i) then begin                        // a friend: not taken
+        NetTook[g] := W;
+        continue;
+      end;
+    if i < 0 then
+      if not NpcSeen(W) then continue;               // not in sight yet: taken when he is
+    if ResHeld() then continue;                      // your key pick a moment ago first
+    if W <> ResOID then
+      if ResKeeps() then continue;                   // the res-kill target first
+    if GetTickCount - NetTryAt[g] < NET_TRY_MS then continue;
+    NetTryAt[g] := GetTickCount;
+    if i >= 0 then Who := WhoText(i, W) else Who := NtTName[k];
+    PendSk := 0;                                     // an after skill / volley at the old one: dropped
+    if not Engine.SetTarget(W) then continue;        // tried again
+    NetTgtTick();
+    NetTook[g] := W;
+    AsLast[g] := W;
+    if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
+    if GMark[g] > 0 then SendMark(GMark[g]);
+    Rest := DoAfter(g, W);
+    Say(GName[g] + ' (сервер): ' + Who + ' (цель ' + NtShow[k] + ')' + Rest);
+  end;
 end;
 
 // a successful res-kill (a res-kill group on with kill_sound=): an enemy up from the dead dies again within its
@@ -1782,6 +1962,9 @@ begin
     end else if GMode[g] = MODE_ASSIST then begin   // assist: its key turns the following on / off
       GResOn[g] := not GResOn[g];
       AsLast[g] := 0;                                 // on: his target now is taken at once (AssistTick)
+      NetTook[g] := -1;                               // via the server: the same (NetTick)
+      NetWant[g] := -1;
+      NetDirty := true;
       if GResOn[g] then begin
         S := '';
         for j := 1 to Length(GAssist[g]) do begin
@@ -1789,6 +1972,7 @@ begin
           if C = '|' then S := S + ', ' else S := S + C;
         end;
         if S = '' then S := 'лидер пати';
+        if GAsNet[g] then S := 'через сервер, ' + S;
         Say(GName[g] + ': ВКЛ (ассист ' + S + ')');
       end else Say(GName[g] + ': ВЫКЛ');
     end else PickGroup(g, false);
@@ -1874,6 +2058,7 @@ begin
   GVolN[n] := 0;
   GKillSnd[n] := '';
   GKillMs[n] := 20000;
+  GAsNet[n] := false;
 end;
 
 // group a into the place of group b (b < a: b is free by then)
@@ -1912,6 +2097,7 @@ begin
     GVol[b * MAX_VOL + k] := GVol[a * MAX_VOL + k];
   GKillSnd[b] := GKillSnd[a];
   GKillMs[b] := GKillMs[a];
+  GAsNet[b] := GAsNet[a];
 end;
 
 function ModeOf(S: string): integer;
@@ -2132,6 +2318,7 @@ begin
     else if Fld = 'res_max_ms' then GResMax[n] := StrToIntDef(Val, -1)
     else if Fld = 'assist' then GAssist[n] := Val
     else if Fld = 'assist_aggro' then GAsAggro[n] := StrToIntDef(Val, 2)
+    else if Fld = 'assist_src' then GAsNet[n] := LowerCase(Trim(Val)) = 'net'
     else if Fld = 'who' then begin
       if LowerCase(Val) = 'caster' then GWho[n] := 1 else GWho[n] := 0;
     end
@@ -2211,6 +2398,9 @@ begin
     AutoAt[k] := 0;
     ResHeldAt[k] := 0;
     AsLast[k] := 0;
+    NetTook[k] := -1;                                // via the server: his target now taken (when on)
+    NetWant[k] := -1;
+    NetTryAt[k] := 0;
     GAsN[k] := 0;                                    // the assisters: '1st|2nd|3rd'
     SplitTo(GAssist[k], '|', P);
     for j := 0 to P.Count - 1 do
@@ -2416,6 +2606,7 @@ begin
       if (GMode[g] = MODE_RES) or (GMode[g] = MODE_ASSIST) then Info := Info + ' (on at start)'
       else Info := Info + ' (+auto)';
     end;
+    if (GMode[g] = MODE_ASSIST) and GAsNet[g] then Info := Info + ' (via server)';
   end;
   if Info = '' then Info := 'no keys';
   if First then Info := 'profile ' + ProfName + ': ' + Info
@@ -2425,29 +2616,10 @@ begin
 end;
 
 // ===================== the PvP server (pvp_server.py): the page live =====================
+// The relay (assist via the server) goes through it as well: ours N|T|<oid>|<name> (our target changed); its
+// N|LINK|1|<host> / N|LINK|0|<why>, N|ROOM|a,b,c, N|T|<char>|<oid>|<name>, N|RTT|<ms>, K (read: nothing to do).
 // One line per message (CRLF). Ours: HELLO|<character>, STATE|<json>, PONG. Its: RELOAD (the page saved: read the
 // files now), PING. No server: tried again every SRV_RETRY_MS - the keys work all the same (the files)
-
-procedure SrvClose();
-begin
-  if Srv <> nil then begin
-    Srv.CloseSocket;
-    Srv.Free;
-    Srv := nil;
-  end;
-  SrvOn := false;
-end;
-
-procedure SrvSend(S: string);
-begin
-  if not SrvOn then exit;
-  Srv.SendString(S + #13#10);
-  if Srv.LastError <> 0 then begin
-    SrvClose();
-    SrvAt := GetTickCount;
-    Engine.Msg('[PvP]', 'PvP server: the link is lost - trying again', 0);
-  end;
-end;
 
 procedure SrvConnect();
 begin
@@ -2466,9 +2638,82 @@ begin
   SrvOn := true;
   Watching := true;                                  // till the server says (an old one never does)
   SrvSend('HELLO|' + CharName);
+  NetSent := -1;                                     // our target: sent again
   if SrvOn then begin
     SrvTold := false;
     Engine.Msg('[PvP]', 'PvP server: linked - the page ' + SRV_PAGE, 0);
+  end;
+end;
+
+// the server is gone (an error other than "nothing came"): tried again later
+procedure SrvLost(Er: integer);
+begin
+  SrvClose();
+  SrvAt := GetTickCount;
+  Engine.Msg('[PvP]', 'PvP server: the link is lost (' + IntToStr(Er) + ') - trying again', 0);
+end;
+
+// a line of the relay (through PvpPanel): N|LINK|1|<host> / N|LINK|0|<why>, N|ROOM|a,b,c, N|T|<char>|<oid>|<name>,
+// N|RTT|<ms>
+procedure NetLine(Line: string);
+var P: TStringList;
+  k, j: integer;
+  Kind, Lw: string;
+begin
+  P := TStringList.Create;
+  SplitTo(Line, '|', P);
+  if P.Count >= 2 then begin
+    Kind := P[1];
+    if (Kind = 'LINK') and (P.Count >= 3) then begin
+      NetLink := StrToIntDef(P[2], 0);
+      NetWhy := '';
+      if P.Count >= 4 then NetWhy := P[3];
+    end else if Kind = 'ROOM' then begin
+      NetRoomShow := '';
+      if P.Count >= 3 then NetRoomShow := P[2];
+      NetRoom := ',' + LowerCase(NetRoomShow) + ',';
+      if NetLink < 0 then NetLink := 0;
+      NetDirty := true;
+    end else if (Kind = 'T') and (P.Count >= 4) then begin
+      Lw := LowerCase(Trim(P[2]));
+      k := NetIdx(Lw);
+      if k < 0 then begin
+        if NtN < NET_SLOTS then begin
+          k := NtN;
+          NtN := NtN + 1;
+        end else begin                               // full: the oldest one goes
+          k := 0;
+          for j := 1 to NtN - 1 do
+            if NtAt[j] < NtAt[k] then k := j;
+        end;
+      end;
+      NtName[k] := Lw;
+      NtShow[k] := Trim(P[2]);
+      NtOID[k] := StrToIntDef(P[3], 0);
+      NtTName[k] := '';
+      if P.Count >= 5 then NtTName[k] := P[4];
+      NtAt[k] := GetTickCount;
+      NetDirty := true;
+    end else if (Kind = 'RTT') and (P.Count >= 3) then NetRtt := StrToIntDef(P[2], -1);
+  end;
+  P.Free;
+end;
+
+// one line of the server
+procedure SrvLine(Line: string);
+begin
+  if Line = '' then exit;
+  if Copy(Line, 1, 2) = 'N|' then NetLine(Line)    // the relay
+  else if Line = 'RELOAD' then CfgAt := 0           // the page saved: the files read now
+  else if Line = 'PING' then SrvSend('PONG')
+  else if Line = 'STATRESET' then begin            // the page: the stats from zero
+    FoResetAll();
+    FoesAt := 0;
+    Engine.Msg('[PvP]', 'the stats are reset', 0);
+  end
+  else if Copy(Line, 1, 6) = 'WATCH|' then begin   // a page watches / none any more
+    Watching := Copy(Line, 7, 1) <> '0';
+    if Watching then StateAt := 0;                 // the state now
   end;
 end;
 
@@ -2486,32 +2731,55 @@ begin
     Line := Srv.RecvString(1);
     Er := Srv.LastError;
     if Er <> 0 then begin
-      if Er <> 10060 then begin          // not "nothing came": the server is gone
-        SrvClose();
-        SrvAt := GetTickCount;
-        Engine.Msg('[PvP]', 'PvP server: the link is lost (' + IntToStr(Er) + ') - trying again', 0);
-      end;
+      if Er <> 10060 then SrvLost(Er);   // not "nothing came": the server is gone
       exit;
     end;
     Inc(n);
-    Line := Trim(Line);
-    if Line = 'RELOAD' then CfgAt := 0  // the page saved: the files read now
-    else if Line = 'PING' then SrvSend('PONG')
-    else if Line = 'STATRESET' then begin           // the page: the stats from zero
-      FoResetAll();
-      FoesAt := 0;
-      Engine.Msg('[PvP]', 'the stats are reset', 0);
-    end
-    else if Copy(Line, 1, 6) = 'WATCH|' then begin   // a page watches / none any more
-      Watching := Copy(Line, 7, 1) <> '0';
-      if Watching then StateAt := 0;                 // the state now
-    end;
+    SrvLine(Trim(Line));
+  end;
+end;
+
+// the pause of the main loop (Ms), in NET_STEP_MS steps: the server's lines read as they come (waiting on the link,
+// not sleeping), our target sent as soon as it changes; a target / the room from the relay or a key press ends it
+procedure SrvWait(Ms: integer);
+var T0: cardinal;
+  Step, Er: integer;
+  Line: string;
+begin
+  T0 := GetTickCount;
+  while true do begin
+    NetTgtTick();
+    if NetDirty then exit;
+    if KeyPending() then exit;
+    Step := Ms - integer(GetTickCount - T0);
+    if Step <= 0 then exit;
+    if Step > NET_STEP_MS then Step := NET_STEP_MS;
+    if SrvOn then begin
+      Line := Srv.RecvString(Step);
+      Er := Srv.LastError;
+      if Er = 0 then SrvLine(Trim(Line))
+      else if Er <> 10060 then SrvLost(Er);
+    end else Delay(Step);
   end;
 end;
 
 procedure JAdd(S: string);
 begin
   StOut := StOut + S;
+end;
+
+// the relay for the page: linked, the time there and back, the room, the target of each one in it
+function NetJson(): string;
+var k: integer;
+begin
+  result := '{"link": ' + IntToStr(NetLink) + ', "rtt": ' + IntToStr(NetRtt) + ', "why": ' + JsonStr(NetWhy) +
+    ', "room": ' + JsonStr(NetRoomShow) + ', "t": [';
+  for k := 0 to NtN - 1 do begin
+    if k > 0 then result := result + ', ';
+    result := result + '{"c": ' + JsonStr(NtShow[k]) + ', "o": ' + IntToStr(NtOID[k]) + ', "n": ' + JsonStr(NtTName[k]) +
+      ', "ago": ' + IntToStr(GetTickCount - NtAt[k]) + '}';
+  end;
+  result := result + ']}';
 end;
 
 // ===================== for the page =====================
@@ -2632,6 +2900,7 @@ begin
     ', "target": ' + IntToStr(TargetOID()) + ', "dead": ' + DeadText + '},');
   JAdd(' "perf": {"key": ' + IntToStr(PfKey) + ', "keymax": ' + IntToStr(PfKeyMax) + ', "dump": ' + IntToStr(PfDump) +
     ', "cast": ' + IntToStr(PfCast) + ', "loop": ' + IntToStr(PfLoop) + '},');
+  JAdd(' "net": ' + NetJson() + ',');
   JAdd(' "skills": ' + SkillsJson() + ',');
   if (FoesAt = 0) or (GetTickCount - FoesAt >= FOES_MS) then begin   // the stats: once a second is enough
     FoesAt := GetTickCount;
@@ -2754,8 +3023,22 @@ begin
   ResAt := 0;
   ResNote := '';
   ResNoteAt := 0;
-  for g := 0 to 15 do
+  for g := 0 to 15 do begin
     ResHeldAt[g] := 0;
+    GAsNet[g] := false;
+    NetTook[g] := -1;
+    NetWant[g] := -1;
+    NetTryAt[g] := 0;
+  end;
+  NetLink := -1;
+  NetRtt := -1;
+  NetWhy := '';
+  NetRoom := '';
+  NetRoomShow := '';
+  NtN := 0;
+  NetSent := -1;
+  NetDirty := false;
+  NetSlot := -1;
   ManualAt := 0;
   KeepN := 0;
   AsLookAt := 0;
@@ -2798,12 +3081,14 @@ begin
   Script.NewThread(@CpPots_Thread);                  // the CP potions: a thread of its own (fast, numbers only)
 
   LoopAt := GetTickCount;
-  while Delay(KEY_POLL_MS) do begin
+  while Delay(1) do begin
+    SrvWait(KEY_POLL_MS);              // the pause: the server's lines as they come, our target sent at once
     if GetTickCount - LoopAt > cardinal(PfLoop + KEY_POLL_MS) then PfLoop := GetTickCount - LoopAt - KEY_POLL_MS;
     LoopAt := GetTickCount;
     PerfAge();
     PollKeys();
     HandleKeys();
+    NetTick();                         // assist via the server: a new target of the one we follow -> taken
     AfterTick();
     if GetTickCount - UsAt >= US_MS then begin
       UsAt := GetTickCount;
