@@ -32,6 +32,8 @@ assist=
 assist_aggro=2
 skills=
 volley=
+kill_sound=
+kill_ms=20000
 classes=12:1|13:1|16:2|27:1|40:1|94:1|95:1|97:2|103:1|110:1
 
 [group]
@@ -55,6 +57,8 @@ assist=
 assist_aggro=2
 skills=
 volley=
+kill_sound=
+kill_ms=20000
 classes=12:1|13:1|27:1|40:1|94:1|95:1|103:1|110:1
 
 [group]
@@ -78,13 +82,15 @@ assist=
 assist_aggro=2
 skills=
 volley=
+kill_sound=
+kill_ms=20000
 classes=16:1|30:2|43:1|97:1|105:2|112:1
 
 [group]
 on=1
 name=Assist
 mode=assist
-key=5
+key=C
 range=0
 height=400
 mark=0
@@ -97,8 +103,10 @@ res_max_ms=15000
 auto=1
 auto_ms=3000
 who=target
-assist=Shkchkchahh|WhyDaddyHitmommy|Flashkamet
+assist=Tyskie|Shkchkchahh|Flashkamet
 assist_aggro=2
 skills=
 volley=987
+kill_sound=
+kill_ms=20000
 classes=

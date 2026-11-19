@@ -289,6 +289,11 @@
   .lempty svg { width: 24px; height: 24px; color: var(--dim); stroke-width: 1.5; }
   .lmsg { color: var(--muted); font-size: 12px; padding: 2px 2px 4px; }
   .lmsg b { color: var(--text); }
+  .lstat { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 12px; padding: 2px 2px 4px; }
+  .lstat b { font-size: 10.5px; letter-spacing: .05em; padding: 1px 7px; border-radius: 99px; }
+  .lstat.on b { color: var(--ok); background: rgba(69, 208, 158, .12); border: 1px solid rgba(69, 208, 158, .35); }
+  .lstat.off b { color: var(--warn); background: rgba(242, 177, 76, .12); border: 1px solid rgba(242, 177, 76, .35); }
+  .lstat .last { color: var(--text2); }
   .warns { display: grid; gap: 6px; }
   .esec .warns:not(:empty) { margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, .045); }
   .wi { display: flex; gap: 8px; align-items: flex-start; padding: 7px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45;
@@ -1457,6 +1462,7 @@ function warnsOf(g, i) {
 // the live parts of a group: its top pick in the list, its whole pick in the editor
 function rowLive(g) {
   const N = nearList(); if (!N) return null;
+  if (botOn(g) === false) return ['off in the bot'];
   if (g.mode === 'assist') { const a = assistPick(g, N); return a.t && !(a.t.f & 5) ? ['→ ', el('b', { text: a.t.n }), ' ' + clsName(a.t.k) + ' · via ' + a.he.n] : ['no target now']; }
   const r = cands(g, N);
   if (r.inr.length) { const q = r.inr[0]; return ['→ ', el('b', { text: q.n }), ' ' + clsName(q.k) + ' · ' + q.d + (r.inr.length > 1 ? ' · +' + (r.inr.length - 1) : '')]; }
@@ -1469,7 +1475,26 @@ function ltRow(no, q, g, note) {
     el('span', { class: 'x', text: x }), el('span', { class: 'd', text: String(q.d) }));
 }
 const lempty = t => el('div', { class: 'lempty' }, svgI('radar'), el('span', { text: t }));
-function liveList(g) {
+// a res-kill / assist group: on or off in the bot now (its key turns it on / off in game); null = not known
+function botOn(g) {
+  if ((g.mode !== 'reskill' && g.mode !== 'assist') || !g.on) return null;   // a group off in the profile: not loaded
+  const d = botData(), pr = d && d.profile;
+  if (!pr || !Array.isArray(pr.live) || pr.id !== curId) return null;   // an older bot / another profile
+  const nm = lc(clean(g.name) || '');
+  return pr.live.some(n => lc(n) === nm);
+}
+function botOnRow(g) {
+  const on = botOn(g); if (on === null) return [];
+  const pr = botData().profile, R = [];
+  R.push(el('div', { class: 'lstat ' + (on ? 'on' : 'off') }, el('b', { text: on ? 'ON' : 'OFF' }),
+    el('span', { text: on ? (g.mode === 'reskill' ? 'in the bot: takes them by itself' : 'in the bot: follows') :
+      'in the bot: ' + (g.key ? 'press ' + g.key + ' in game' : 'no key: it stays off') })));
+  if (g.mode === 'reskill' && pr.rk && pr.rk.t) R.push(el('div', { class: 'lstat' }, el('span', { text: 'Last:' }),
+    el('span', { class: 'last', text: pr.rk.t + ' · ' + Math.round((pr.rk.ago | 0) / 1000) + ' s ago' })));
+  return R;
+}
+function liveList(g) { const L = liveCore(g); return botOnRow(g).concat(L); }
+function liveCore(g) {
   const N = nearList();
   if (!N) return [lempty(!online ? 'Offline.' : liveBots().length ? 'The bot sends nothing yet.' : 'Whom it takes shows while pvp_focus.txt runs.')];
   if (g.mode === 'assist') {

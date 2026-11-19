@@ -16,8 +16,10 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 // A group of a profile: a key (none: auto only) and a mode:
 //   class   - enemies of the classes of the group, by the class priority (1 first), then the nearest
 //   reskill - enemies up from the dead res_min_ms..res_max_ms ago (the classes: optional). Its key turns it ON / OFF
-//             (auto=1: on at the start); while on, the bot takes such an enemy by itself (every RES_LOOK_MS) and does
-//             the after action at once (attack). kill_sound=<file.wav> (in Library\PvP\sounds): a successful res-kill
+//             (auto=1: on at the start); while on, the bot takes such an enemy by itself (right after each look at who
+//             got up, every REV_SCAN_MS) and does the after action at once (attack). Only your key press a moment ago
+//             holds it (not our cast, not the after skill / volley being sent); then it waits, at most RES_LATE_MS.
+//             The one it took: assist / volley leave him to us for RES_KEEP_MS while he lives and is our target. kill_sound=<file.wav> (in Library\PvP\sounds): a successful res-kill
 //             - an enemy up from the dead dies again within kill_ms (default 20000) with no buffs seen on him (fewer
 //             than KILL_BUFFED; the server may not show enemy buffs at all) -> that sound + a notice
 //   onus    - enemies holding me or a party member in their target (the ones on me first; the classes: optional)
@@ -50,8 +52,9 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 // action again.
 // auto=1 (cast): the group fires by itself on a new cast of its skills (not more often than auto_ms, not while the
 // target is one of the group already). reskill: see above.
-// The auto picks (res-kill, cast auto) never cut in on you: not within AUTO_HOLD_MS of a key pick, not while the after
-// skill of a pick is still being sent, not while our own cast goes; they do not touch the cycle of a key. A res-kill
+// The auto picks (cast auto, assist) never cut in on you: not within AUTO_HOLD_MS of a key pick, not while the after
+// skill of a pick is still being sent, not while our own cast goes; they do not touch the cycle of a key. Res-kill
+// waits only for a key pick (its window is short). A res-kill
 // turned on / off by its key stays so when the profile is read again (the page saved).
 // The notices (what was taken, res-kill on / off): notify=<chat type> - a fake chat message only we see: 15 the command
 // channel commander (in the middle of the screen, as the siege commander's), 19 a screen announce, 3 party, 0 none.
@@ -121,7 +124,8 @@ const
   ASSIST_LOOK_MS = 100;     // an assist group that follows (auto) looks at his target this often
   CP_LOOK_MS    = 15;       // the CP potions: our CP looked at this often (a thread of its own)
   KILL_BUFFED   = 5;        // a revived enemy seen with this many buffs: rebuffed, his death is no res-kill
-  RES_LOOK_MS   = 100;      // a res-kill group that is on looks for an enemy up from the dead this often
+  RES_LATE_MS   = 2000;     // res-kill held by your key press: still taken this long past its window, then let go
+  RES_KEEP_MS   = 4000;     // the one res-kill took: assist / volley leave him to us this long (alive, our target)
   AUTO_HOLD_MS  = 1000;     // after a key pick the auto picks wait this long (your choice is not taken over)
   ASSIST_WIN_MS = 3000;     // smart: switching onto the same one of us this long after the first = his followers
   ASSIST_MIN_MS = 150;      // ... closer than this to his switch = the same moment (an AoE, an auto target): no follower
@@ -157,7 +161,11 @@ var
   AutoWant: array[0..15] of boolean;                 // a new cast for an auto cast group
   GResMin, GResMax: array[0..15] of integer;         // reskill: up from the dead this long ago (ms), at least / at most
   GResOn: array[0..15] of boolean;                   // reskill / assist: on now (its key turns it on / off)
-  ResLookAt: cardinal;
+  ResHeldAt: array[0..15] of cardinal;              // res-kill: somebody up in its window, waiting to be taken (0 none)
+  ResGrace: cardinal;                                // ScanGroup: the res-kill window stretched by this (a held pick)
+  ResOID: integer;                                   // the last res-kill pick (assist / volley leave him to us) ...
+  ResAt, ResNoteAt: cardinal;                        // ... taken then; the last res-kill note (the page) and when
+  ResNote: string;
   ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
   // assist: whom (name, '' = the party leader), the aggro check, his OID found (re-found by name now and then), his
   // target seen last (the follow acts on a change)
@@ -1131,7 +1139,7 @@ begin
     Sm := 0;
     if Md = MODE_RES then begin
       Ago := RevivedAgo(OID);
-      if (Ago < cardinal(GResMin[g])) or (Ago > cardinal(GResMax[g])) then continue;
+      if (Ago < cardinal(GResMin[g])) or (Ago > cardinal(GResMax[g]) + ResGrace) then continue;
     end else if Md = MODE_ONUS then begin
       TL := CharList(i).Target;                      // whom he holds in his target: me / a party member
       Tg := 0;
@@ -1301,12 +1309,19 @@ begin
   result := (GetTickCount - ManualAt < AUTO_HOLD_MS) or (PendSk <> 0) or (User.Cast.EndTime > 0);
 end;
 
+// a res-kill pick must wait now: only your key pick a moment ago. Our cast does not hold it (a new target does not
+// stop the cast), nor the after skill / volley being sent (the risen enemy comes first: it is dropped)
+function ResHeld(): boolean;
+begin
+  result := GetTickCount - ManualAt < AUTO_HOLD_MS;
+end;
+
 // group g: a key press (IsAuto false) or its auto event. true = somebody was targeted
 function PickGroup(g: integer; IsAuto: boolean): boolean;
 var Best, BestOID, InRange, FarI, FarOID, Cur, k: integer;
   BestD, FarD: double;
   CurIn, Fb: boolean;
-  Who, Rest, Pre: string;
+  Who, Rest, Pre, Nm: string;
 begin
   Fb := false;
   result := false;
@@ -1315,7 +1330,9 @@ begin
   Cur := TargetOID();
   Pre := GName[g] + ': ';
   if IsAuto then begin
-    if AutoHeld() then exit;           // your key pick / its after skill / our cast first
+    if GMode[g] = MODE_RES then begin
+      if ResHeld() then exit;          // res-kill: only your key pick a moment ago first
+    end else if AutoHeld() then exit;  // your key pick / its after skill / our cast first
     Best := ScanGroup(g, Cur, false, BestOID, BestD, InRange, CurIn, FarI, FarD);
     if CurIn or (Best < 0) then exit;   // on one of them already / none in range: quiet
     Pre := GName[g] + ' (сам): ';
@@ -1363,9 +1380,22 @@ begin
   end;
 
   Who := WhoText(Best, BestOID);   // before the target: the list may change meanwhile
+  Nm := '';
+  if Best < CharList.Count then Nm := CharList(Best).Name;
   if not Engine.SetTarget(BestOID) then begin
+    if GMode[g] = MODE_RES then begin
+      ResNote := 'could not target ' + Nm;
+      ResNoteAt := GetTickCount;
+    end;
     Say(Pre + 'не взял ' + Who + ' (' + IntToStr(Round(BestD)) + ')');
     exit;
+  end;
+  if GMode[g] = MODE_RES then begin    // the risen one: the after skill / volley at the old one dropped; assist /
+    PendSk := 0;                       // volley leave him to us (ResKeeps)
+    ResOID := BestOID;
+    ResAt := GetTickCount;
+    ResNote := 'took ' + Nm + ' (up ' + IntToStr(RevivedAgo(BestOID)) + ' ms)';
+    ResNoteAt := GetTickCount;
   end;
   if not IsAuto then begin       // the press -> the target taken
     PfKey := GetTickCount - LastAt;
@@ -1424,6 +1454,20 @@ begin
       result := i;
       exit;
     end;
+end;
+
+// res-kill took him a moment ago (RES_KEEP_MS) and he is still our target, alive: assist / volley leave him to us
+function ResKeeps(): boolean;
+var i: integer;
+begin
+  result := false;
+  if ResOID = 0 then exit;
+  if GetTickCount - ResAt >= RES_KEEP_MS then exit;
+  if TargetOID() <> ResOID then exit;              // you took another one meanwhile
+  i := CharIdxOf(ResOID);
+  if i < 0 then exit;
+  if CharList(i).Dead then exit;
+  result := true;
 end;
 
 // CharList index of assister s (0..2) of group g: by his OID found before, by name not more often than a second (the
@@ -1528,6 +1572,7 @@ begin
   end;
   if IsAuto then begin
     if AutoHeld() then exit;
+    if ResKeeps() then exit;                 // the res-kill target first
   end else ManualAt := GetTickCount;
   His := '';
   if i < CharList.Count then His := CharList(i).Name;
@@ -1581,6 +1626,11 @@ begin
   if CharList(i).OID <> VolOID then exit;            // another one of the list: not the one we follow now
   Tg := VolTgt;
   if (Tg = 0) or (Tg = MyOID) then exit;
+  if Tg <> ResOID then
+    if ResKeeps() then begin                         // we are on the one res-kill took: he first
+      Engine.Msg('[PvP]', GName[g] + ': volley skipped - the res-kill target first', 0);
+      exit;
+    end;
   k := CharIdxOf(Tg);
   if k >= 0 then
     if IsOurs(k) then exit;                          // his skill at a friend
@@ -1640,6 +1690,38 @@ begin
     else Engine.Msg('[PvP]', 'no sound file ' + SndPath, 0);
     Say('Рескилл: ' + CharList(i).Name + '!');
   end;
+end;
+
+// res-kill groups that are on, right after each look at who got up (the window is short): somebody up from the dead
+// in the window -> taken + the after action. Your key pick a moment ago holds it: it waits then (the window stretched
+// by the wait), at most RES_LATE_MS. Then the sound of a res-kill that worked
+procedure ResTick();
+var g: integer;
+begin
+  for g := 0 to GroupN - 1 do begin
+    if (GMode[g] <> MODE_RES) or (not GResOn[g]) then begin
+      ResHeldAt[g] := 0;
+      continue;
+    end;
+    if GetTickCount - AutoAt[g] < cardinal(GAutoMs[g]) then continue;   // its pace
+    if ResHeldAt[g] = 0 then
+      if ResPending(g) then ResHeldAt[g] := GetTickCount;
+    if ResHeldAt[g] = 0 then continue;
+    if ResHeld() then begin
+      if GetTickCount - ResHeldAt[g] > RES_LATE_MS then begin
+        ResHeldAt[g] := 0;
+        ResNote := 'let go: you kept picking by keys';
+        ResNoteAt := GetTickCount;
+        Engine.Msg('[PvP]', GName[g] + ': ' + ResNote, 0);
+      end;
+      continue;
+    end;
+    ResGrace := GetTickCount - ResHeldAt[g] + REV_SCAN_MS;
+    if PickGroup(g, true) then AutoAt[g] := GetTickCount;
+    ResGrace := 0;
+    ResHeldAt[g] := 0;
+  end;
+  KillSoundTick();
 end;
 
 // ===================== CP potions =====================
@@ -2127,6 +2209,7 @@ begin
     EvAt[k] := 0;
     AutoWant[k] := false;
     AutoAt[k] := 0;
+    ResHeldAt[k] := 0;
     AsLast[k] := 0;
     GAsN[k] := 0;                                    // the assisters: '1st|2nd|3rd'
     SplitTo(GAssist[k], '|', P);
@@ -2534,9 +2617,17 @@ begin
   Cl := User.Clan;
   Al := User.Ally;
   StOut := '';
+  S := '';                                       // the res-kill / assist groups on now (by name)
+  for k := 0 to GroupN - 1 do
+    if ((GMode[k] = MODE_RES) or (GMode[k] = MODE_ASSIST)) and GResOn[k] then begin
+      if S <> '' then S := S + ', ';
+      S := S + JsonStr(GName[k]);
+    end;
+  if ResNote <> '' then S := S + '], "rk": {"t": ' + JsonStr(ResNote) + ', "ago": ' + IntToStr(GetTickCount - ResNoteAt) + '}'
+  else S := S + ']';
   JAdd('{"char": ' + JsonStr(CharName) + ', "written": ' + JsonStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)) + ',');
   JAdd(' "profile": {"id": ' + JsonStr(ProfId) + ', "name": ' + JsonStr(ProfName) + ', "how": ' + JsonStr(SelHow) +
-    ', "read": ' + JsonStr(CfgReadAt) + ', "groups": ' + IntToStr(GroupN) + ', "errors": [' + CfgErrJson + ']},');
+    ', "read": ' + JsonStr(CfgReadAt) + ', "groups": ' + IntToStr(GroupN) + ', "live": [' + S + ', "errors": [' + CfgErrJson + ']},');
   JAdd(' "me": {"oid": ' + IntToStr(MyOID) + ', "clan": ' + JsonStr(Cl) + ', "ally": ' + JsonStr(Al) +
     ', "target": ' + IntToStr(TargetOID()) + ', "dead": ' + DeadText + '},');
   JAdd(' "perf": {"key": ' + IntToStr(PfKey) + ', "keymax": ' + IntToStr(PfKeyMax) + ', "dump": ' + IntToStr(PfDump) +
@@ -2658,7 +2749,13 @@ begin
   UsN := 0;
   SmartFb := false;
   NotifyType := 15;
-  ResLookAt := 0;
+  ResGrace := 0;
+  ResOID := 0;
+  ResAt := 0;
+  ResNote := '';
+  ResNoteAt := 0;
+  for g := 0 to 15 do
+    ResHeldAt[g] := 0;
   ManualAt := 0;
   KeepN := 0;
   AsLookAt := 0;
@@ -2724,6 +2821,7 @@ begin
     if GetTickCount - RevScanAt >= REV_SCAN_MS then begin
       RevScanAt := GetTickCount;
       ScanRevives();
+      ResTick();                       // res-kill at once (before the keys / assist: they may take a while)
       HandleKeys();
     end;
     for g := 0 to GroupN - 1 do
@@ -2741,15 +2839,6 @@ begin
     if GetTickCount - CpInvAt >= 1000 then begin
       CpInvAt := GetTickCount;
       CpCheck();
-    end;
-    // res-kill groups that are on: somebody up from the dead in their window -> taken + the after action (attack)
-    if GetTickCount - ResLookAt >= RES_LOOK_MS then begin
-      ResLookAt := GetTickCount;
-      for g := 0 to GroupN - 1 do
-        if (GMode[g] = MODE_RES) and GResOn[g] and (GetTickCount - AutoAt[g] >= cardinal(GAutoMs[g])) then
-          if ResPending(g) then
-            if PickGroup(g, true) then AutoAt[g] := GetTickCount;
-      KillSoundTick();                 // an enemy up from the dead died again unbuffed -> the sound
     end;
     SrvPoll();                         // the PvP server: RELOAD -> the files read now
     if (CfgAt = 0) or (GetTickCount - CfgAt >= CFG_CHECK_MS) then begin
