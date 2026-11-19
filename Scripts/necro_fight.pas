@@ -34,7 +34,8 @@ uses SysUtils, Classes;
 
 const
   KIND_NUKE   = 1;   // damage: always spammed (the one that reloads first); summon: PARAM = interval ms
-  KIND_DEBUFF = 2;   // PARAM = ms before casting it again on the SAME mob
+  KIND_DEBUFF = 2;   // PARAM = ms before casting it again on the SAME mob; -1 = whenever ready while its effect is not
+                     //   on the mob (a new mob gets it before the nukes, again once its effect is gone)
   KIND_DRAIN  = 3;   // PARAM = HP %: only when HP is below it (ours / the summon's)
   KIND_PBAOE  = 5;   // AddMyPbAoe: AoE around US - PARAM = radius, only when ready and enough mobs
                      //   are within that radius of us (AddMyPbAoe MinMobs)
@@ -109,6 +110,9 @@ const
   PET_SKILL_GAP     = 1000;    // at least N ms between two summon skills
   DEBUFF_CONFIRM_MS = 3000;    // a debuff cast counts as landed if it went into reuse within this
   AOE_RADIUS        = 400;     // KIND_AOE default radius around the target
+  DEBUFF_SEEN_MS    = 3000;    // KIND_DEBUFF -1: after it landed, this long for its effect to show on the mob
+  DEBUFF_BLIND_MS   = 15000;   // ... its effect never seen on any mob (the server does not show it): again after this
+  DEBUFF_RESEND_MS  = 300;     // a debuff sent and not started yet: sent again this often (the nukes wait for it)
   SKILL_LOCK_MS     = 1000;    // debuff: not pressed again this long after it was sent
   AOE_MIN_MOBS      = 3;       // KIND_AOE: at least this many mobs (target included) in the radius
   SUMMON_RETRY_MS   = 3000;    // summon pressed, still no summon -> press again after this
@@ -163,6 +167,7 @@ var
   MySkillMinHP: array of integer;          // AddMyDebuff: cast only on mobs with more HP than this
   MySkillCastRange: array of integer;      // AddMyAoe: cast only when the target is this close (0 = any)
   MySkillMinMobs: array of integer;        // AddMyPbAoe: at least this many mobs around us
+  MySkillSeen: array of boolean;          // KIND_DEBUFF: its effect was seen on a mob (the server shows it)
   MySkillSent: array of cardinal;          // drain / debuff: when it was sent (no resend while it casts)
   SpamMs: integer;
   SummonSkill: integer;
@@ -255,6 +260,7 @@ var
   // our debuff sent while it was ready: waiting to see it go into reuse (= it was cast)
   PendSkill, PendOID: integer;
   PendTime: cardinal;
+  PendResent: cardinal;                    // ... sent again last (it holds the nukes until it starts)
 
 // ===================== Setters =====================
 
@@ -322,6 +328,7 @@ begin
   SetLength(MySkillCastRange, n + 1);
   SetLength(MySkillMinMobs, n + 1);
   SetLength(MySkillSent, n + 1);
+  SetLength(MySkillSeen, n + 1);
   MySkillID[n] := SkillID;
   MySkillKind[n] := Kind;
   MySkillParam[n] := Param;
@@ -329,6 +336,7 @@ begin
   MySkillCastRange[n] := 0;
   MySkillMinMobs[n] := 0;
   MySkillSent[n] := 0;
+  MySkillSeen[n] := false;
 end;
 
 // AoE nuke: Radius around the target (0 = AOE_RADIUS); cast only when the target is within
@@ -645,17 +653,26 @@ begin
   DebHead := (DebHead + 1) mod 64;
 end;
 
-// the mob shows this buff/debuff (if the server sends mob buffs at all)
+// the mob shows this buff/debuff (if the server sends mob buffs at all): its ID, or the name of our skill with that ID
+// (this server gives some skills its own IDs - the effect on the mob may carry another one)
 function MobHasBuff(OID, SkillID: integer): boolean;
 var i, j, ID: integer;
+  Sk: TL2Skill;
+  SkName, BName: string;
 begin
   result := false;
   i := NpcIdx(OID);
   if i < 0 then exit;
+  SkName := '';
+  if SkillList.ByID(SkillID, Sk) then SkName := UpperCase(Sk.Name);
   try
     for j := 0 to NpcList(i).Buffs.Count - 1 do begin
       ID := NpcList(i).Buffs.Items(j).ID;
       if ID = SkillID then begin result := true; exit; end;
+      if SkName <> '' then begin
+        BName := UpperCase(NpcList(i).Buffs.Items(j).Name);
+        if BName = SkName then begin result := true; exit; end;
+      end;
     end;
   except
     result := false;
@@ -791,9 +808,20 @@ begin
     if MySkillKind[k] <> Kind then continue;
     if Kind = KIND_DRAIN then
       Ok := User.HP < MySkillParam[k]
-    else if Kind = KIND_DEBUFF then
-      Ok := (MobCurHP(OID) > MySkillMinHP[k]) and          // AddMyDebuff threshold (0 = any mob)
-            (not MobHasBuff(OID, MySkillID[k])) and (DebuffAge(k, OID) >= cardinal(MySkillParam[k]))
+    else if Kind = KIND_DEBUFF then begin
+      Ok := MobCurHP(OID) > MySkillMinHP[k];               // AddMyDebuff threshold (0 = any mob)
+      if Ok and MobHasBuff(OID, MySkillID[k]) then begin   // its effect is on the mob: never again meanwhile
+        MySkillSeen[k] := true;
+        Ok := false;
+      end;
+      if Ok then begin
+        if MySkillParam[k] >= 0 then Ok := DebuffAge(k, OID) >= cardinal(MySkillParam[k])
+        // -1: whenever its effect is not on the mob - a moment after it landed for the effect to show; its effect
+        // never seen on any mob yet (the server may not show it): not on the same mob more often than DEBUFF_BLIND_MS
+        else if MySkillSeen[k] then Ok := DebuffAge(k, OID) >= DEBUFF_SEEN_MS
+        else Ok := DebuffAge(k, OID) >= DEBUFF_BLIND_MS;
+      end;
+    end
     else if Kind = KIND_AOE then
       Ok := ((MySkillCastRange[k] <= 0) or (MobDist(OID) <= MySkillCastRange[k])) and   // target in cast range
             (MobsAround(OID, MySkillParam[k]) >= AOE_MIN_MOBS) and
@@ -829,19 +857,31 @@ begin
     PendSkill := -1;   // never went into reuse: did not land, try again
 end;
 
-// one spam step: drain (HP low) -> debuff (not on the mob) -> nuke
+// one spam step: drain (HP low) -> debuff (not on the mob) -> nuke. A debuff sent and not started yet (no reuse): sent
+// again every DEBUFF_RESEND_MS and NOTHING else meanwhile (up to SKILL_LOCK_MS) - a nuke packet now would replace its
+// cast, a new mob got the nukes before its debuffs. A drain (our HP low) still goes first
 procedure SpamSkill(OID: integer);
 var k: integer;
 begin
   CheckPendingDebuff();
 
   k := BestOfKind(KIND_DRAIN, OID);
+  if (k < 0) and (PendSkill >= 0) then
+    if (PendOID = OID) and (GetTickCount - PendTime < SKILL_LOCK_MS) then
+      if SkillLeft(MySkillID[PendSkill]) = 0 then begin
+        if GetTickCount - PendResent >= DEBUFF_RESEND_MS then begin
+          Engine.DUseSkill(MySkillID[PendSkill], false, false);
+          PendResent := GetTickCount;
+        end;
+        exit;
+      end;
   if k < 0 then begin
     k := BestOfKind(KIND_DEBUFF, OID);
     if (k >= 0) and (SkillLeft(MySkillID[k]) = 0) and (PendSkill < 0) then begin
-      PendSkill := k;   // watch it go into reuse
+      PendSkill := k;   // watch it go into reuse (the nukes wait for it meanwhile)
       PendOID := OID;
       PendTime := GetTickCount;
+      PendResent := PendTime;
     end;
   end;
   if k < 0 then k := BestOfKind(KIND_PBAOE, OID);  // enough mobs around us and ready

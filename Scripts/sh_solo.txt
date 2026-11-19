@@ -15,19 +15,20 @@ begin
   // ===== our skills, PRIORITY order inside each kind =====
   // AddMySkill(skill ID, kind, param)
   //   KIND_DRAIN  - param = HP %: spammed while our HP is below it
-  //   KIND_DEBUFF - param = ms: cast again on the SAME mob only after this
+  //   KIND_DEBUFF - param = ms: cast again on the SAME mob only after this; -1 = whenever ready while its effect
+  //                 is not on the mob: a new mob gets it before the nukes, again only once its effect is gone
   //   KIND_NUKE   - param unused: always spammed (the one that reloads first)
   // AddMyAoe(skill ID, radius, cast range) - AoE: only when ready, 3+ mobs within radius of the target
   //   and the target closer than cast range (0 = any distance)
   // AddMyDebuff(skill ID, recast ms, min mob HP) - a debuff cast only on mobs with more HP than that
-  AddMySkill(1234, KIND_DRAIN,  85);      // Vampiric Claw, HP < 70 %
-  AddMySkill(1074, KIND_DEBUFF, 6000);   // debuff, again on the same mob after 30 sec
-  AddMySkill(1343, KIND_DRAIN,  60);       // Vortex Dark
-  AddMySkill(1341, KIND_NUKE,  6500);       // Wind Vortex
-  AddMySkill(1239, KIND_NUKE,   0);       // Death Spike
+  // priority: drains (HP low) -> debuffs (a new mob: before the nukes) -> nukes
+  AddMySkill(1234, KIND_DRAIN,  85);      // Vampiric Claw, HP < 85 %
+  AddMySkill(1343, KIND_DRAIN,  60);      // Dark Vortex, HP < 60 %
+  AddMySkill(1074, KIND_DEBUFF, -1);      // Surrender to Wind: not again while its effect is on the mob
+  AddMySkill(1341, KIND_DEBUFF, -1);      // Wind Vortex: the same
+  AddMySkill(1239, KIND_NUKE,   0);       // Hurricane
   //AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
 
-  AddMyDebuff(1074, 13000, 100000); 
   // how often a skill packet is sent (ms)
   SetSpamMs(100);
   SetPvpAnswer(700, 1500);
