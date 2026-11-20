@@ -12,7 +12,7 @@ cp_pct=95
 cp_gap_ms=150
 
 [group]
-on=1
+on=0
 name=Res Kill
 mode=reskill
 key=X
@@ -38,7 +38,7 @@ kill_ms=20000
 classes=12:1|13:1|16:2|27:1|40:1|94:1|95:1|97:2|103:1|110:1
 
 [group]
-on=1
+on=0
 name=Mages
 mode=class
 key=1
@@ -64,7 +64,7 @@ kill_ms=20000
 classes=12:1|13:1|27:1|40:1|94:1|95:1|103:1|110:1
 
 [group]
-on=1
+on=0
 name=Healers
 mode=class
 key=2
@@ -106,7 +106,7 @@ res_max_ms=15000
 auto=1
 auto_ms=3000
 who=target
-assist=Tyskie|Shkchkchahh|Flashkamet
+assist=Flashkamet|Shkchkchahh|Flashkamet
 assist_aggro=2
 assist_src=net
 skills=

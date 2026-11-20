@@ -652,7 +652,7 @@ const MODES = {
   reskill: ['Res-kill', 'm-reskill', 'An enemy who was resurrected: got up no sooner than «from» and no later than «to» milliseconds ago. The key turns res-kill on / off; while it is on, the bot selects such an enemy itself and at once does «after selecting» (an attack). Classes are a filter.', 'An enemy who was just resurrected'],
   cast: ['Cast / Forces', 'm-cast', 'An enemy casting the chosen skill, or the one it is cast on (the charged one: more Forces first).', 'Break a cast: Forces, a res, any skill'],
   names: ['By names', 'm-names', 'The ★ players of the «Enemies & names» list, strictly in order, any class and clan.', 'The ★ players, in list order'],
-  assist: ['Assist', 'm-assist', 'The target of an assister: the 1st if he is near, alive and not aggroed, else the 2nd, then the 3rd (all empty: the party leader). The key turns assist on / off; while it is on, the bot takes his target and then each new one at once, and does «after selecting». A character on the list follows only the ones above him. «Volley»: he starts one of those skills, yours goes at his target at once. «Via server»: his bot sends his target over the relay server, so he may be far, out of sight or dead.', 'The target of your assister or party leader'],
+  assist: ['Assist', 'm-assist', 'The target of an assister: the 1st if he is near, alive and not aggroed, else the 2nd, then the 3rd (all empty: the party leader). The key turns assist on / off; while it is on, the bot takes his target and then each new one at once, and does «after selecting». A character on the list follows only the ones above him. «Volley»: he starts one of those skills, yours goes at his target at once. «Via server»: one assister (from the party or any nickname); his bot sends his target over the relay server and it is taken as it is - any distance, no aggro check, he may be dead.', 'The target of your assister or party leader'],
   onus: ['Who targets us', 'm-onus', 'An enemy targeting you or someone of your party. Those on you first, then the nearest. Classes are a filter.', 'An enemy targeting you or your party'],
   smart: ['Assist caller', 'm-smart', 'An enemy calling assist on you or your party: he switches first and the others follow him. The more often they follow him, the sooner. Classes are a filter. No assist callers near: the one holding you in target.', 'An enemy calling assist on you'] };
 
@@ -1013,25 +1013,43 @@ function assistPick(g, N) {
   if (!he.g) return { msg: 'Assister ' + he.n + why + ': he has no target.' };
   return { he, why, t: N.find(p => p.o === he.g) || null };
 }
+// the assister of an assist group via the server: one character - a party member (the bot's party list) or any nickname
+function netAssisterRow(g) {
+  const first = () => (g.assist || '').split('|')[0] || '';
+  const setFirst = v => { const L = (g.assist || '').split('|'); L[0] = clean(v); g.assist = L.join('|').replace(/\|+$/, ''); changed(false); };
+  const party = () => { const d = botData(); return (d && d.party) || []; };
+  const onSrv = nm => { const d = botData(), r = ((d && d.net && d.net.room) || '').split(','); return r.some(x => lc(x) === lc(nm)); };
+  if (!g._pick) Object.defineProperty(g, '_pick', { value: !first() || party().some(n => lc(n) === lc(first())) ? 'party' : 'name', writable: true, configurable: true });
+  let box;
+  if (g._pick === 'party') {
+    const sel = el('select', { onchange: e => setFirst(e.target.value) });
+    const fill = () => {
+      const cur = first(), P = party(), opts = [el('option', { value: '', text: 'The party leader', selected: !cur })];
+      for (const n of P) opts.push(el('option', { value: n, text: n + (onSrv(n) ? ' · on the server' : ''), selected: lc(n) === lc(cur) }));
+      if (cur && !P.some(n => lc(n) === lc(cur))) opts.push(el('option', { value: cur, text: cur + ' (not in your party now)', selected: true }));
+      sel.replaceChildren(...opts);
+    };
+    fill(); sel.addEventListener('focus', fill); sel.addEventListener('mousedown', fill);
+    box = sel;
+  } else box = el('input', { type: 'text', value: first(), maxlength: 24, placeholder: 'Any character\'s nickname', oninput: e => setFirst(e.target.value.trim()) });
+  return frc('Assister', 'His bot sends his target: in the party or not',
+    seg([['party', 'From party', 'Pick a member of your party'], ['name', 'Nickname', 'Type any character\'s nickname (his bot must run with PvpPanel)']],
+      g._pick, v => { g._pick = v; renderEditor(); }),
+    el('div', { class: 'fc' }, box));
+}
 // an assist group via the server: whose target (from the bot's relay state: the room, everyone's target)
 function netPick(g, N) {
   const d = botData(), net = d && d.net;
   if (!net) return { msg: 'This bot does not know the relay server yet: restart pvp_focus.txt.' };
   if (net.link < 0) return { msg: 'The PvP server on this PC does not link to the relay: run PvpPanel (rebuilt), not pvp_server.py.' };
   const room = (net.room || '').split(',').filter(Boolean), inRoom = nm => room.some(x => lc(x) === lc(nm));
-  const list = (g.assist || '').split('|').filter(Boolean);
-  if (!list.length) return { msg: 'Follows the party leader, if his bot is on the server. Names are surer: type them in.' };
-  const skipped = []; let he = null;
-  for (const nm of list) {
-    if (d.char && lc(nm) === lc(d.char)) { skipped.push('then you: you lead'); break; }   // only the ones above you
-    if (!inRoom(nm)) { skipped.push(nm + ' not on the server'); continue; }
-    he = room.find(x => lc(x) === lc(nm)); break;
-  }
-  const why = skipped.length ? ' (' + skipped.join(', ') + ')' : '';
-  if (!he) return { msg: 'Nobody to assist' + why + '.' };
-  const t = (net.t || []).find(x => lc(x.c) === lc(he));
-  if (!t || !t.o) return { msg: 'Assister ' + he + why + ': he has no target.' };
-  return { he: { n: he }, why, t: N.find(p => p.o === t.o) || null, tn: t.n || '?' };
+  const nm = (g.assist || '').split('|')[0] || '';
+  if (!nm) return { msg: 'Follows the party leader, if his bot is on the server.' };
+  if (d.char && lc(nm) === lc(d.char)) return { msg: 'You are the assister: your bot sends your target to the others.' };
+  if (!inRoom(nm)) return { msg: nm + ' is not on the server: his bot is off or his PC has no PvpPanel / relay.ini.' };
+  const he = room.find(x => lc(x) === lc(nm)), t = (net.t || []).find(x => lc(x.c) === lc(he));
+  if (!t || !t.o) return { msg: 'Assister ' + he + ': he has no target.' };
+  return { he: { n: he }, why: '', t: N.find(p => p.o === t.o) || null, tn: t.n || '?' };
 }
 // the relay as the bot knows it: a line for «Takes now»
 function netStat() {
@@ -1156,7 +1174,7 @@ function shortSum(g) {
   if (g.mode === 'class') s.push(nc ? nc + (nc === 1 ? ' class' : ' classes') : 'no classes');
   else if (g.mode === 'cast') s.push(g.skills.length ? g.skills.map(skName).join(', ') : 'no skills');
   else if (g.mode === 'reskill') s.push(g.resMin + '–' + g.resMax + ' ms', g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
-  else if (g.mode === 'assist') s.push((g.asSrc === 'net' ? 'via server: ' : '') + ((g.assist || '').split('|').filter(Boolean).join(' → ') || 'party leader'), g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
+  else if (g.mode === 'assist') s.push(g.asSrc === 'net' ? 'via server: ' + ((g.assist || '').split('|')[0] || 'party leader') : ((g.assist || '').split('|').filter(Boolean).join(' → ') || 'party leader'), g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
   if (nc && g.mode !== 'class' && g.mode !== 'names' && g.mode !== 'assist') s.push(nc + (nc === 1 ? ' class' : ' classes'));
   if (g.mode === 'assist' && g.volley && g.volley.length) s.push('volley ' + g.volley.map(skName).join(', '));
   if (g.after === 'attack') s.push('attack'); else if (g.after === 'skill' && g.afterSk) s.push(skName(g.afterSk));
@@ -1321,11 +1339,12 @@ function renderEditor() {
       seg([['game', 'In game', 'His target as this game client sees it: he must be near, alive'],
            ['net', 'Via server', 'His bot sends his target over the relay server: he may be far, out of sight or dead']],
         net ? 'net' : 'game', v => { g.asSrc = v; changed(true); renderEditor(); })));
-    tg.append(fr('Assister', 'Whose target it takes', nameIn(0)), fr('Then', net ? 'If his bot is not on the server' : 'If he is aggroed, dead or away', nameIn(1)), fr('Then', 'The last one', nameIn(2)));
-    if (!net) tg.append(fr('If aggroed', 'An enemy targets him', el('select', { onchange: e => { g.asAggro = +e.target.value; changed(false); } },
+    if (net) tg.append(netAssisterRow(g));
+    else tg.append(fr('Assister', 'Whose target it takes', nameIn(0)), fr('Then', 'If he is aggroed, dead or away', nameIn(1)), fr('Then', 'The last one', nameIn(2)),
+      fr('If aggroed', 'An enemy targets him', el('select', { onchange: e => { g.asAggro = +e.target.value; changed(false); } },
         [[2, 'Skip to the next'], [1, 'Wait while I am aggroed'], [0, 'Do not check']].map(([v, t]) => el('option', { value: v, text: t, selected: v === g.asAggro })))));
   }
-  tg.append(rangeRow(g),
+  if (!(g.mode === 'assist' && g.asSrc === 'net')) tg.append(rangeRow(g),   // via server: his target as it is, any distance
     fr('Height', 'Up / down: floors, cliffs', numU(g.height, 50, 50, v => g.height = v, '± units', 'Takes no one higher or lower than you by more than this')));
   if (g.mode === 'reskill')
     tg.append(fr('On at start', 'The key turns it on / off', sw(g.auto, v => { g.auto = v; changed(true); }, 'Res-kill works by itself: as soon as an enemy gets up it selects and hits him')),
@@ -1540,7 +1559,7 @@ function liveCore(g) {
   if (!N) return [lempty(!online ? 'Offline.' : liveBots().length ? 'The bot sends nothing yet.' : 'Whom it takes shows while pvp_focus.txt runs.')];
   if (g.mode === 'assist' && g.asSrc === 'net') {
     const a = netPick(g, N), st = netStat(); if (a.msg) return st.concat(lempty(a.msg));
-    const r = a.t ? ltRow('→', a.t, g, a.t.f & 5 ? 'a friend: not taken' : '')
+    const r = a.t ? ltRow('→', a.t, g, a.t.f & 5 ? 'a friend: selected, no attack' : '')
       : el('div', { class: 'lmsg' }, '→ ', el('b', { text: a.tn }), ': not in your sight yet, taken as soon as he is');
     if (a.t && !(a.t.f & 5)) r.classList.add('top');
     return st.concat(el('div', { class: 'lmsg' }, 'Target of ', el('b', { text: a.he.n }), ' (his bot)', a.why), r);
@@ -1856,7 +1875,7 @@ function renderHelp() {
     ['m-reskill', 'Res-kill', 'An enemy who was resurrected: got up no sooner than «after» and no later than «to» milliseconds ago (the bot saw him dead, then alive). The group key <b>turns res-kill on / off</b>; while it is on, the bot selects such an enemy itself and at once does «after selecting», an attack. <b>Kill sound</b>: an enemy who got up dies again soon after (within «Counts within»), with no buffs seen on him: the bot plays your sound and says it.'],
     ['m-cast', 'Cast / Forces', 'An enemy casting the chosen skill (Battle Force 426, Spell Force 427, a res…). «The one cast on» takes the one being charged, more Forces first: Sword Muse / Spectral Dancer under Noise, Soultaker under DoD. «The caster» takes the caster himself.'],
     ['m-names', 'By names', 'The ★ players of the «Enemies» list, strictly in order, any class and clan.'],
-    ['m-assist', 'Assist', 'Up to three assisters in order: the target of the first one who is near, alive and not aggroed (no enemy the bot sees holds him in target); else the next one; all empty: the party leader. The group key <b>turns assist on / off</b>; while it is on, the bot takes his target and then each new one at once. Never takes your own. The list is a chain: a character on it follows only the ones above him, so one list fits all of them. <b>Volley</b>: when he starts one of the listed skills (Multiple Shot 987…), yours goes at his target at once, if it is ready. <b>Source: Via server</b>: not his target as your game sees it, but the one his bot sends over the relay server (PvpPanel on every PC, relay.ini next to it). He may be far, out of sight or dead; the first of the list whose bot is on the server leads. Characters on the same PC get it straight from the panel. His target out of your sight is taken as soon as you see it.'],
+    ['m-assist', 'Assist', 'Up to three assisters in order: the target of the first one who is near, alive and not aggroed (no enemy the bot sees holds him in target); else the next one; all empty: the party leader. The group key <b>turns assist on / off</b>; while it is on, the bot takes his target and then each new one at once. Never takes your own. The list is a chain: a character on it follows only the ones above him, so one list fits all of them. <b>Volley</b>: when he starts one of the listed skills (Multiple Shot 987…), yours goes at his target at once, if it is ready. <b>Source: Via server</b>: one assister - a party member or any nickname (his bot must run, with PvpPanel and relay.ini on his PC). Not his target as your game sees it, but the one his bot sends over the relay server, taken as it is: any distance and height, no aggro check, he may be far or dead. Only a target out of your sight waits until you see it (the game cannot select it before). At a friend: selected, no attack. Characters on the same PC get it straight from the panel.'],
     ['m-onus', 'Who targets us', 'An enemy targeting you or someone of your party. Those on you first, then the nearest.'],
     ['m-smart', 'Assist caller', 'An enemy calling assist on you or your party: he switches to one of you first and others follow within 3 s. Only target switches count (not casts, AoE or hits, nor switches at the same instant). A point for each follower (1.5 if onto you), half burns off every 2 minutes.'],
     ['', 'Pick order', '★ name (if «★ names before everyone else» is on), class priority, Force count, distance. ⛔ players and your own (party, clan, alliance) are never taken. <b>Pressing again</b> while you are on the selected one takes the next one of the same turn; if only he fits, the «after» action repeats (stuns again, say).'],

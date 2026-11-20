@@ -493,10 +493,13 @@ const ICON = {
   del: '<svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>' };
 
 // ===== files: Library\Binds, the folder handle kept in IndexedDB (the same one binds.html / pvp.html keep) =====
-function idb(mode, fn) { return new Promise(res => { try { const rq = indexedDB.open('equipbinds', 1);
-  rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
-  rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => res(null); };
-  rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+// the browser's memory of the folder; whatever goes wrong (or no answer in 2 s) -> null: the page asks for the folder
+function idb(mode, fn) { return new Promise(res => { let done = false; const fin = v => { if (!done) { done = true; res(v); } };
+  setTimeout(() => fin(null), 2000);
+  try { const rq = indexedDB.open('equipbinds', 1);
+    rq.onupgradeneeded = () => { try { rq.result.createObjectStore('kv'); } catch (e) {} };
+    rq.onsuccess = () => { try { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => fin(r && r.result); tx.onerror = tx.onabort = () => fin(null); } catch (e) { fin(null); } };
+    rq.onerror = rq.onblocked = () => fin(null); } catch (e) { fin(null); } }); }
 // the bot reads and writes ANSI (cp1251)
 function decode(buf) { try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1251').decode(buf); } }
 function cp1251(s) {
@@ -506,7 +509,7 @@ function cp1251(s) {
     else if (c === 0x401) out.push(0xA8); else if (c === 0x451) out.push(0xB8); else out.push(63); }
   return new Uint8Array(out);
 }
-let dir = null, oldDir = null;
+let dir = null, oldDir = null, startErr = '';   // startErr: why the folder did not open by itself (shown in the intro)
 async function sub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
 async function fileOf(name) { try { return await (await dir.getFileHandle(name)).getFile(); } catch (e) { return null; } }
 async function textOf(f) { try { return decode(await f.arrayBuffer()); } catch (e) { return null; } }
@@ -624,13 +627,22 @@ function scrollInfo(name) {
 // ===== start / the folder =====
 async function start() {
   if (!window.showDirectoryPicker) { intro('browser'); return; }
-  const h = await idb('readonly', st => st.get('dir'));
-  if (h) {
-    let p = 'prompt';
-    try { p = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
-    if (p === 'granted') { await useDir(h); return; }
-    oldDir = h; intro('again');
-  } else intro('first');
+  // a safety net: nothing shown in 5 s (the browser hangs on the folder) -> the button to connect it
+  setTimeout(() => { if ($('page').hidden && $('intro').hidden) { startErr = startErr || 'браузер не открыл сохранённую папку'; intro(oldDir ? 'again' : 'first'); } }, 5000);
+  let h = null;
+  try {
+    h = await idb('readonly', st => st.get('dir'));
+    if (h && typeof h.queryPermission !== 'function') h = null;   // not a folder any more
+    if (h) {
+      let p = 'prompt';
+      try { p = await Promise.race([h.queryPermission({ mode: 'readwrite' }), new Promise(r => setTimeout(() => r('prompt'), 2000))]); } catch (e) {}
+      if (p === 'granted') { await useDir(h); return; }
+      oldDir = h; intro('again');
+    } else intro('first');
+  } catch (e) {
+    startErr = (e && (e.name ? e.name + ': ' : '') + (e.message || '')) || String(e);
+    dir = null; oldDir = null; intro('first');
+  }
 }
 async function connect(pickNew) {
   try {
@@ -650,6 +662,7 @@ function intro(kind) {
   b.hidden = !kind;
   if (!kind) return;
   b.textContent = '';
+  if (startErr && kind !== 'browser') b.append(el('p', { class: 'muted', text: 'Папка не открылась сама (' + startErr + ') — подключи её ещё раз.' }));
   if (kind === 'browser') b.append(el('h2', { text: 'Нужен Chrome или Edge' }), el('p', { class: 'muted', text: 'Страница сама читает и пишет файлы в папке Library\\Binds — это умеют только Chrome и Edge.' }));
   else if (kind === 'wrongdir') b.append(el('h2', { text: 'Это не та папка' }), el('p', { class: 'muted', html: 'Нужна папка <b>Library\\Binds</b> бота (или сама <b>Library</b>). Нажми «Подключить папку» ещё раз.' }));
   else b.append(el('h2', { text: kind === 'again' ? 'Разреши доступ к папке' : 'Заточка из браузера' }),
@@ -663,6 +676,8 @@ async function useDir(h) {
   let ok = h.name.toLowerCase() === 'binds';
   if (!ok) try { for await (const [name] of h.entries()) if (/^(pvp|binds|enchant)\.html$|\.binds$|\.ench(\.json)?$/i.test(name)) { ok = true; break; } } catch (e) {}
   if (!ok) { dir = h; intro('wrongdir'); return; }
+  try { for await (const e of h.entries()) break; }   // a folder remembered from before may be gone / not readable
+  catch (e) { startErr = (e.name ? e.name + ': ' : '') + (e.message || ''); dir = null; oldDir = null; intro('first'); return; }
   dir = h; oldDir = null;
   idb('readwrite', st => st.put(h, 'dir'));
   $('connect').hidden = true; $('otherDir').hidden = false;

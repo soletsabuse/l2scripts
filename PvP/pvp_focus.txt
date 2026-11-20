@@ -32,10 +32,12 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             once (a volley; only when ours is ready; ctrl= of the group)
 //             assist_aggro: 2 an aggroed assister is skipped (an enemy in sight holds him in the target), 1 no assist
 //             while I am aggroed, 0 no check
-//             assist_src=net (assist via the server): not his game target - his bot sends it (PvpPanel -> the relay
-//             -> the PvpPanel of every PC of the party), so he may be far, out of sight, dead. The one followed: the
-//             first of the list in the room of the relay (above me). The same PC: straight from the panel. Every bot
-//             sends its own target as soon as it changes (N|T), whatever its groups
+//             assist_src=net (assist via the server): ONE assister (the first name; none: the party leader), any
+//             character whose bot is on the relay (in the party or not). Not his game target - his bot sends it
+//             (PvpPanel -> the relay -> the PvpPanel of every PC; the same PC: straight from the panel), so he may be
+//             far, out of sight, dead. His target is taken as it is: no range / height, no aggro, no holds (only not
+//             before the game knows it: in sight); at a friend: selected, no after action. Every bot sends its own
+//             target as soon as it changes (N|T), whatever its groups
 // CP potions (cp_item, '0' none): a thread of its own looks at our CP every CP_LOOK_MS; below cp_pct % -> the potion,
 // again not sooner than cp_gap_ms (the server's flood guard); the potions left: looked at every second (told when none)
 //   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
@@ -1544,31 +1546,24 @@ begin
     end;
 end;
 
-// assist via the server, group g: the one it follows now - the first of its list in the room, above me ('' none; NetSlot
-// his place). No list: the party leader. Dead / far / out of sight does not matter: his bot sends his target
+// assist via the server, group g: its assister (the first name; none: the party leader) when his bot is in the room of
+// the relay ('' none / he is me). In the party or not, dead / far / out of sight: does not matter
 function NetCaller(g: integer): string;
-var s: integer;
-  L: TL2Char;
-  Me: string;
+var L: TL2Char;
+  Nm: string;
 begin
   result := '';
   NetSlot := -1;
-  Me := LowerCase(CharName);
   if GAsN[g] = 0 then begin
     L := Party.Leader;
     if L = nil then exit;
     if L.OID = MyOID then exit;
-    if Pos(',' + LowerCase(L.Name) + ',', NetRoom) > 0 then result := LowerCase(L.Name);
-    exit;
-  end;
-  for s := 0 to GAsN[g] - 1 do begin
-    if GAsName[g * 3 + s] = Me then exit;            // only the ones above me: I lead
-    if Pos(',' + GAsName[g * 3 + s] + ',', NetRoom) > 0 then begin
-      result := GAsName[g * 3 + s];
-      NetSlot := s;
-      exit;
-    end;
-  end;
+    Nm := LowerCase(L.Name);
+  end else Nm := GAsName[g * 3];
+  if Nm = LowerCase(CharName) then exit;             // he is me: I lead
+  if Pos(',' + Nm + ',', NetRoom) = 0 then exit;     // his bot is not on the server
+  result := Nm;
+  NetSlot := 0;
 end;
 
 // the CharList index of the one group g follows via the server (in sight: his casts are seen), -1 none
@@ -1755,7 +1750,7 @@ begin
   if CharList(i).OID <> VolOID then exit;            // another one of the list: not the one we follow now
   Tg := VolTgt;
   if (Tg = 0) or (Tg = MyOID) then exit;
-  if Tg <> ResOID then
+  if (Tg <> ResOID) and (not GAsNet[g]) then
     if ResKeeps() then begin                         // we are on the one res-kill took: he first
       Engine.Msg('[PvP]', GName[g] + ': volley skipped - the res-kill target first', 0);
       exit;
@@ -1782,9 +1777,9 @@ begin
   Engine.Msg('[PvP]', GName[g] + ': volley ' + Sk.Name, 0);
 end;
 
-// assist via the server (groups on, assist_src=net): the one it follows (NetCaller) has a new target -> taken + the
-// after action. It waits while that target is not in sight (taken as soon as he is), your key pick a moment ago, the
-// res-kill target first; SetTarget failed -> again in NET_TRY_MS. Never me, never a friend
+// assist via the server (groups on, assist_src=net): the assister's bot sent a new target -> taken as it is (no range,
+// no aggro, no holds) + the after action (not at a friend: selected only). It only waits till the game knows that
+// target (in sight); SetTarget failed -> again in NET_TRY_MS. Never me
 procedure NetTick();
 var g, k, i, W: integer;
   C, Who, Rest: string;
@@ -1793,7 +1788,7 @@ begin
   for g := 0 to GroupN - 1 do begin
     if (GMode[g] <> MODE_ASSIST) or (not GAsNet[g]) or (not GResOn[g]) then continue;
     C := NetCaller(g);
-    if C = '' then continue;                         // nobody above me in the room
+    if C = '' then continue;                         // he is not on the server / he is me
     k := NetIdx(C);
     if k < 0 then continue;                          // no target from him yet
     W := NtOID[k];
@@ -1808,16 +1803,8 @@ begin
       continue;
     end;
     i := CharIdxOf(W);
-    if i >= 0 then
-      if IsOurs(i) then begin                        // a friend: not taken
-        NetTook[g] := W;
-        continue;
-      end;
     if i < 0 then
-      if not NpcSeen(W) then continue;               // not in sight yet: taken when he is
-    if ResHeld() then continue;                      // your key pick a moment ago first
-    if W <> ResOID then
-      if ResKeeps() then continue;                   // the res-kill target first
+      if not NpcSeen(W) then continue;               // not in sight yet: taken as soon as he is
     if GetTickCount - NetTryAt[g] < NET_TRY_MS then continue;
     NetTryAt[g] := GetTickCount;
     if i >= 0 then Who := WhoText(i, W) else Who := NtTName[k];
@@ -1826,6 +1813,12 @@ begin
     NetTgtTick();
     NetTook[g] := W;
     AsLast[g] := W;
+    i := CharIdxOf(W);
+    if i >= 0 then
+      if IsOurs(i) then begin                        // a friend: selected, no attack at him
+        Say(GName[g] + ' (сервер): ' + Who + ' - свой, без атаки');
+        continue;
+      end;
     if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
     if GMark[g] > 0 then SendMark(GMark[g]);
     Rest := DoAfter(g, W);
@@ -1972,7 +1965,11 @@ begin
           if C = '|' then S := S + ', ' else S := S + C;
         end;
         if S = '' then S := 'лидер пати';
-        if GAsNet[g] then S := 'через сервер, ' + S;
+        if GAsNet[g] then begin                       // via the server: one assister
+          j := Pos(',', S);
+          if j > 0 then S := Copy(S, 1, j - 1);
+          S := 'через сервер, ' + S;
+        end;
         Say(GName[g] + ': ВКЛ (ассист ' + S + ')');
       end else Say(GName[g] + ': ВЫКЛ');
     end else PickGroup(g, false);
@@ -2768,6 +2765,24 @@ begin
   StOut := StOut + S;
 end;
 
+// the party members (not me) for the page: an assister picked from the party
+function PartyJson(): string;
+var i, n: integer;
+  C: TL2Char;
+begin
+  result := '[';
+  n := 0;
+  for i := 0 to Party.Chars.Count - 1 do begin
+    C := Party.Chars.Items(i);
+    if C = nil then continue;
+    if C.OID = MyOID then continue;
+    if n > 0 then result := result + ', ';
+    result := result + JsonStr(C.Name);
+    n := n + 1;
+  end;
+  result := result + ']';
+end;
+
 // the relay for the page: linked, the time there and back, the room, the target of each one in it
 function NetJson(): string;
 var k: integer;
@@ -2901,6 +2916,7 @@ begin
   JAdd(' "perf": {"key": ' + IntToStr(PfKey) + ', "keymax": ' + IntToStr(PfKeyMax) + ', "dump": ' + IntToStr(PfDump) +
     ', "cast": ' + IntToStr(PfCast) + ', "loop": ' + IntToStr(PfLoop) + '},');
   JAdd(' "net": ' + NetJson() + ',');
+  JAdd(' "party": ' + PartyJson() + ',');
   JAdd(' "skills": ' + SkillsJson() + ',');
   if (FoesAt = 0) or (GetTickCount - FoesAt >= FOES_MS) then begin   // the stats: once a second is enough
     FoesAt := GetTickCount;
