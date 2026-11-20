@@ -157,6 +157,7 @@
   .jhead input.jname { flex: 1 1 140px; min-width: 110px; font-weight: 650; background: transparent; border-color: transparent; font-size: 14px; }
   .jhead input.jname:hover { border-color: var(--line2); }
   .jhead input.jname:focus { background: var(--panel2); }
+  .strng.off { opacity: .4; pointer-events: none; }
   .rng { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; }
   .rng .arrow { color: var(--accent); font-size: 15px; }
   .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel2); overflow: hidden; }
@@ -316,10 +317,8 @@
     <select id="charSel" title="Чью сумку точим"></select>
   </div>
   <span id="botState" class="pill"></span>
-  <button id="connect" class="primary" hidden>Подключить папку</button>
   <span class="sp"></span>
   <span id="saveState" class="pill"></span>
-  <button id="otherDir" class="ghost" hidden title="Выбрать другую папку">папка…</button>
 </div>
 
 <main>
@@ -400,6 +399,8 @@
             <span class="c"><label class="sw"><input type="checkbox" id="optBreak"><span></span></label></span></div>
           <div class="opt"><span class="t">Не больше свитков за запуск</span><span class="d">0 — без лимита. Удобно, чтобы не спустить всё за раз.</span>
             <span class="c"><input type="number" id="optMax" min="0" max="100000" step="1"></span></div>
+          <div class="opt"><span class="t">Остановиться, когда до цели дойдут N вещей</span><span class="d">0 — точить все. Вещь считается, когда дошла до последней цели (дальше её не берёт ни один диапазон). С порядком «по одной» бот ведёт одну вещь до конца, потом следующую.</span>
+            <span class="c"><input type="number" id="optDone" min="0" max="100000" step="1"></span></div>
         </div>
       </section>
       <section class="card">
@@ -492,14 +493,26 @@ const ICON = {
   next: '<svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>',
   del: '<svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>' };
 
-// ===== files: Library\Enchanter, the folder handle kept in IndexedDB (key enchdir: its own, not the binds.html one) =====
-// the browser's memory of the folder; whatever goes wrong (or no answer in 2 s) -> null: the page asks for the folder
-function idb(mode, fn) { return new Promise(res => { let done = false; const fin = v => { if (!done) { done = true; res(v); } };
-  setTimeout(() => fin(null), 2000);
-  try { const rq = indexedDB.open('equipbinds', 1);
-    rq.onupgradeneeded = () => { try { rq.result.createObjectStore('kv'); } catch (e) {} };
-    rq.onsuccess = () => { try { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => fin(r && r.result); tx.onerror = tx.onabort = () => fin(null); } catch (e) { fin(null); } };
-    rq.onerror = rq.onblocked = () => fin(null); } catch (e) { fin(null); } }); }
+// ===== files: through EnchPanel.exe - it serves this page and the files of Library\Enchanter (the bot works with the
+// files as before: <char>.ench ours, <char>.ench.json its state, <char>.ench.req a bag request) =====
+const API = {
+  async list() { const r = await fetch('/api/list', { cache: 'no-store' }); if (!r.ok) throw new Error('EnchPanel ' + r.status); return r.json(); },
+  async get(name) {
+    const r = await fetch('/api/file?name=' + encodeURIComponent(name), { cache: 'no-store' });
+    if (r.status === 204 || r.status === 404) return null;   // none
+    if (!r.ok) throw new Error('EnchPanel ' + r.status);
+    const buf = await r.arrayBuffer(), mod = +(r.headers.get('X-Mod') || 0);
+    return { name, lastModified: mod, arrayBuffer: async () => buf };
+  },
+  async file(name) { const f = await API.get(name); if (!f) throw new Error('gone'); return f; },
+  async put(name, bytes) {
+    const r = await fetch('/api/file?name=' + encodeURIComponent(name), { method: 'PUT', body: bytes, headers: { 'X-Ench': '1' } });
+    const t = await r.text();
+    if (!r.ok) throw new Error('EnchPanel ' + r.status + ': ' + t);
+    return +t || Date.now();
+  } };
+// the folder as the page uses it: its files listed (each one read on demand)
+const panelDir = { async *entries() { for (const f of await API.list()) yield [f.name, { kind: 'file', name: f.name, getFile: () => API.file(f.name) }]; } };
 // the bot reads and writes ANSI (cp1251)
 function decode(buf) { try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1251').decode(buf); } }
 function cp1251(s) {
@@ -509,18 +522,21 @@ function cp1251(s) {
     else if (c === 0x401) out.push(0xA8); else if (c === 0x451) out.push(0xB8); else out.push(63); }
   return new Uint8Array(out);
 }
-let dir = null, oldDir = null, startErr = '';   // startErr: why the folder did not open by itself (shown in the intro)
-async function sub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
-async function fileOf(name) { try { return await (await dir.getFileHandle(name)).getFile(); } catch (e) { return null; } }
+let dir = null, startErr = '';   // dir: the panel's files (null till the panel answered)
+async function fileOf(name) { try { return await API.get(name); } catch (e) { return null; } }
 async function textOf(f) { try { return decode(await f.arrayBuffer()); } catch (e) { return null; } }
-async function writeFile(name, text) { const fh = await dir.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(cp1251(text)); await w.close(); return (await fh.getFile()).lastModified; }
+async function writeFile(name, text) { return API.put(name, cp1251(text)); }
 
 // ===== the settings of a character: <tag>.ench (as enchant.txt reads it) =====
 // after the run: crystallize which items of the range (never a worn one)
 const CRYST = { none: 'ничего', done: 'дошедшие до цели', left: 'не дошедшие до цели', all: 'все вещи диапазона' };
 // items: single items by OID (a worn one); kinds: every item of that item ID in the bag, not worn (mass enchanting)
-function newJob(o) { return Object.assign({ on: true, name: '', from: 0, to: 3, scroll: 0, scrollName: '', stoneOn: false, stone: 0, stoneName: '', items: [], kinds: [], cryst: 'none' }, o); }
-function defaultCfg() { return { run: 0, runId: '', crystId: '', delayMs: 200, putMs: 2000, order: 'seq', maxScrolls: 0, stopOnBreak: false, chat: false, sound: true, debug: true, jobs: [] }; }
+// stoneFrom / stoneTo: the stone only for tries at +stoneFrom .. +(stoneTo - 1); -1: the range's own from / to
+function newJob(o) { return Object.assign({ on: true, name: '', from: 0, to: 3, scroll: 0, scrollName: '', stoneOn: false, stone: 0, stoneName: '', stoneFrom: -1, stoneTo: -1, items: [], kinds: [], cryst: 'none' }, o); }
+// doneMax: the run stops when this many items reached their last target (0: no such stop)
+function defaultCfg() { return { run: 0, runId: '', crystId: '', delayMs: 200, putMs: 2000, order: 'seq', maxScrolls: 0, doneMax: 0, stopOnBreak: false, chat: false, sound: true, debug: true, jobs: [] }; }
+const stFrom = j => j.stoneFrom >= 0 ? j.stoneFrom : j.from;
+const stTo = j => j.stoneTo >= 0 ? j.stoneTo : j.to;
 function parseCfg(text) {
   const c = defaultCfg();
   let j = null;
@@ -538,6 +554,7 @@ function parseCfg(text) {
       else if (k === 'put_ms') c.putMs = clampInt(v, 0, 60000, 2000);
       else if (k === 'order') c.order = lc(v) === 'round' ? 'round' : 'seq';
       else if (k === 'max_scrolls') c.maxScrolls = clampInt(v, 0, 1e6, 0);
+      else if (k === 'done_max') c.doneMax = clampInt(v, 0, 1e6, 0);
       else if (k === 'stop_on_break') c.stopOnBreak = v === '1';
       else if (k === 'chat') c.chat = v === '1';
       else if (k === 'sound') c.sound = v !== '0';
@@ -553,6 +570,8 @@ function parseCfg(text) {
     else if (k === 'stone_on') j.stoneOn = v === '1';
     else if (k === 'stone') j.stone = parseInt(v, 10) || 0;
     else if (k === 'stone_name') j.stoneName = v;
+    else if (k === 'stone_from') j.stoneFrom = clampInt(v, -1, 100, -1);
+    else if (k === 'stone_to') j.stoneTo = clampInt(v, -1, 100, -1);
     else if (k === 'cryst') j.cryst = CRYST[lc(v)] ? lc(v) : 'none';
     else if (k === 'item') {
       const p = v.split('|'), oid = parseInt(p[0], 10);
@@ -568,11 +587,11 @@ function parseCfg(text) {
 function cfgText(c) {
   const L = ['; Enchant settings of ' + clean(charLabel(cur)) + ': made in enchant.html (Library\\Enchanter), read by enchant.txt on the fly',
     'run=' + (c.run ? 1 : 0), 'run_id=' + clean(c.runId), 'cryst_id=' + clean(c.crystId), 'delay_ms=' + clampInt(c.delayMs, 0, 60000, 200), 'put_ms=' + clampInt(c.putMs, 0, 60000, 2000), 'order=' + c.order,
-    'max_scrolls=' + clampInt(c.maxScrolls, 0, 1e6, 0), 'stop_on_break=' + (c.stopOnBreak ? 1 : 0), 'chat=' + (c.chat ? 1 : 0),
+    'max_scrolls=' + clampInt(c.maxScrolls, 0, 1e6, 0), 'done_max=' + clampInt(c.doneMax, 0, 1e6, 0), 'stop_on_break=' + (c.stopOnBreak ? 1 : 0), 'chat=' + (c.chat ? 1 : 0),
     'sound=' + (c.sound ? 1 : 0), 'debug=' + (c.debug ? 1 : 0), ''];
   c.jobs.forEach((j, i) => L.push('[job]', 'on=' + (j.on ? 1 : 0), 'name=' + (clean(j.name) || 'Диапазон ' + (i + 1)),
     'from=' + clampInt(j.from, 0, 100, 0), 'to=' + clampInt(j.to, 0, 100, 3), 'scroll=' + (j.scroll | 0), 'scroll_name=' + clean(j.scrollName),
-    'stone_on=' + (j.stoneOn ? 1 : 0), 'stone=' + (j.stone | 0), 'stone_name=' + clean(j.stoneName), 'cryst=' + (CRYST[j.cryst] ? j.cryst : 'none'),
+    'stone_on=' + (j.stoneOn ? 1 : 0), 'stone=' + (j.stone | 0), 'stone_name=' + clean(j.stoneName), 'stone_from=' + clampInt(j.stoneFrom, -1, 100, -1), 'stone_to=' + clampInt(j.stoneTo, -1, 100, -1), 'cryst=' + (CRYST[j.cryst] ? j.cryst : 'none'),
     ...j.kinds.map(x => 'kind=' + x.id + '|' + clean(x.name)),
     ...j.items.map(x => 'item=' + x.oid + '|' + (x.id | 0) + '|' + clean(x.name)), ''));
   return L.join('\r\n');
@@ -624,79 +643,11 @@ function scrollInfo(name) {
   return { g: m ? m[1].toUpperCase() : '', kind: /weapon|оруж/i.test(n) ? 'w' : /armou?r|брон|доспех/i.test(n) ? 'a' : '' };
 }
 
-// ===== start / the folder =====
+// ===== start: EnchPanel.exe serves this page and the files; not answering -> tried again every 2 s =====
 async function start() {
-  if (!window.showDirectoryPicker) { intro('browser'); return; }
-  // a safety net: nothing shown in 5 s (the browser hangs on the folder) -> the button to connect it
-  setTimeout(() => { if ($('page').hidden && $('intro').hidden) { startErr = startErr || 'браузер не открыл сохранённую папку'; intro(oldDir ? 'again' : 'first'); } }, 5000);
-  let h = null;
-  try {
-    h = await idb('readonly', st => st.get('enchdir'));
-    if (h && typeof h.queryPermission !== 'function') h = null;   // not a folder any more
-    if (h) {
-      let p = 'hang';
-      try { p = await Promise.race([h.queryPermission({ mode: 'readwrite' }), new Promise(r => setTimeout(() => r('hang'), 2000))]); } catch (e) { p = 'hang'; }
-      if (p === 'granted') { await useDir(h); return; }
-      if (p === 'hang') {   // the browser does not answer about this folder: forgotten, the button picks the folder anew
-        forgetDir('браузер не отвечает про сохранённую папку');
-        return;
-      }
-      oldDir = h; intro('again');
-    } else intro('first');
-  } catch (e) {
-    startErr = (e && (e.name ? e.name + ': ' : '') + (e.message || '')) || String(e);
-    dir = null; oldDir = null; intro('first');
-  }
-}
-// the remembered folder does not work: forgotten (the next press opens the folder picker at once)
-function forgetDir(why) {
-  startErr = why;
-  dir = null; oldDir = null;
-  idb('readwrite', st => st.delete('enchdir'));
-  intro('first');
-}
-async function connect(pickNew) {
-  try {
-    const h = pickNew ? null : oldDir;
-    if (h) {   // the folder from before: the browser's «allow» - it may never answer; then the picker on the next press
-      const p = await Promise.race([h.requestPermission({ mode: 'readwrite' }).catch(() => 'denied'), new Promise(r => setTimeout(() => r('hang'), 8000))]);
-      if (p === 'granted') { await useDir(h); return; }
-      forgetDir(p === 'hang' ? 'браузер не ответил про сохранённую папку' : 'доступ к папке не дан');
-      toast('Нажми «Подключить папку» ещё раз и выбери Library\\Enchanter');
-      return;
-    }
-    await useDir(await showDirectoryPicker({ id: 'enchanter', mode: 'readwrite' }));   // at once: the press still counts
-  } catch (e) { if (e.name !== 'AbortError') toast('Не вышло: ' + e.message); }
-}
-$('connect').onclick = () => connect(false);
-$('otherDir').onclick = () => connect(true);
-
-function intro(kind) {
-  const b = $('intro');
-  $('connect').hidden = !(kind === 'first' || kind === 'again' || kind === 'wrongdir');
-  $('page').hidden = !!kind;
-  b.hidden = !kind;
-  if (!kind) return;
-  b.textContent = '';
-  if (startErr && kind !== 'browser') b.append(el('p', { class: 'muted', text: 'Папка не открылась сама (' + startErr + ') — подключи её ещё раз.' }));
-  if (kind === 'browser') b.append(el('h2', { text: 'Нужен Chrome или Edge' }), el('p', { class: 'muted', text: 'Страница сама читает и пишет файлы в папке Library\\Enchanter — это умеют только Chrome и Edge.' }));
-  else if (kind === 'wrongdir') b.append(el('h2', { text: 'Это не та папка' }), el('p', { class: 'muted', html: 'Нужна папка <b>Library\\Enchanter</b> бота (или сама <b>Library</b>). Нажми «Подключить папку» ещё раз.' }));
-  else b.append(el('h2', { text: kind === 'again' ? 'Разреши доступ к папке' : 'Заточка из браузера' }),
-    el('ol', null, el('li', { html: 'В боте запусти <b>Enchanter\\enchant.txt</b> на персонаже — он присылает сюда сумку.' }),
-      el('li', { html: 'Нажми <b>«Подключить папку»</b> и выбери <b>Library\\Enchanter</b> (или <b>Library</b>). Браузер запомнит.' }),
-      el('li', { html: 'Сделай диапазон: вещи, с какого до какого уровня, свиток, камень. Задержка — сверху. Жми <b>Старт</b>.' })));
-}
-
-async function useDir(h) {
-  if (h.name.toLowerCase() !== 'enchanter') h = (await sub(h, 'Enchanter')) || (await sub(h, 'Library', 'Enchanter')) || h;
-  let ok = h.name.toLowerCase() === 'enchanter';
-  if (!ok) try { for await (const [name] of h.entries()) if (/^enchant\.html$|\.ench(\.json)?$/i.test(name)) { ok = true; break; } } catch (e) {}
-  if (!ok) { dir = h; intro('wrongdir'); return; }
-  try { for await (const e of h.entries()) break; }   // a folder remembered from before may be gone / not readable
-  catch (e) { startErr = (e.name ? e.name + ': ' : '') + (e.message || ''); dir = null; oldDir = null; intro('first'); return; }
-  dir = h; oldDir = null;
-  idb('readwrite', st => st.put(h, 'enchdir'));
-  $('connect').hidden = true; $('otherDir').hidden = false;
+  try { await API.list(); }
+  catch (e) { startErr = (e && e.message) || String(e); intro('panel'); setTimeout(start, 2000); return; }
+  dir = panelDir; startErr = '';
   await scanChars();
   const want = store.get('char');
   const tags = Object.keys(chars);
@@ -704,6 +655,17 @@ async function useDir(h) {
   await pickChar(chars[want] ? want : fresh[0] || tags.sort()[0] || null);
   intro(null);
   showTab(tab);
+}
+
+function intro(kind) {
+  const b = $('intro');
+  $('page').hidden = !!kind;
+  b.hidden = !kind;
+  if (!kind) return;
+  b.textContent = '';
+  b.append(el('h2', { text: 'EnchPanel не отвечает' }),
+    el('p', { class: 'muted', html: 'Эту страницу открывает <b>EnchPanel.exe</b> (Library\\Enchanter): запусти его — страница подключится сама.' }),
+    ...(startErr ? [el('p', { class: 'muted', text: '(' + startErr + ')' })] : []));
 }
 
 // the characters: <tag>.ench.json (the bot's) and <tag>.ench (ours)
@@ -839,6 +801,8 @@ function endText(r) {
   const n = r.end_id;
   switch (r.end) {
     case 'done': return ['ok', 'Готово: все вещи дошли до цели'];
+    case 'count': return ['ok', 'Готово: ' + n + ' ' + plural(n, 'вещь дошла', 'вещи дошли', 'вещей дошли') + ' до цели'];
+    case 'stonepkt': return ['warn', 'Камни ещё не включены: нужен сниф заточки с камнем'];
     case 'noscroll': return ['warn', n ? 'Кончились свитки: ' + stuffName(n, scrollNameById(n)) : 'У диапазона не выбран свиток'];
     case 'nostone': return ['warn', n ? 'Кончились камни: ' + stuffName(n, stoneNameById(n)) : 'У диапазона не выбран камень'];
     case 'skipped': return ['warn', 'Остались только пропущенные вещи'];
@@ -878,7 +842,7 @@ function renderHero() {
   if (!cur) st = 'Запусти enchant.txt в боте';
   else if (!isLive) { st = 'бот не на связи: запусти Enchanter\\enchant.txt'; stc = 'bad'; }
   else if (mode === 'wait') st = pend.kind === 'stop' ? 'остановка после попытки…' : 'жду бота…';
-  else if (mode === 'stop') { st = r.cr_n && !r.cur ? 'кристаллизую' : 'идёт заточка'; stc = 'ok'; }
+  else if (mode === 'stop') { st = r.cr_n && !r.cur ? 'кристаллизую' : 'идёт заточка' + (r.done_max > 0 ? ' · готово ' + (r.done | 0) + ' из ' + r.done_max : ''); stc = 'ok'; }
   else if (r.state === 'done' || r.state === 'stopped') { [stc, st] = endText(r); if (r.cryst && r.end !== 'crystal') st += ' · кристаллизовано ' + r.cryst; }
   else { const p = startProblem(); if (p) { st = p; stc = 'warn'; } else st = 'всё готово к старту'; }
   sub.className = 'gosub' + (stc ? ' ' + stc : ''); sub.textContent = st;
@@ -1026,7 +990,10 @@ function jobCard(j, i) {
 
   R.sc = el('select', { onchange: e => { const id = +e.target.value; j.scroll = id; j.scrollName = id ? stuffName(id, j.scrollName) : ''; changed(); } });
   R.scCnt = el('span', { class: 'cnt' });
-  R.stSw = el('input', { type: 'checkbox', checked: j.stoneOn, onchange: e => { j.stoneOn = e.target.checked; R.st.disabled = !j.stoneOn; changed(); } });
+  R.stSw = el('input', { type: 'checkbox', checked: j.stoneOn, onchange: e => { j.stoneOn = e.target.checked; R.st.disabled = !j.stoneOn; R.stRng.classList.toggle('off', !j.stoneOn); changed(); } });
+  R.stRng = el('span', { class: 'rng strng' + (j.stoneOn ? '' : ' off'), title: 'Камень кладётся только на попытки с этих уровней (вещь +' + stFrom(j) + ' … +' + (stTo(j) - 1) + ')' },
+    'с', stepper(stFrom(j), 0, 99, v => { j.stoneFrom = v; changed(); }, 'Камень — начиная с этого уровня вещи'),
+    el('span', { class: 'arrow', text: '→' }), 'до', stepper(stTo(j), 1, 100, v => { j.stoneTo = v; changed(); }, 'До этого уровня (на вещь +' + stTo(j) + ' и выше камень уже не кладётся)'));
   R.st = el('select', { disabled: !j.stoneOn, onchange: e => { const id = +e.target.value; j.stone = id; j.stoneName = id ? stuffName(id, j.stoneName) : ''; changed(); } });
   R.stCnt = el('span', { class: 'cnt' });
   R.cr = el('select', { title: 'Когда заточка кончится (всё дошло / кончились свитки / лимит), бот кристаллизует эти вещи. Надетые — никогда',
@@ -1038,7 +1005,7 @@ function jobCard(j, i) {
   R.sum = el('div', { class: 'jsum' });
   card.append(el('div', { class: 'jbody' },
     el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Свиток' }), el('div', { class: 'pick' }, R.sc, R.scCnt)),
-    el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Камень' }), el('div', { class: 'pick' }, el('label', { class: 'sw', title: 'Класть камень' }, R.stSw, el('span')), R.st, R.stCnt)),
+    el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Камень' }), el('div', { class: 'pick' }, el('label', { class: 'sw', title: 'Класть камень' }, R.stSw, el('span')), R.st, R.stCnt, R.stRng)),
     el('div', { class: 'row top' }, el('span', { class: 'lbl', text: 'Вещи' }), el('div', { style: 'display:grid;gap:8px' }, R.tiles, R.sum)),
     el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Потом' }), el('div', { class: 'pick' }, R.cr, R.crCnt)),
     R.warns));
@@ -1152,7 +1119,8 @@ function fillCards(force) {
     if (!j.scroll) w('Выбери свиток', 'bad');
     else if (!stuff.has(j.scroll) && s) w('Свитка нет в сумке', '');
     if (j.cryst !== 'none') w('После заточки кристаллизует ' + CRYST[j.cryst] + ' — вещи исчезнут, это не отменить', 'bad');
-    if (j.stoneOn) w('Камни на этом сервере ещё не проверены: в первый раз попробуй на дешёвой вещи', 'soft');
+    if (j.stoneOn) w('Камни ещё не включены в боте: нужен один сниф заточки с камнем (enchant_sniffer.txt). Без него бот остановится перед первой попыткой с камнем', '');
+    if (j.stoneOn && stFrom(j) >= stTo(j)) w('Камень: «с +' + stFrom(j) + ' до +' + stTo(j) + '» — ни одной попытки с камнем', 'bad');
     if (j.stoneOn && !j.stone) w('Камни включены — выбери камень', 'bad');
     else if (j.stoneOn && !stuff.has(j.stone) && s) w('Камня нет в сумке', '');
     if (!j.items.length && !j.kinds.length) w('Нет вещей — нажми «выбрать вещи»', 'soft');
@@ -1360,8 +1328,10 @@ function renderOpts() {
   for (const b of $('optOrder').children) b.classList.toggle('on', b.dataset.v === cfg.order);
   $('optBreak').checked = cfg.stopOnBreak; $('optChat').checked = cfg.chat; $('optSound').checked = cfg.sound; $('optDebug').checked = cfg.debug;
   if (document.activeElement !== $('optMax')) $('optMax').value = cfg.maxScrolls;
+  if (document.activeElement !== $('optDone')) $('optDone').value = cfg.doneMax;
   const f = $('filesInfo'); f.textContent = '';
-  if (cur) f.append(el('div', { html: 'Настройки: <code>Library\\Enchanter\\' + cur + '.ench</code> (пишет эта страница)' }),
+  if (cur) f.append(el('div', { html: 'Страницу и файлы отдаёт <code>EnchPanel.exe</code> (http://127.0.0.1:7780)' }),
+    el('div', { html: 'Настройки: <code>Library\\Enchanter\\' + cur + '.ench</code> (пишет эта страница)' }),
     el('div', { html: 'От бота: <code>Library\\Enchanter\\' + cur + '.ench.json</code> — сумка, ход заточки, раз в секунду' }),
     el('div', { html: 'Лог пакетов: <code>Library\\Logs\\enchant_' + cur + '_*.log</code>' }));
 }
@@ -1371,6 +1341,7 @@ $('optChat').onchange = e => { cfg.chat = e.target.checked; scheduleSave(); };
 $('optSound').onchange = e => { cfg.sound = e.target.checked; scheduleSave(); };
 $('optDebug').onchange = e => { cfg.debug = e.target.checked; scheduleSave(); };
 $('optMax').oninput = e => { cfg.maxScrolls = clampInt(e.target.value, 0, 1e6, 0); scheduleSave(); };
+$('optDone').oninput = e => { cfg.doneMax = clampInt(e.target.value, 0, 1e6, 0); scheduleSave(); };
 
 // ===== errors of the bot =====
 function renderErrors() {

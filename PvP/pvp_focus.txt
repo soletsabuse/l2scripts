@@ -40,6 +40,12 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             auto_ms its pace, kill_sound / kill_ms too); res_key=<key>: a key of its own turns that on / off
 //             (res_on=1: on at the start; no res_key: always on; the overlay: KEY|<group>|res). cast_range /
 //             res_range 0: the group's range
+//             buff_w=<ID>:<pct>|..: he has that buff -> his weight x pct/100 (0: the last one); nobuff_w=<ID>:<pct>|..:
+//             his buff list is known and that one is not on it -> x pct/100. Known: a buff cast seen (on the caster, or
+//             on the friend of his he holds in his target; buff_party=<ID>|..: on his clan / alliance mates near him too)
+//             counts buff_sec=<ID>:<s>|.. (none: 30 s, 1200 s for a nobuff_w one); our target's whole buff list (if the
+//             bot gets it) is read every TBUF_MS - what is not on it is off him, known for KNOWN_MS. The multiplier
+//             works on his weight + 1 (a weight 0 too)
 //   assist  - the target of a player: assist=<1st>|<2nd>|<3rd> ('' = the party leader) - the first of them in sight, alive
 //             and (assist_aggro 2) not aggroed; aggroed / killed / gone -> the next one. Its key turns it ON / OFF
 //             (auto=1: on at the start); while on, it follows: his target now, then his target changed (or the next
@@ -152,6 +158,15 @@ const
   MAX_PW        = 32;       // auto: the weighted names of one group
   MAX_SW        = 32;       // auto: the weighted skills of one group
   MAX_FSK       = 8;        // auto: the force skills of one group
+  MAX_BW        = 16;       // auto: the buffs of one group (buff_w / nobuff_w / buff_sec / buff_party, each)
+  EP_SLOTS      = 127;      // the players whose buffs we know (a prime: the OID mod it is the place) ...
+  EP_FULL       = 110;      // ... this many: the table starts anew
+  EP_MAX        = 16;       // ... the buffs kept per player
+  BUFF_SEC      = 30;       // a seen cast of a buff_w buff counts this long (no buff_sec=) ...
+  NOBUFF_SEC    = 1200;     // ... of a nobuff_w buff (a long one: Shield, songs)
+  KNOWN_MS      = 300000;   // his whole buff list (read while he was our target) counts this long
+  BUFF_PARTY_R  = 1000;     // a party buff (buff_party=): his clan / alliance mates this near him get it too
+  TBUF_MS       = 250;      // our target's buff list read this often
   CR_STAR       = 1;        // the rules of an auto group (order=)
   CR_CAST       = 2;
   CR_RES        = 3;
@@ -230,6 +245,19 @@ var
   AwCls, AwPl, AwSk, AwForce, AwRes, AwOnus, AwSmart, AwTotal: integer;   // AutoWeigh: the weight of one enemy ...
   AwIn, AwUp: boolean;                               // ... can be taken / up from the dead (res-kill)
   AuCls, AuPl, AuSk, AuForce, AuRes, AuOnus, AuSmart, AuTotal: integer;   // ... of the best one (ScanGroup): the notice
+  GBhId, GBhPct, GBlId, GBlPct, GBsId, GBsSec, GBpId: array[0..255] of integer;   // auto g, [g * MAX_BW + k]: he has this
+                                                     // buff -> his weight x pct/100 (buff_w=); he lacks it, his list known
+                                                     // -> x pct/100 (nobuff_w=); its seen cast counts sec (buff_sec=); the
+                                                     // party buffs (buff_party=)
+  GBhN, GBlN, GBsN, GBpN: array[0..15] of integer;
+  BwAny: boolean;                                    // some auto group weighs buffs: casts / our target watched for them
+  EpOID: array[0..126] of integer;                   // the buffs of the players: slot s = his OID (0 free) ...
+  EpKnAt: array[0..126] of cardinal;                 // ... his whole list read then (0 never)
+  EpSk: array[0..2031] of integer;                   // ... his buffs EpSk[s * EP_MAX + k], on till EpEnd
+  EpEnd: array[0..2031] of cardinal;
+  EpN: integer;                                      // the slots taken
+  TBufAt: cardinal;                                  // our target's buff list read last
+  AwHas, AwLack, AwEff, AuHas, AuLack: double;       // AutoWeigh: x his buffs, x the ones he lacks, the weight it sorts by
   VolG, VolOID, VolSk, VolTgt: integer;              // a volley seen by CastScan, done by VolleyTick (VolG -1: none)
   AutoWant: array[0..15] of boolean;                 // a new cast for an auto cast group
   GResMin, GResMax: array[0..15] of integer;         // reskill: up from the dead this long ago (ms), at least / at most
@@ -318,6 +346,8 @@ var
   CharName, SelPath, ProfId, ProfPath, SelHow: string;
   ProfText, CfgReadAt, CfgErrJson, SkJson: string;
   SkSig: integer;
+  MbJson: string;                                    // our own buffs for the page (made anew when their IDs change)
+  MbSig: integer;
   ProfMissTold, SelTold: boolean;
   // the PvP server (pvp_server.py): the page live
   Srv: TTCPBlockSocket;
@@ -1186,6 +1216,260 @@ begin
   end;
 end;
 
+// ===================== the buffs of the players (auto: buff_w / nobuff_w) =====================
+// Known: a buff cast seen counts buff_sec (on the caster, or on the friend of his he holds in his target; a party buff
+// on his clan / alliance mates near him too); our target's whole list (the server sends the buffs of the target) is
+// read every TBUF_MS - what is not on it is off him for KNOWN_MS
+
+procedure EpClear();
+var k: integer;
+begin
+  for k := 0 to EP_SLOTS - 1 do begin
+    EpOID[k] := 0;
+    EpKnAt[k] := 0;
+  end;
+  for k := 0 to EP_SLOTS * EP_MAX - 1 do begin
+    EpSk[k] := 0;
+    EpEnd[k] := 0;
+  end;
+  EpN := 0;
+end;
+
+// the slot of OID (-1 none); Make: a new one for him if he has none (the table full: it starts anew)
+function EpSlot(OID: integer; Make: boolean): integer;
+var s, k: integer;
+begin
+  result := -1;
+  if OID <= 0 then exit;
+  s := OID mod EP_SLOTS;
+  for k := 0 to EP_SLOTS - 1 do begin
+    if EpOID[s] = OID then begin
+      result := s;
+      exit;
+    end;
+    if EpOID[s] = 0 then break;
+    s := s + 1;
+    if s >= EP_SLOTS then s := 0;
+  end;
+  if not Make then exit;
+  if EpN >= EP_FULL then begin
+    EpClear();
+    s := OID mod EP_SLOTS;
+  end;
+  if EpOID[s] <> 0 then exit;                        // (never: the table is never full)
+  EpOID[s] := OID;
+  EpKnAt[s] := 0;
+  for k := 0 to EP_MAX - 1 do begin
+    EpSk[s * EP_MAX + k] := 0;
+    EpEnd[s * EP_MAX + k] := 0;
+  end;
+  EpN := EpN + 1;
+  result := s;
+end;
+
+// slot s: buff Sk on him till TillAt (the same buff: the later end; no room: the one ending first goes)
+procedure EpPutAt(s, Sk: integer; TillAt: cardinal);
+var k, b, Fr, Lo: integer;
+  Tk: cardinal;
+begin
+  Tk := GetTickCount;
+  b := s * EP_MAX;
+  Fr := -1;
+  Lo := 0;
+  for k := 0 to EP_MAX - 1 do begin
+    if EpSk[b + k] = Sk then begin
+      if EpEnd[b + k] < TillAt then EpEnd[b + k] := TillAt;
+      exit;
+    end;
+    if Fr < 0 then
+      if (EpSk[b + k] = 0) or (EpEnd[b + k] <= Tk) then Fr := k;
+    if EpEnd[b + k] < EpEnd[b + Lo] then Lo := k;
+  end;
+  if Fr < 0 then Fr := Lo;
+  EpSk[b + Fr] := Sk;
+  EpEnd[b + Fr] := TillAt;
+end;
+
+// slot s has buff Sk on now
+function EpHas(s, Sk: integer): boolean;
+var k, b: integer;
+begin
+  result := false;
+  b := s * EP_MAX;
+  for k := 0 to EP_MAX - 1 do
+    if EpSk[b + k] = Sk then begin
+      result := EpEnd[b + k] > GetTickCount;
+      exit;
+    end;
+end;
+
+// Sk is weighed by an auto group: how long its seen cast counts (s), a party buff
+function BuffWatched(Sk: integer; var Sec: integer; var IsPty: boolean): boolean;
+var g, k: integer;
+begin
+  result := false;
+  Sec := 0;
+  IsPty := false;
+  for g := 0 to GroupN - 1 do begin
+    if GMode[g] <> MODE_AUTO then continue;
+    for k := 0 to GBhN[g] - 1 do
+      if GBhId[g * MAX_BW + k] = Sk then begin
+        result := true;
+        if Sec < BUFF_SEC then Sec := BUFF_SEC;
+      end;
+    for k := 0 to GBlN[g] - 1 do
+      if GBlId[g * MAX_BW + k] = Sk then begin
+        result := true;
+        if Sec < NOBUFF_SEC then Sec := NOBUFF_SEC;
+      end;
+  end;
+  if not result then exit;
+  for g := 0 to GroupN - 1 do begin
+    if GMode[g] <> MODE_AUTO then continue;
+    for k := 0 to GBsN[g] - 1 do
+      if GBsId[g * MAX_BW + k] = Sk then Sec := GBsSec[g * MAX_BW + k];
+    for k := 0 to GBpN[g] - 1 do
+      if GBpId[g * MAX_BW + k] = Sk then IsPty := true;
+  end;
+  if Sec < 1 then Sec := 1;
+end;
+
+// CharList index of OID (-1 not in sight; CharIdxOf comes later in the file)
+function BfIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// a new cast of a weighed buff by player i (OID) holding Tg in his target: on him, or on Tg if Tg is his friend (his
+// clan / alliance); a party buff on his clan / alliance mates within BUFF_PARTY_R of him too
+procedure BuffCast(i, OID, Sk, Tg: integer);
+var j, s, Dst, Sec, C, A, C2, A2, PX, PY, QX, QY, QO: integer;
+  IsPty, Mate: boolean;
+  TillAt: cardinal;
+  DX, DY: double;
+begin
+  if not BuffWatched(Sk, Sec, IsPty) then exit;
+  TillAt := GetTickCount + cardinal(Sec) * 1000 + 1500;   // + his cast
+  C := CharList(i).ClanID;
+  A := CharList(i).AllyID;
+  Dst := OID;
+  if (Tg <> 0) and (Tg <> OID) then begin
+    j := BfIdx(Tg);
+    if j >= 0 then begin
+      C2 := CharList(j).ClanID;
+      A2 := CharList(j).AllyID;
+      Mate := ((C <> 0) and (C2 = C)) or ((A <> 0) and (A2 = A));
+      if Mate then Dst := Tg;
+    end;
+  end;
+  s := EpSlot(Dst, true);
+  if s >= 0 then EpPutAt(s, Sk, TillAt);
+  if not IsPty then exit;
+  if (C = 0) and (A = 0) then exit;
+  PX := CharList(i).X;
+  PY := CharList(i).Y;
+  for j := 0 to CharList.Count - 1 do if j < CharList.Count then begin
+    if j = i then continue;
+    if CharList(j).Dead then continue;
+    C2 := CharList(j).ClanID;
+    A2 := CharList(j).AllyID;
+    Mate := ((C <> 0) and (C2 = C)) or ((A <> 0) and (A2 = A));
+    if not Mate then continue;
+    QX := CharList(j).X;
+    QY := CharList(j).Y;
+    DX := QX - PX;
+    DY := QY - PY;
+    if Sqrt(DX * DX + DY * DY) > BUFF_PARTY_R then continue;
+    QO := CharList(j).OID;
+    s := EpSlot(QO, true);
+    if s >= 0 then EpPutAt(s, Sk, TillAt);
+  end;
+end;
+
+// our target (a player): his whole buff list into the table (the server sends the buffs of the target) - what is not
+// on it is off him. An empty list: nothing known (the bot may get none)
+procedure TgBuffScan();
+var OID, s, j, n, ID, L, Sec, b: integer;
+  T: TL2Live;
+  IsPty, Ok: boolean;
+  Tk: cardinal;
+begin
+  T := User.Target;
+  if T = nil then exit;
+  OID := T.OID;
+  if (OID = 0) or (OID = MyOID) then exit;
+  if BfIdx(OID) < 0 then exit;                       // a player in sight only
+  n := 0;
+  try
+    n := T.Buffs.Count;
+  except
+    n := 0;
+  end;
+  if n <= 0 then exit;
+  s := EpSlot(OID, true);
+  if s < 0 then exit;
+  Tk := GetTickCount;
+  b := s * EP_MAX;
+  for j := 0 to EP_MAX - 1 do EpEnd[b + j] := 0;     // the list anew
+  Ok := true;
+  for j := 0 to n - 1 do begin
+    ID := 0;
+    L := 0;
+    try
+      ID := T.Buffs.Items(j).ID;
+      L := T.Buffs.Items(j).EndTime;
+    except
+      Ok := false;
+    end;
+    if not Ok then break;
+    if ID <= 0 then continue;
+    if not BuffWatched(ID, Sec, IsPty) then continue;
+    if L <= 0 then L := Sec * 1000;                  // its time not known
+    EpPutAt(s, ID, Tk + cardinal(L));
+  end;
+  if Ok then EpKnAt[s] := Tk;
+end;
+
+// the state: his buffs known (', "ef": [[ID, s left], ..]') and since when his whole list is known (', "kn": s')
+function EfJson(OID: integer): string;
+var s, k, b, n: integer;
+  Tk: cardinal;
+begin
+  result := '';
+  s := EpSlot(OID, false);
+  if s < 0 then exit;
+  Tk := GetTickCount;
+  b := s * EP_MAX;
+  n := 0;
+  for k := 0 to EP_MAX - 1 do
+    if (EpSk[b + k] > 0) and (EpEnd[b + k] > Tk) then begin
+      if n > 0 then result := result + ', ';
+      result := result + '[' + IntToStr(EpSk[b + k]) + ', ' + IntToStr((EpEnd[b + k] - Tk + 999) div 1000) + ']';
+      n := n + 1;
+    end;
+  if n > 0 then result := ', "ef": [' + result + ']';
+  if EpKnAt[s] > 0 then
+    if Tk - EpKnAt[s] <= KNOWN_MS then result := result + ', "kn": ' + IntToStr((Tk - EpKnAt[s]) div 1000);
+end;
+
+// a multiplier as text: 0.1 -> '0.10'
+function MulText(M: double): string;
+var V: integer;
+  F: string;
+begin
+  V := Round(M * 100);
+  F := IntToStr(V mod 100);
+  if Length(F) < 2 then F := '0' + F;
+  result := IntToStr(V div 100) + '.' + F;
+end;
+
 // ===================== casts =====================
 
 // the record of the cast of OID (-1 none)
@@ -1297,6 +1581,8 @@ begin
     if not IsNew then continue;
     CastAtUs(OID, Sk, Tg);
     if not IsOurs(i) then NoteSeen(Sk, Cls);
+    if BwAny then
+      if not IsOurs(i) then BuffCast(i, OID, Sk, Tg);   // a weighed buff: on whom, how long
     for g := 0 to GroupN - 1 do
       if GAuto[g] and (GMode[g] = MODE_CAST) then
         if SkInGroup(g, Sk) then AutoWant[g] := true;
@@ -1335,10 +1621,10 @@ end;
 // class, holding me / a party member, an assist caller). AwIn: he can be taken (in the group's range, or a cast / res of
 // his fits within its own range); AutoResOnly (its res-kill by itself): only one up from the dead
 procedure AutoWeigh(g, i, OID, Cls: integer; D: double);
-var k, Tg: integer;
+var k, Tg, s: integer;
   TL: TL2Live;
   Ago: cardinal;
-  Rng: double;
+  Rng, W, M: double;
 begin
   AwCls := ClsWOf(g, Cls);
   AwPl := PlWOf(g, LowerCase(Trim(CharList(i).Name)));
@@ -1379,6 +1665,24 @@ begin
       if ScoreOf(k) >= SMART_MIN then AwSmart := GSmartW[g];
   end;
   AwTotal := AwCls + AwPl + AwSk + AwForce + AwRes + AwOnus + AwSmart;
+  AwHas := 1.0;                                      // his buffs: x (buff_w), the ones he lacks: x (nobuff_w)
+  AwLack := 1.0;
+  if (GBhN[g] > 0) or (GBlN[g] > 0) then begin
+    s := EpSlot(OID, false);
+    if s >= 0 then begin
+      for k := 0 to GBhN[g] - 1 do
+        if EpHas(s, GBhId[g * MAX_BW + k]) then AwHas := AwHas * GBhPct[g * MAX_BW + k] / 100.0;
+      if EpKnAt[s] > 0 then
+        if GetTickCount - EpKnAt[s] <= KNOWN_MS then
+          for k := 0 to GBlN[g] - 1 do
+            if not EpHas(s, GBlId[g * MAX_BW + k]) then AwLack := AwLack * GBlPct[g * MAX_BW + k] / 100.0;
+    end;
+  end;
+  W := AwTotal + 1;                                  // + 1: a weight 0 is weighed by his buffs too
+  M := AwHas * AwLack;
+  if W >= 0 then AwEff := W * M
+  else if M > 0 then AwEff := W / M                  // a negative weight: x below 1 puts him later still
+  else AwEff := W * 1000.0;
   if AutoResOnly then AwIn := AwUp
   else AwIn := (D <= GRange[g]) or (AwSk <> 0) or (AwForce <> 0) or AwUp;
 end;
@@ -1482,7 +1786,7 @@ begin
       if InCycle(OID) then continue;
     if Cnt > 20 then Cnt := 20;
     if Sm > 99 then Sm := 99;
-    if Md = MODE_AUTO then Sc := -AwTotal * 100000.0 + D   // the heaviest first, a tie: the nearest
+    if Md = MODE_AUTO then Sc := -AwEff * 100000.0 + D     // the heaviest first (x his buffs), a tie: the nearest
     else if Md = MODE_SMART then Sc := Rk * 100000000.0 + T * 10000000.0 + (99 - Sm) * 100000.0 + D
     else if Md = MODE_ONUS then Sc := Rk * 100000000.0 + T * 10000000.0 + Cnt * 1000000.0 + D
     else Sc := Rk * 100000000.0 + T * 10000000.0 + (20 - Cnt) * 100000.0 + D;
@@ -1500,6 +1804,8 @@ begin
         AuOnus := AwOnus;
         AuSmart := AwSmart;
         AuTotal := AwTotal;
+        AuHas := AwHas;
+        AuLack := AwLack;
       end;
     end;
   end;
@@ -1576,17 +1882,17 @@ begin
   result := '';
   if GAfter[g] = 1 then begin
     Engine.Attack(300, GCtrl[g]);
-    result := ' -> атака';
+    result := ' -> attack';
     exit;
   end;
   if (GAfter[g] <> 2) or (GAfterSk[g] <= 0) then exit;
   if not SkillList.ByID(GAfterSk[g], Sk) then begin
-    result := ' -> нет скилла ' + IntToStr(GAfterSk[g]);
+    result := ' -> no skill ' + IntToStr(GAfterSk[g]);
     exit;
   end;
   Left := Sk.EndTime;
   if Left > 1000 then begin
-    result := ' -> ' + Sk.Name + ' в откате ' + IntToStr((Left + 999) div 1000) + ' с';
+    result := ' -> ' + Sk.Name + ' on reuse ' + IntToStr((Left + 999) div 1000) + ' s';
     exit;
   end;
   PendSk := GAfterSk[g];
@@ -1619,19 +1925,21 @@ begin
   result := ((GMode[g] = MODE_RES) and GResOn[g]) or ((GMode[g] = MODE_AUTO) and GResAuto[g] and GRkOn[g]);
 end;
 
-// auto group g: why its best one (ScanGroup's AuTotal ...): ' (вес N: встал, кастует ...)' for the notice
+// auto group g: why its best one (ScanGroup's AuTotal ...): ' (weight N: got up, casting ...)' for the notice
 function AutoWhy(g: integer): string;
 begin
   result := '';
-  if AuRes <> 0 then result := result + ', встал';
-  if AuSk <> 0 then result := result + ', кастует';
-  if AuForce <> 0 then result := result + ', форсы';
-  if AuPl <> 0 then result := result + ', ник';
-  if AuCls <> 0 then result := result + ', класс';
-  if AuOnus <> 0 then result := result + ', держит нас';
-  if AuSmart <> 0 then result := result + ', зовёт ассист';
-  if result = '' then result := ' (ближайший)'
-  else result := ' (вес ' + IntToStr(AuTotal) + ': ' + Copy(result, 3, Length(result)) + ')';
+  if AuRes <> 0 then result := result + ', got up';
+  if AuSk <> 0 then result := result + ', casting';
+  if AuForce <> 0 then result := result + ', forces';
+  if AuPl <> 0 then result := result + ', name';
+  if AuCls <> 0 then result := result + ', class';
+  if AuOnus <> 0 then result := result + ', holds us';
+  if AuSmart <> 0 then result := result + ', calls assist';
+  if AuHas <> 1.0 then result := result + ', buffs x' + MulText(AuHas);
+  if AuLack <> 1.0 then result := result + ', lacks buffs x' + MulText(AuLack);
+  if result = '' then result := ' (nearest)'
+  else result := ' (weight ' + IntToStr(AuTotal) + ': ' + Copy(result, 3, Length(result)) + ')';
 end;
 
 // group g: a key press (IsAuto false) or its auto event. true = somebody was targeted
@@ -1653,7 +1961,7 @@ begin
     end else if AutoHeld() then exit;  // your key pick / its after skill / our cast first
     Best := ScanGroup(g, Cur, false, BestOID, BestD, InRange, CurIn, FarI, FarD);
     if CurIn or (Best < 0) then exit;   // on one of them already / none in range: quiet
-    Pre := GName[g] + ' (сам): ';
+    Pre := GName[g] + ' (auto): ';
   end else begin
     ManualAt := GetTickCount;          // a key pick: the auto picks wait AUTO_HOLD_MS
     // a new cycle unless this group key was pressed lately and we are still on its last pick
@@ -1681,7 +1989,7 @@ begin
         end;
         NetSendPick(Cur, TargetName());   // the same one again: the room re-focuses on him
         Rest := DoAfter(g, Cur);
-        Say(Pre + 'уже на ' + TargetName() + ', он один' + Rest);
+        Say(Pre + 'already on ' + TargetName() + ', the only one' + Rest);
         exit;
       end;
       CycN := 0;
@@ -1689,11 +1997,11 @@ begin
         FarOID := 0;
         if FarI < CharList.Count then FarOID := CharList(FarI).OID;
         Rest := '';
-        if FarD <= GRange[g] then Rest := ' (выше / ниже больше чем на ' + IntToStr(GHeight[g]) + ')';
-        Say(Pre + 'никого в ' + IntToStr(GRange[g]) + ', ближайший ' + WhoText(FarI, FarOID) + ' - ' +
+        if FarD <= GRange[g] then Rest := ' (higher / lower by more than ' + IntToStr(GHeight[g]) + ')';
+        Say(Pre + 'nobody within ' + IntToStr(GRange[g]) + ', nearest ' + WhoText(FarI, FarOID) + ' - ' +
           IntToStr(Round(FarD)) + Rest);
       end else
-        Say(Pre + 'никого рядом');
+        Say(Pre + 'nobody near');
       exit;
     end;
   end;
@@ -1706,7 +2014,7 @@ begin
       ResNote := 'could not target ' + Nm;
       ResNoteAt := GetTickCount;
     end;
-    Say(Pre + 'не взял ' + Who + ' (' + IntToStr(Round(BestD)) + ')');
+    Say(Pre + 'could not take ' + Who + ' (' + IntToStr(Round(BestD)) + ')');
     exit;
   end;
   NetSendPick(BestOID, Nm);            // the room gets our pick now (assist via the server)
@@ -1732,21 +2040,21 @@ begin
   Rest := '';
   if GMode[g] = MODE_CAST then begin
     if GWho[g] = 0 then Rest := ' x' + IntToStr(ChargeCount(g, BestOID))
-    else Rest := ' (кастует)';
+    else Rest := ' (casting)';
   end;
   if GMode[g] = MODE_ONUS then begin
     k := FoIdx(BestOID);
-    if (k >= 0) and (FoTgt[k] = MyOID) then Rest := ' (держит тебя)'
-    else Rest := ' (держит пати)';
+    if (k >= 0) and (FoTgt[k] = MyOID) then Rest := ' (holds you)'
+    else Rest := ' (holds the party)';
   end;
   if GMode[g] = MODE_SMART then begin
     k := FoIdx(BestOID);
-    if Fb then Rest := ' (ассистеров нет - кто держит нас)'
-    else if k >= 0 then Rest := ' (звал ассист ' + IntToStr(FoInit[k]) + ', за ним ' + IntToStr(FoLed[k]) + ')';
+    if Fb then Rest := ' (no assist callers - one holding us)'
+    else if k >= 0 then Rest := ' (called assist ' + IntToStr(FoInit[k]) + ', followed by ' + IntToStr(FoLed[k]) + ')';
   end;
   if GMode[g] = MODE_AUTO then Rest := AutoWhy(g);
   Rest := Rest + DoAfter(g, BestOID);
-  if InRange > 1 then Rest := Rest + ', в дальности ' + IntToStr(InRange);
+  if InRange > 1 then Rest := Rest + ', in range ' + IntToStr(InRange);
   Say(Pre + Who + ' ' + IntToStr(Round(BestD)) + Rest);
   result := true;
 end;
@@ -1887,20 +2195,20 @@ begin
   if GAsN[g] = 0 then begin
     L := Party.Leader;
     if (L = nil) or (L.OID = MyOID) then begin
-      AsWhy := 'лидера пати нет';
+      AsWhy := 'no party leader';
       exit;
     end;
     i := CharIdxOf(L.OID);
-    if i < 0 then AsWhy := 'лидер пати не в видимости'
-    else if CharList(i).Dead then AsWhy := 'лидер пати убит'
-    else if (GAsAggro[g] = 2) and AggroOn(L.OID) then AsWhy := 'лидер пати сагрен'
+    if i < 0 then AsWhy := 'the party leader is out of sight'
+    else if CharList(i).Dead then AsWhy := 'the party leader is dead'
+    else if (GAsAggro[g] = 2) and AggroOn(L.OID) then AsWhy := 'the party leader is aggroed'
     else result := i;
     exit;
   end;
   for s := 0 to GAsN[g] - 1 do begin
     if GAsName[g * 3 + s] = LowerCase(CharName) then begin   // me: only the ones above me are followed, I lead
-      if s = 0 then AsWhy := 'ты первый в списке - ведёшь сам'
-      else AsWhy := 'выше тебя в списке все сагрены / убиты / не видно - ведёшь сам';
+      if s = 0 then AsWhy := 'you are first on the list - you lead'
+      else AsWhy := 'all above you on the list are aggroed / dead / out of sight - you lead';
       exit;
     end;
     i := AssistSlot(g, s);
@@ -1911,7 +2219,7 @@ begin
     AsSlot := s;
     exit;
   end;
-  AsWhy := 'все ассистеры сагрены / убиты / не видно';
+  AsWhy := 'all assisters are aggroed / dead / out of sight';
 end;
 
 // assist group g: the target of the player it assists (not one of ours, not me) + the after action; not while the
@@ -1924,9 +2232,9 @@ begin
   result := false;
   RefreshMe();
   Pre := GName[g] + ': ';
-  if IsAuto then Pre := GName[g] + ' (сам): ';
+  if IsAuto then Pre := GName[g] + ' (auto): ';
   if (GAsAggro[g] = 1) and AggroOn(MyOID) then begin
-    if not IsAuto then Say(Pre + 'не ассистирую: ты сагрен');
+    if not IsAuto then Say(Pre + 'no assist: you are aggroed');
     exit;
   end;
   i := AssistActive(g);
@@ -1939,18 +2247,18 @@ begin
   TL := CharList(i).Target;
   if TL <> nil then OID := TL.OID;
   if (OID = 0) or (OID = MyOID) then begin
-    if not IsAuto then Say(Pre + 'у него нет цели');
+    if not IsAuto then Say(Pre + 'he has no target');
     exit;
   end;
   k := CharIdxOf(OID);
   if (k >= 0) and IsOurs(k) then begin
-    if not IsAuto then Say(Pre + 'его цель - свой');
+    if not IsAuto then Say(Pre + 'his target is a friend');
     exit;
   end;
   if OID = TargetOID() then begin           // on his target already: the after action again (a key)
     if not IsAuto then begin
       Rest := DoAfter(g, OID);
-      Say(Pre + 'уже на его цели' + Rest);
+      Say(Pre + 'already on his target' + Rest);
     end;
     exit;
   end;
@@ -1960,16 +2268,16 @@ begin
   end else ManualAt := GetTickCount;
   His := '';
   if i < CharList.Count then His := CharList(i).Name;
-  if k >= 0 then Who := WhoText(k, OID) else Who := 'его цель (не игрок)';
+  if k >= 0 then Who := WhoText(k, OID) else Who := 'his target (not a player)';
   if not Engine.SetTarget(OID) then begin
-    Say(Pre + 'не взял ' + Who);
+    Say(Pre + 'could not take ' + Who);
     exit;
   end;
   if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
   if GMark[g] > 0 then SendMark(GMark[g]);
   Rest := DoAfter(g, OID);
-  if AsSlot > 0 then His := His + ', ' + IntToStr(AsSlot + 1) + '-й: первые сагрены / убиты / не видно';
-  Say(Pre + Who + ' (цель ' + His + ')' + Rest);
+  if AsSlot > 0 then His := His + ', #' + IntToStr(AsSlot + 1) + ': the ones above are aggroed / dead / out of sight';
+  Say(Pre + Who + ' (target of ' + His + ')' + Rest);
   result := true;
 end;
 
@@ -2078,13 +2386,13 @@ begin
     i := CharIdxOf(W);
     if i >= 0 then
       if IsOurs(i) then begin                        // a friend: selected, no attack at him
-        Say(GName[g] + ' (сервер): ' + Who + ' - свой, без атаки');
+        Say(GName[g] + ' (server): ' + Who + ' - a friend, no attack');
         continue;
       end;
     if (GMark[g] > 0) or (GAfter[g] > 0) then Delay(50);   // the server registers the target first
     if GMark[g] > 0 then SendMark(GMark[g]);
     Rest := DoAfter(g, W);
-    Say(GName[g] + ' (сервер): ' + Who + ' (выбрал ' + NtShow[k] + ')' + Rest);
+    Say(GName[g] + ' (server): ' + Who + ' (picked by ' + NtShow[k] + ')' + Rest);
   end;
 end;
 
@@ -2251,7 +2559,7 @@ begin
     SndPath := Script.Path + SOUND_DIR + GKillSnd[Snd];
     if FileExists(SndPath) then PlaySound(SndPath, false)
     else Engine.Msg('[PvP]', 'no sound file ' + SndPath, 0);
-    Say('Рескилл: ' + CharList(i).Name + '!');
+    Say('Res-kill: ' + CharList(i).Name + '!');
   end;
 end;
 
@@ -2345,35 +2653,35 @@ begin
     Q := '';
     if c = 1 then begin
       W := 'on the never list';
-      Q := 'он в списке никогда';
+      Q := 'he is on the never list';
     end else if c = 2 then begin
       Cl := CharList(i).Clan;
       Cl := Trim(Cl);
       if Cl = '' then Cl := 'no clan';
       W := 'his clan is not on the Enemies list (' + Cl + ')';
-      Q := 'его клана нет в списке врагов (' + Cl + ')';
+      Q := 'his clan is not on the enemy list (' + Cl + ')';
     end else if c = 3 then begin
       W := 'his class is not in the res-kill classes';
-      Q := 'его класса нет в классах рескилла';
+      Q := 'his class is not in the res-kill classes';
     end else if c = 4 then begin
       W := 'his class is not in the group';
-      Q := 'его класса нет в группе';
+      Q := 'his class is not in the group';
     end else if c = 5 then begin
       W := IntToStr(RwD) + ' away (res-kill range ' + IntToStr(RwRng) + ')';
-      Q := 'далеко: ' + IntToStr(RwD) + ' (рейндж рескилла ' + IntToStr(RwRng) + ')';
+      Q := 'far: ' + IntToStr(RwD) + ' (res-kill range ' + IntToStr(RwRng) + ')';
     end else if c = 6 then begin
       W := 'higher / lower than ' + IntToStr(GHeight[g]);
-      Q := 'выше / ниже больше чем на ' + IntToStr(GHeight[g]);
+      Q := 'higher / lower by more than ' + IntToStr(GHeight[g]);
     end else if c = 7 then begin
       W := 'the pace: it took another one just before (' + IntToStr(GAutoMs[g]) + ' ms)';
-      Q := 'темп: только что взял другого (' + IntToStr(GAutoMs[g]) + ' мс)';
+      Q := 'pace: just took another one (' + IntToStr(GAutoMs[g]) + ' ms)';
     end else begin
       W := 'you were picking by keys then';
-      Q := 'ты в это время выбирал клавишами';
+      Q := 'you were picking with keys then';
     end;
     ResNote := Nm + ' got up, not taken: ' + W;
     ResNoteAt := GetTickCount;
-    Engine.Msg('[PvP]', GName[g] + ': ' + Nm + ' встал, не взят - ' + Q, 0);
+    Engine.Msg('[PvP]', GName[g] + ': ' + Nm + ' got up, not taken - ' + Q, 0);
   end;
 end;
 
@@ -2447,7 +2755,7 @@ begin
   if Have then Have := It.Count > 0;
   if (not Have) and (not CpTold) then begin
     CpTold := true;
-    Say('CP-банок нет (ID ' + IntToStr(CpItem) + ')');
+    Say('no CP potions (ID ' + IntToStr(CpItem) + ')');
   end;
   if Have then CpTold := false;
   CpHave := Have;
@@ -2469,19 +2777,19 @@ begin
       ResHeldAt[g] := 0;
       AutoAt[g] := 0;
       for j := 0 to REV_SLOTS - 1 do RevWhy[j] := true;   // the ones up while it was off: nothing to explain
-      if GRkOn[g] then Say(GName[g] + ': рескилл ВКЛ') else Say(GName[g] + ': рескилл ВЫКЛ');
+      if GRkOn[g] then Say(GName[g] + ': res-kill ON') else Say(GName[g] + ': res-kill OFF');
       continue;
     end;
     if g >= GroupN then continue;
     if GMode[g] = MODE_RES then begin            // res-kill: its key turns it on / off
       GResOn[g] := not GResOn[g];
       AutoAt[g] := 0;
-      if GResOn[g] then Say(GName[g] + ': ВКЛ (встал ' + IntToStr(GResMin[g]) + '-' + IntToStr(GResMax[g]) + ' мс назад)')
-      else Say(GName[g] + ': ВЫКЛ');
+      if GResOn[g] then Say(GName[g] + ': ON (got up ' + IntToStr(GResMin[g]) + '-' + IntToStr(GResMax[g]) + ' ms ago)')
+      else Say(GName[g] + ': OFF');
     end else if GMode[g] = MODE_ANTI then begin     // anti-aggro: its key turns it on / off
       GResOn[g] := not GResOn[g];
       if not GResOn[g] then AaPhase := 0;
-      if GResOn[g] then Say(GName[g] + ': ВКЛ') else Say(GName[g] + ': ВЫКЛ');
+      if GResOn[g] then Say(GName[g] + ': ON') else Say(GName[g] + ': OFF');
     end else if GMode[g] = MODE_ASSIST then begin   // assist: its key turns the following on / off
       GResOn[g] := not GResOn[g];
       AsLast[g] := 0;                                 // on: his target now is taken at once (AssistTick)
@@ -2494,18 +2802,18 @@ begin
           C := Copy(GAssist[g], j, 1);
           if C = '|' then S := S + ', ' else S := S + C;
         end;
-        if S = '' then S := 'лидер пати';
+        if S = '' then S := 'party leader';
         if GAsNet[g] then begin                       // via the server: one assister
           j := Pos(',', S);
           if j > 0 then S := Copy(S, 1, j - 1);
           if LowerCase(S) = '@lead' then begin
-            S := 'лидер команды';
+            S := 'team leader';
             if NetLeadShow <> '' then S := S + ' ' + NetLeadShow;
           end;
-          S := 'через сервер, ' + S;
+          S := 'via the server, ' + S;
         end;
-        Say(GName[g] + ': ВКЛ (ассист ' + S + ')');
-      end else Say(GName[g] + ': ВЫКЛ');
+        Say(GName[g] + ': ON (assist ' + S + ')');
+      end else Say(GName[g] + ': OFF');
     end else PickGroup(g, false);
   end;
 end;
@@ -2601,6 +2909,10 @@ begin
   GSwN[n] := 0;
   GFcN[n] := 0;
   GFskN[n] := 0;
+  GBhN[n] := 0;
+  GBlN[n] := 0;
+  GBsN[n] := 0;
+  GBpN[n] := 0;
   GCastRange[n] := 0;
   GResRange[n] := 0;
   GResW[n] := 0;
@@ -2684,6 +2996,19 @@ begin
   GFskN[b] := GFskN[a];
   for k := 0 to GFskN[a] - 1 do
     GFsk[b * MAX_FSK + k] := GFsk[a * MAX_FSK + k];
+  GBhN[b] := GBhN[a];
+  GBlN[b] := GBlN[a];
+  GBsN[b] := GBsN[a];
+  GBpN[b] := GBpN[a];
+  for k := 0 to MAX_BW - 1 do begin
+    GBhId[b * MAX_BW + k] := GBhId[a * MAX_BW + k];
+    GBhPct[b * MAX_BW + k] := GBhPct[a * MAX_BW + k];
+    GBlId[b * MAX_BW + k] := GBlId[a * MAX_BW + k];
+    GBlPct[b * MAX_BW + k] := GBlPct[a * MAX_BW + k];
+    GBsId[b * MAX_BW + k] := GBsId[a * MAX_BW + k];
+    GBsSec[b * MAX_BW + k] := GBsSec[a * MAX_BW + k];
+    GBpId[b * MAX_BW + k] := GBpId[a * MAX_BW + k];
+  end;
   GCastRange[b] := GCastRange[a];
   GResRange[b] := GResRange[a];
   GResW[b] := GResW[a];
@@ -2843,6 +3168,46 @@ begin
       GFcN[n] := GFcN[n] + 1;
     end;
   end;
+end;
+
+// auto group n: its buffs 'ID:value|..' - Kind 1 buff_w (pct), 2 nobuff_w (pct), 3 buff_sec (s); 4 buff_party 'ID|..'
+procedure SetBuffList(n, Kind: integer; Txt: string; P: TStringList);
+var j, c, ID, V, m: integer;
+  S: string;
+begin
+  m := 0;
+  SplitTo(Txt, '|', P);
+  for j := 0 to P.Count - 1 do begin
+    if m >= MAX_BW then break;
+    S := Trim(P[j]);
+    if Kind = 4 then begin
+      ID := StrToIntDef(S, 0);
+      if ID <= 0 then continue;
+      GBpId[n * MAX_BW + m] := ID;
+      m := m + 1;
+      continue;
+    end;
+    c := Pos(':', S);
+    if c = 0 then continue;
+    ID := StrToIntDef(Copy(S, 1, c - 1), 0);
+    V := StrToIntDef(Copy(S, c + 1, 9), -1);
+    if (ID <= 0) or (V < 0) then continue;
+    if Kind = 1 then begin
+      GBhId[n * MAX_BW + m] := ID;
+      GBhPct[n * MAX_BW + m] := V;
+    end else if Kind = 2 then begin
+      GBlId[n * MAX_BW + m] := ID;
+      GBlPct[n * MAX_BW + m] := V;
+    end else begin
+      GBsId[n * MAX_BW + m] := ID;
+      GBsSec[n * MAX_BW + m] := V;
+    end;
+    m := m + 1;
+  end;
+  if Kind = 1 then GBhN[n] := m
+  else if Kind = 2 then GBlN[n] := m
+  else if Kind = 3 then GBsN[n] := m
+  else GBpN[n] := m;
 end;
 
 // 'pl_w=Name:weight|...' of auto group n (names in lower case)
@@ -3081,6 +3446,10 @@ begin
     else if Fld = 'cls_w' then SetWeights(n, 1, Val, P)
     else if Fld = 'sk_w' then SetWeights(n, 2, Val, P)
     else if Fld = 'force_w' then SetWeights(n, 3, Val, P)
+    else if Fld = 'buff_w' then SetBuffList(n, 1, Val, P)
+    else if Fld = 'nobuff_w' then SetBuffList(n, 2, Val, P)
+    else if Fld = 'buff_sec' then SetBuffList(n, 3, Val, P)
+    else if Fld = 'buff_party' then SetBuffList(n, 4, Val, P)
     else if Fld = 'pl_w' then SetNameWeights(n, Val, P)
     else if Fld = 'force_sk' then SetForceSkills(n, Val, P)
     else if Fld = 'cast_range' then GCastRange[n] := StrToIntDef(Val, 0)
@@ -3215,6 +3584,9 @@ begin
     k := k + 1;
   end;
   GroupN := k;
+  BwAny := false;                                    // some auto group weighs buffs: casts / our target watched for them
+  for k := 0 to GroupN - 1 do
+    if (GMode[k] = MODE_AUTO) and ((GBhN[k] > 0) or (GBlN[k] > 0)) then BwAny := true;
   P.Free;
 end;
 
@@ -3415,7 +3787,7 @@ begin
   if First then Info := 'profile ' + ProfName + ': ' + Info
   else Info := 'profile ' + ProfName + ' read: ' + Info;
   Engine.Msg('[PvP]', Info, 128);
-  ScreenSay('PvP: профиль ' + ProfName + ', клавиш ' + IntToStr(GroupN));
+  ScreenSay('PvP: profile ' + ProfName + ', keys ' + IntToStr(GroupN));
 end;
 
 // ===================== the PvP server (pvp_server.py): the page live =====================
@@ -3753,6 +4125,47 @@ begin
   result := SkJson;
 end;
 
+// our own buffs for the page - the enemies get the same ones from the same buffer (its "lacks" list):
+// '[{"id": .., "name": ..}, ..]', made anew only when the IDs change (a name is a string: read rarely)
+function MyBuffsJson(): string;
+var i, n, Sig, ID: integer;
+  S, Nm: string;
+  Ok: boolean;
+begin
+  Sig := 0;
+  Ok := true;
+  try
+    Sig := User.Buffs.Count;
+    for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
+      ID := User.Buffs.Items(i).ID;
+      Sig := (Sig * 31 + ID) and $3FFFFFF;
+    end;
+  except
+    Ok := false;
+  end;
+  if Ok and ((Sig <> MbSig) or (MbJson = '')) then begin
+    S := '';
+    n := 0;
+    try
+      for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
+        ID := User.Buffs.Items(i).ID;
+        Nm := User.Buffs.Items(i).Name;
+        if n > 0 then S := S + ', ';
+        S := S + '{"id": ' + IntToStr(ID) + ', "name": ' + JsonStr(Nm) + '}';
+        n := n + 1;
+      end;
+    except
+      Ok := false;
+    end;
+    if Ok then begin
+      MbSig := Sig;
+      MbJson := '[' + S + ']';
+    end;
+  end;
+  result := MbJson;
+  if result = '' then result := '[]';
+end;
+
 // the state for the page (one JSON line to the PvP server): the profile used and what was made of it, us, our skills, the skills cast nearby,
 // the players around: o OID, n name, c clan, a alliance, k class, d distance, x / y / h from us, f flags (1
 // party, 2 dead, 4 our clan / alliance), s / t the skill being cast and its target, rv ms since he got up
@@ -3794,6 +4207,7 @@ begin
   JAdd(' "cnt": ' + CountsJson() + ',');
   JAdd(' "party": ' + PartyJson() + ',');
   JAdd(' "skills": ' + SkillsJson() + ',');
+  JAdd(' "mybuffs": ' + MyBuffsJson() + ',');
   if (FoesAt = 0) or (GetTickCount - FoesAt >= FOES_MS) then begin   // the stats: once a second is enough
     FoesAt := GetTickCount;
     FoesJson();
@@ -3833,6 +4247,7 @@ begin
     if (k >= 0) and (FoTgt[k] <> 0) then S := S + ', "g": ' + IntToStr(FoTgt[k]);
     Ago := RevivedAgo(OID);
     if Ago < 120000 then S := S + ', "rv": ' + IntToStr(Ago);
+    if BwAny then S := S + EfJson(OID);              // his buffs known
     if n = 0 then S := '  ' + S else S := ' ,' + S;
     JAdd(S + '}');
     n := n + 1;
@@ -3858,6 +4273,11 @@ begin
   PlN := 0;
   CsN := 0;
   SnN := 0;
+  MbJson := '';
+  MbSig := 0;
+  EpClear();
+  BwAny := false;
+  TBufAt := 0;
   DeadHead := 0;
   RevHead := 0;
   PendSk := 0;
@@ -4002,6 +4422,10 @@ begin
       VolleyTick();                    // the one we follow started a volley skill: ours at once
       AntiAggroTick();                 // an aggro cast at me: the target on him, then back
       HandleKeys();
+    end;
+    if BwAny and (GetTickCount - TBufAt >= TBUF_MS) then begin   // our target's buffs (auto: buff_w / nobuff_w)
+      TBufAt := GetTickCount;
+      TgBuffScan();
     end;
     if GetTickCount - RevScanAt >= REV_SCAN_MS then begin
       RevScanAt := GetTickCount;

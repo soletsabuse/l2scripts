@@ -27,6 +27,9 @@ begin
   AddMySkill(1074, KIND_DEBUFF, -1);      // Surrender to Wind: not again while its effect is on the mob
   AddMySkill(1341, KIND_DEBUFF, -1);      // Wind Vortex: the same
   AddMySkill(1239, KIND_NUKE,   0);       // Hurricane
+  // debuffs only while the mob has more than this % HP: a debuff still in reuse when the mob is taken
+  // is not put on it at its end - the nukes finish it (0 = any HP)
+  SetDebuffMobHP(75);
   //AddMyAoe(1176, 400, 600);   // AoE: 3+ mobs within 400 of the target, target closer than 600 (set yours)
 
   // how often a skill packet is sent (ms)

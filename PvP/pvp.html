@@ -246,6 +246,8 @@
   .swr .nm { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .swr .n { color: var(--dim); font-size: 11px; }
   .swr button { width: 26px; height: 26px; padding: 0; }
+  .swr.bw { grid-template-columns: 16px minmax(0, 1fr) auto 62px 62px auto 26px; }
+  .swr .tog { gap: 6px; font-size: 11.5px; }
   .spick { display: grid; gap: 5px; }
   .spick input[type=text] { width: 100% !important; }
   .sres { display: grid; gap: 1px; max-height: 210px; overflow-y: auto; }
@@ -736,7 +738,12 @@ const CLS_NAME = {}, CLS_ROLE = {};
 ROLES.forEach(([, , list], r) => { for (const [nm, ids, second] of list) ids.forEach((id, i) => { CLS_NAME[id] = i === 0 || (nm === 'Soul Hound' && i === 1) ? nm : second; CLS_ROLE[id] = r; }); });
 const clsName = id => CLS_NAME[id] || '#' + id;
 const roleColor = id => CLS_ROLE[id] !== undefined ? ROLES[CLS_ROLE[id]][1] : '#9aa4b2';
-const KNOWN_SK = { 426: 'Battle Force', 427: 'Spell Force' };
+const KNOWN_SK = { 426: 'Battle Force', 427: 'Spell Force', 21223: 'Ultimate Defense', 25255: 'Arcane Shield', 25216: 'Shield of Faith',
+  25219: 'Flame Icon', 30396: 'Celestial Shield', 27211: 'Song of Earth' };
+// buffs worth a multiplier: [ID, ×%, seconds his cast counts, a party buff] (the IDs of this server too)
+const BUFF_DEF = [[110, 10, 30], [21223, 10, 30], [1418, 0, 10], [30396, 0, 10], [25255, 30, 10], [528, 50, 15], [25216, 50, 15],
+  [785, 50, 40, 1], [25219, 50, 30, 1], [454, 50, 30, 1]];
+const NOBUFF_DEF = [[1040, 120], [264, 120]];   // P.Def buffs: one without them goes sooner
 // the marks (tokens), as in the game's Token Action bar: 1 star, 2 heart, 3 moon, 4 cross (cut from the game, 32 px)
 const MARK_NAME = ['Star', 'Heart', 'Moon', 'Cross'];
 const MARK_IMG = [
@@ -811,10 +818,15 @@ const AUTO_ORDER = Object.keys(AUTO_CR), AUTO_BASE = { star: 32, cast: 10, res: 
 // 'id:weight|...' <-> {id: weight} (an auto group's weights)
 function pairsIn(v) { const o = {}; for (const x of v.split('|')) { const [a, b] = x.split(':'); const id = parseInt(a, 10), w = parseInt(b, 10); if (id >= 0 && w) o[id] = w; } return o; }
 const pairsOut = o => Object.entries(o || {}).filter(([, w]) => w).map(([id, w]) => id + ':' + w).join('|');
+// an auto group's buffs: 'ID:value|...' <-> {ID: value}, a 0 counts (×0)
+function pctIn(v) { const o = {}; for (const x of v.split('|')) { const [a, b] = x.split(':'); const id = parseInt(a, 10), w = parseInt(b, 10); if (id > 0 && w >= 0) o[id] = w; } return o; }
+const pctOut = o => Object.entries(o || {}).map(([id, w]) => id + ':' + Math.max(0, w | 0)).join('|');
+// a multiplier kept as %: 10 -> '×0.1'
+const mulTxt = pct => '×' + String(Math.round(pct) / 100);
 function newGroup(o) {
   return Object.assign({ on: true, name: '', key: '', mode: 'class', range: 0, height: 400, mark: 0, after: '', afterSk: 0, ctrl: false,
     auto: false, autoMs: 3000, window: 15, resMin: 0, resMax: 15000, assist: '', asAggro: 2, asSrc: 'game', who: 'target', prio: false, cls: {}, skills: [], volley: [], killSound: '', killMs: 20000, order: AUTO_ORDER.slice(), clsOnly: false, resAuto: false, resKey: '', resOn: false, resCls: {},
-    clsW: {}, plW: [], skW: {}, forceSk: [426, 427], forceW: {}, castRange: 0, resRange: 0, resW: 100, onusW: 30, partyW: 15, smartW: 20, sitSkip: {}, aaBack: 0, aaGuard: 800, aaWait: 1500, aaEff: [] }, o);
+    clsW: {}, plW: [], skW: {}, forceSk: [426, 427], forceW: {}, castRange: 0, resRange: 0, resW: 100, onusW: 30, partyW: 15, smartW: 20, sitSkip: {}, aaBack: 0, aaGuard: 800, aaWait: 1500, aaEff: [], buffW: {}, nobuffW: {}, buffSec: {}, buffParty: [] }, o);
 }
 const clsMap = list => { const o = {}; for (const [id, t] of list) o[id] = t; return o; };
 function defaultProfile(name) {
@@ -873,6 +885,10 @@ function parseProfile(text) {
     else if (k === 'cls_w') { g.clsW = pairsIn(v); g._clsW = true; }
     else if (k === 'sk_w') g.skW = pairsIn(v);
     else if (k === 'force_w') g.forceW = pairsIn(v);
+    else if (k === 'buff_w') g.buffW = pctIn(v);
+    else if (k === 'nobuff_w') g.nobuffW = pctIn(v);
+    else if (k === 'buff_sec') g.buffSec = pctIn(v);
+    else if (k === 'buff_party') g.buffParty = v.split('|').map(x => parseInt(x, 10)).filter(n => n > 0);
     else if (k === 'pl_w') g.plW = v.split('|').map(x => { const i = x.lastIndexOf(':'); return i > 0 ? [x.slice(0, i).trim(), parseInt(x.slice(i + 1), 10) || 0] : null; }).filter(x => x && x[0] && x[1]);
     else if (k === 'force_sk') g.forceSk = v.split('|').map(x => parseInt(x, 10)).filter(n => n > 0).slice(0, 8);
     else if (k === 'cast_range') g.castRange = Math.max(0, parseInt(v, 10) || 0);
@@ -908,7 +924,10 @@ function autoLines(g) {
   return ['cls_w=' + pairsOut(g.clsW), 'pl_w=' + (g.plW || []).filter(([n, w]) => clean(n) && w).map(([n, w]) => clean(n).replace(/:/g, '') + ':' + w).join('|'),
     'sk_w=' + pairsOut(g.skW), 'force_sk=' + (g.forceSk || []).join('|'), 'force_w=' + pairsOut(g.forceW),
     'cast_range=' + Math.max(0, g.castRange | 0), 'res_range=' + Math.max(0, g.resRange | 0), 'res_w=' + (g.resW | 0),
-    'onus_w=' + (g.onusW | 0), 'party_w=' + (g.partyW | 0), 'smart_w=' + (g.smartW | 0), 'sit_skip=' + Object.keys(g.sitSkip || {}).join('|')];
+    'onus_w=' + (g.onusW | 0), 'party_w=' + (g.partyW | 0), 'smart_w=' + (g.smartW | 0), 'sit_skip=' + Object.keys(g.sitSkip || {}).join('|'),
+    'buff_w=' + pctOut(g.buffW), 'nobuff_w=' + pctOut(g.nobuffW),
+    'buff_sec=' + Object.entries(g.buffSec || {}).filter(([id, s]) => s > 0 && (id in (g.buffW || {}) || id in (g.nobuffW || {}))).map(([id, s]) => id + ':' + s).join('|'),
+    'buff_party=' + (g.buffParty || []).filter(id => id in (g.buffW || {})).join('|')];
 }
 function profileText(p) {
   const L = ['; PvP focus profile: made in pvp.html (Library\\PvP), read by pvp_focus.txt on the fly', 'name=' + (clean(p.name) || 'Profile'),
@@ -1150,6 +1169,13 @@ function autoWeigh(g, p, N, me, us, fo, rng) {
     if (fo[p.o] && fo[p.o].sc / 10 >= 0.5) a.smart = g.smartW | 0;
   }
   a.total = a.cls + a.pl + a.sk + a.force + a.res + a.onus + a.party + a.smart;
+  // his buffs: × (the bot's table: p.ef [[ID, s left]]; p.kn: his whole list known - the ones he lacks count)
+  const ef = new Set((p.ef || []).map(x => x[0]));
+  a.has = 1; a.lack = 1; a.muls = [];
+  for (const [id, w] of Object.entries(g.buffW || {})) if (ef.has(+id)) { a.has *= w / 100; a.muls.push([+id, w, true]); }
+  if (p.kn !== undefined) for (const [id, w] of Object.entries(g.nobuffW || {})) if (!ef.has(+id)) { a.lack *= w / 100; a.muls.push([+id, w, false]); }
+  const W = a.total + 1, M = a.has * a.lack;
+  a.mul = M; a.eff = W >= 0 ? W * M : M > 0 ? W / M : W * 1000;
   a.inn = p.d <= rng || a.sk !== 0 || a.force !== 0 || a.up;
   return a;
 }
@@ -1174,7 +1200,7 @@ function cands(g, N) {
     else { if (!(t && t.tag === 'prio') && !isFoeClan(p) && !(g.mode === 'auto' && plWOf(g, p.n) > 0)) continue; if (!g.prio) rk = 0; }
     if (g.mode === 'auto') {   // his weight: the sum of what fits him; in range or in the range of what fits him
       const a = autoWeigh(g, p, N, me, us, fo, rng), ok = a.inn && Math.abs(p.h | 0) <= g.height;
-      (ok ? inr : far).push(Object.assign({ T: 1, cnt: 0, rk, sc: -a.total * 1e5 + p.d, star: !!(t && t.tag === 'prio'), aw: a }, p));
+      (ok ? inr : far).push(Object.assign({ T: 1, cnt: 0, rk, sc: -a.eff * 1e5 + p.d, star: !!(t && t.tag === 'prio'), aw: a }, p));
       continue;
     }
     const q = Object.assign({ T, cnt, rk, sc: rk * 1e8 + T * 1e7 + (g.mode === 'smart' ? (99 - Math.min(cnt, 99)) * 1e5 : g.mode === 'onus' ? cnt * 1e6 : (20 - Math.min(cnt, 20)) * 1e5) + p.d, star: !!(t && t.tag === 'prio') }, p);
@@ -1256,7 +1282,8 @@ function netStat() {
     el('span', { text: (net.why || 'no link') + ' · this PC only: ' + room }))];
 }
 let SK_NAMES = {};   // every skill of the game (the server reads Library\Nav\skilldb.txt): the enemies' skills by name
-async function loadSkillNames() { try { SK_NAMES = await api('GET', '/api/skillnames') || {}; if (view === 'stats') renderStats(true); } catch (e) { } }
+let SK_READY = false;   // the skill list is here: an ID not on it has no icon either (not asked for)
+async function loadSkillNames() { try { SK_NAMES = await api('GET', '/api/skillnames') || {}; SK_READY = Object.keys(SK_NAMES).length > 0; if (view === 'stats') renderStats(true); } catch (e) { } }
 const skName = id => { const d = botData() || (curBot && bots[curBot] && bots[curBot].d); const own = d && (d.skills || []).find(s => s.id === id); return KNOWN_SK[id] || (own && own.name) || SK_NAMES[id] || 'skill ' + id; };
 function counts() {
   const N = nearList(), c = {};
@@ -2229,7 +2256,10 @@ function renderAuto() { keepScroll('#autoBox .ab', 'auto:' + curId, renderAutoNo
 // a weight field: more goes first, negative: later
 const wIn = (val, set, title) => { const i = numIn(val | 0, -999, 5, set, title || 'Weight: more goes first, negative: later', 999); i.classList.add('wv'); return i; };
 // the icon of a skill (the server serves the bot's L2ICO icons)
-const skIcon = id => el('img', { class: 'ski', src: '/skillicon/' + id + '.png', alt: '', onerror: e => { e.target.style.visibility = 'hidden'; } });
+const ICON_AS = { 21223: 110, 25255: 1556, 25216: 528, 25219: 785, 30396: 1418, 27211: 264 };   // this server's own IDs: the icon of the same skill
+const skIcon = id => { const ic = ICON_AS[id] || id;
+  if (SK_READY && SK_NAMES[ic] === undefined) return el('span', { class: 'ski' });
+  return el('img', { class: 'ski', src: '/skillicon/' + ic + '.png', alt: '', onerror: e => { e.target.style.visibility = 'hidden'; } }); };
 function renderAutoNow() {
   const p = P(), box = $('autoBox'), i = autoIdx();
   box.textContent = '';
@@ -2319,7 +2349,8 @@ function renderAutoNow() {
   const plSec = el('div', { class: 'esec wide' }, el('h5', null, 'Names', el('span', { class: 'n', text: 'a certain character: the weight' })), pl,
     el('div', { class: 'fc', style: 'margin-top:6px' }, nmIn, dl, el('button', { class: 'sm', text: 'Add', onclick: addName }),
       stars.length ? el('button', { class: 'sm', text: '+ ★ of «Enemies» (' + stars.length + ')', onclick: () => { for (const x of stars) g.plW.push([x.name, 50]); changed(true); } }) : null));
-  const left = el('div', { class: 'pane' }, el('div', { class: 'ab' }, keySec, sitSec, sitGrid, resSec, castSec, clsSec, plSec));
+  const bufSec = buffSection(g);
+  const left = el('div', { class: 'pane' }, el('div', { class: 'ab' }, keySec, sitSec, sitGrid, resSec, castSec, bufSec, clsSec, plSec));
   const right = el('div', { class: 'pane' }, el('div', { class: 'ph' }, el('h3', null, 'Takes now'), el('span', { class: 'n', id: 'autoWho' })),
     el('div', { class: 'ab', style: 'grid-template-columns:minmax(0,1fr)' }, el('div', { class: 'live', id: 'autoLive' }), el('div', { class: 'warns', id: 'autoWarn' })));
   box.append(left, right);
@@ -2363,7 +2394,7 @@ function classWGrid(g, key) {
   return box;
 }
 // find a skill: by name / ID in the whole skill list of the bot (with icons), or one seen cast near you
-function skillPicker(onAdd, has) {
+function skillPicker(onAdd, has, mine) {
   const inp = el('input', { type: 'text', placeholder: 'Find a skill: a name or an ID…', maxlength: 40 }), res = el('div', { class: 'sres' });
   const row = id => el('button', { class: 'srow', onclick: () => { inp.value = ''; res.textContent = ''; onAdd(id); } }, skIcon(id), el('span', { text: skName(id) + (has(id) ? ' ✓' : '') }), el('span', { class: 'n', text: String(id) }));
   inp.oninput = () => {
@@ -2384,7 +2415,49 @@ function skillPicker(onAdd, has) {
   return el('div', { class: 'spick' }, inp, res,
     ...(seen.length ? [el('span', { class: 'muted', style: 'font-size:11.5px', text: 'Seen cast near you (most first):' }),
       el('div', { class: 'chips sseen' }, ...seen.map(c => el('span', { class: 'chip sk', title: '×' + c.n + ' · ' + clsName(c.k) + ' · click to add', onclick: () => onAdd(c.id) },
-        skIcon(c.id), el('span', { text: skName(c.id) }), el('span', { class: 'n', text: '×' + c.n }))))] : []));
+        skIcon(c.id), el('span', { text: skName(c.id) }), el('span', { class: 'n', text: '×' + c.n }))))] : []),
+    ...(mine && mine.length ? [el('span', { class: 'muted', style: 'font-size:11.5px', text: 'Your buffs now (the enemies get the same ones):' }),
+      el('div', { class: 'chips sseen' }, ...mine.filter(b => !has(b.id)).slice(0, 40).map(b => el('span', { class: 'chip sk', title: b.id + ' · click to add', onclick: () => onAdd(b.id) },
+        skIcon(b.id), el('span', { text: b.name || skName(b.id) }))))] : []));
+}
+// a multiplier field: 0 … 10, kept as % (0.1 -> 10)
+function mulIn(pct, set) {
+  let last = pct | 0;
+  const i = el('input', { type: 'number', min: 0, max: 10, step: 0.05, value: String(last / 100), title: 'His weight × this: below 1 later, 0 the last one, above 1 sooner',
+    oninput: e => { const v = parseFloat(e.target.value), ok = v >= 0 && v <= 10; e.target.classList.toggle('bad', !ok); if (ok) { last = Math.round(v * 100); set(last); changed(false); } },
+    onblur: e => { if (e.target.classList.contains('bad') || e.target.value === '') { e.target.value = String(last / 100); e.target.classList.remove('bad'); } } });
+  i.classList.add('wv');
+  return i;
+}
+// an auto group: × his weight while he has a buff / lacks one
+function buffSection(g) {
+  if (!g.buffW) g.buffW = {}; if (!g.nobuffW) g.nobuffW = {}; if (!g.buffSec) g.buffSec = {}; if (!g.buffParty) g.buffParty = [];
+  const has = el('div', { class: 'swl' });
+  for (const id of Object.keys(g.buffW).map(Number)) {
+    const pty = g.buffParty.includes(id);
+    has.append(el('div', { class: 'swr bw' }, skIcon(id), el('span', { class: 'nm', text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+      mulIn(g.buffW[id], v => { g.buffW[id] = v; }),
+      numIn(g.buffSec[id] || 30, 1, 1, v => { g.buffSec[id] = v; }, 'Seconds: how long his cast of it counts', 3600),
+      tog(pty, 'party', v => { g.buffParty = v ? g.buffParty.concat(id) : g.buffParty.filter(x => x !== id); changed(false); }, 'A party buff: his clan / alliance mates near him get it too'),
+      el('button', { class: 'icon ghost', title: 'Remove', onclick: () => { delete g.buffW[id]; if (!(id in g.nobuffW)) delete g.buffSec[id]; g.buffParty = g.buffParty.filter(x => x !== id); changed(true); } }, '×')));
+  }
+  if (!has.children.length) has.append(el('span', { class: 'muted', text: 'None yet: add the defaults or find one below.' }));
+  const lack = el('div', { class: 'swl' });
+  for (const id of Object.keys(g.nobuffW).map(Number)) lack.append(el('div', { class: 'swr' }, skIcon(id), el('span', { class: 'nm', text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+    mulIn(g.nobuffW[id], v => { g.nobuffW[id] = v; }),
+    el('button', { class: 'icon ghost', title: 'Remove', onclick: () => { delete g.nobuffW[id]; if (!(id in g.buffW)) delete g.buffSec[id]; changed(true); } }, '×')));
+  if (!lack.children.length) lack.append(el('span', { class: 'muted', text: 'None yet: add the defaults, or pick from your own buffs below.' }));
+  const addDef = (L, M) => { let n = 0; for (const [id, w, s, pt] of L) if (!(id in M)) { M[id] = w; if (s) g.buffSec[id] = s; if (pt && !g.buffParty.includes(id)) g.buffParty.push(id); n++; } if (n) changed(true); else toast('All of them are in the list already'); };
+  const bd = botData(), mine = (bd && bd.mybuffs) || [];
+  return el('div', { class: 'esec wide' }, el('h5', null, 'Buffs', el('span', { class: 'n', text: 'his weight × while he has a buff / lacks one' })),
+    frc('He has it', 'Counts the seconds set after he (or a party mate: «party») is seen casting it; your target: his real buffs. ×0: the last one',
+      el('div', { style: 'display:grid;gap:8px;width:100%' }, has,
+        el('div', { class: 'fc' }, el('button', { class: 'sm', text: '+ UD, Celestial, Arcane Shield, Shield of Faith…', onclick: () => addDef(BUFF_DEF, g.buffW) })),
+        skillPicker(id => { if (!(id in g.buffW)) { g.buffW[id] = 50; changed(true); } }, id => id in g.buffW))),
+    frc('He lacks it', 'Known only for one who was your target in the last 5 minutes: the game shows the buffs of your target only',
+      el('div', { style: 'display:grid;gap:8px;width:100%' }, lack,
+        el('div', { class: 'fc' }, el('button', { class: 'sm', text: '+ Shield, Song of Earth', onclick: () => addDef(NOBUFF_DEF, g.nobuffW) })),
+        skillPicker(id => { if (!(id in g.nobuffW)) { g.nobuffW[id] = 120; changed(true); } }, id => id in g.nobuffW, mine))));
 }
 // why the auto group takes q: what his weight is made of
 function autoParts(q) {
@@ -2392,6 +2465,7 @@ function autoParts(q) {
   const add = (t, w, ic) => { if (w) out.push([t, w, ic]); };
   add('got up', a.res); add(q.s ? skName(q.s) : 'casts', a.sk, q.s); add('forces ×' + a.nf, a.force); add('name', a.pl); add('class', a.cls);
   add('on you', a.onus); add('on party', a.party); add('caller', a.smart);
+  for (const [id, w, has] of a.muls || []) out.push([(has ? '' : 'no ') + skName(id), w, id, true]);
   return out;
 }
 function autoRow(no, q, note) {
@@ -2399,8 +2473,9 @@ function autoRow(no, q, note) {
   return el('div', { class: 'lt' }, el('span', { class: 'no', text: String(no) }),
     el('div', { class: 'who' }, el('span', { class: 'nm', text: (q.star ? '★ ' : '') + q.n }),
       el('span', { class: 'sub', text: (note ? note + ' · ' : '') + clsName(q.k) + (q.c ? ' · ' + q.c : '') + ' · ' + q.d }),
-      el('span', { class: 'why wl' }, ...(parts.length ? parts.map(([t, w, ic]) => el('i', { class: w < 0 ? 'neg' : '' }, ...(ic ? [skIcon(ic)] : []), t + ' ' + (w > 0 ? '+' : '−') + Math.abs(w))) : [el('i', { class: 'd', text: 'nearest' })]))),
-    el('span', { class: 'x', title: 'His weight', text: q.aw ? String(q.aw.total) : '' }), el('span', { class: 'd', text: '' }));
+      el('span', { class: 'why wl' }, ...(parts.length ? parts.map(([t, w, ic, mul]) => el('i', { class: (mul ? w < 100 : w < 0) ? 'neg' : '' }, ...(ic ? [skIcon(ic)] : []),
+        t + ' ' + (mul ? mulTxt(w) : (w > 0 ? '+' : '−') + Math.abs(w)))) : [el('i', { class: 'd', text: 'nearest' })]))),
+    el('span', { class: 'x', title: 'His weight (× his buffs)', text: q.aw ? String(q.aw.total) + (q.aw.mul !== 1 ? ' ' + mulTxt(q.aw.mul * 100) : '') : '' }), el('span', { class: 'd', text: '' }));
 }
 function refreshAuto() {
   const lb = $('autoLive'), i = autoIdx(); if (!lb || i < 0) return;

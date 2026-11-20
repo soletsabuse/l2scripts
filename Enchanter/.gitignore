@@ -1,0 +1,3 @@
+# EnchPanel: its own settings (the window, autostart) and a file it swaps in
+ench_panel.ini
+*.tmp

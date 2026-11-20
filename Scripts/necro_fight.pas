@@ -70,6 +70,9 @@ procedure SetPatrol(Points: array of integer);
 procedure SetPatrolRange(Range: integer);
 procedure AddMySkill(SkillID, Kind, Param: integer);
 procedure AddMyDebuff(SkillID, RecastMs, MinMobHP: integer);
+// debuffs (KIND_DEBUFF, AddMyDebuff) only while the mob has more than Pct % HP; below it the nukes finish it
+// (a debuff still in reuse when a new mob is taken is not put on it at the end). 0 = any HP (default)
+procedure SetDebuffMobHP(Pct: integer);
 procedure AddMyPbAoe(SkillID, Radius, MinMobs: integer);
 procedure AddMyAoe(SkillID, Radius, CastRange: integer);
 procedure SetSpamMs(Ms: integer);
@@ -172,6 +175,7 @@ var
   MySkillMinMobs: array of integer;        // AddMyPbAoe: at least this many mobs around us
   MySkillSeen: array of boolean;          // KIND_DEBUFF: its effect was seen on a mob (the server shows it)
   MySkillSent: array of cardinal;          // drain / debuff: when it was sent (no resend while it casts)
+  DebuffMobPct: integer;                   // SetDebuffMobHP: debuffs only on a mob above this HP % (0 = any)
   SpamMs: integer;
   SummonSkill: integer;
   PetSkillID, PetSkillKind, PetSkillParam: array of integer;
@@ -365,6 +369,11 @@ procedure AddMyDebuff(SkillID, RecastMs, MinMobHP: integer);
 begin
   AddMySkill(SkillID, KIND_DEBUFF, RecastMs);
   MySkillMinHP[Length(MySkillMinHP) - 1] := MinMobHP;
+end;
+
+procedure SetDebuffMobHP(Pct: integer);
+begin
+  DebuffMobPct := Pct;
 end;
 
 procedure SetSpamMs(Ms: integer);
@@ -732,6 +741,19 @@ begin
   if i >= 0 then result := NpcList(i).CurHP;
 end;
 
+// HP of a mob in % (0 = gone)
+function MobHpPct(OID: integer): integer;
+var i, Cur, Mx: integer;
+begin
+  result := 0;
+  i := NpcIdx(OID);
+  if i < 0 then exit;
+  Cur := NpcList(i).CurHP;
+  Mx := NpcList(i).MaxHP;
+  if Mx > 0 then result := Round(Cur * 100.0 / Mx)
+  else result := NpcList(i).HP;
+end;
+
 // SetSkipChampions: a champion NOT busy with us / the summon within Radius of X, Y (our AoE there would pull it)
 function FreeChampNear(X, Y, Radius: integer): boolean;
 var i, Atk, Tgt, PetOID: integer;
@@ -823,6 +845,8 @@ begin
       Ok := User.HP < MySkillParam[k]
     else if Kind = KIND_DEBUFF then begin
       Ok := MobCurHP(OID) > MySkillMinHP[k];               // AddMyDebuff threshold (0 = any mob)
+      // SetDebuffMobHP: the mob is low already - the nukes finish it, no debuff at its end
+      if Ok and (DebuffMobPct > 0) then Ok := MobHpPct(OID) > DebuffMobPct;
       if Ok and MobHasBuff(OID, MySkillID[k]) then begin   // its effect is on the mob: never again meanwhile
         MySkillSeen[k] := true;
         Ok := false;

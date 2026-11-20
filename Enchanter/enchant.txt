@@ -1,17 +1,19 @@
 uses SysUtils, Classes, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 
 // =============================================================================
-// Enchant: enchants the items of the bag picked in the page Library\Enchanter\enchant.html (open it in Chrome /
-// Edge). Started and stopped from the page.
+// Enchant: enchants the items of the bag picked in the page Library\Enchanter\enchant.html (EnchPanel.exe shows it
+// and gives it these files). Started and stopped from the page.
 //
 // Library\Enchanter\<character>.ench - written by the page, read here every CFG_MS (a change counts at once):
 //   run=1 + run_id=<n>: a start (only a run_id not seen before: the one in the file when the script starts
 //   does not count, so a restart of the script never starts enchanting by itself); run=0: a stop.
 //   delay_ms (a result -> this long -> the next "enchant"), put_ms (a new item put into the window -> this
 //   long -> its first "enchant"), order (seq: one item to the end, round: one try per item in turn),
-//   max_scrolls (a run uses this many at most, 0 = no limit), stop_on_break, chat (the results as fake party
+//   max_scrolls (a run uses this many at most, 0 = no limit), done_max (the run stops when this many items reached
+//   their last target - no range takes them further; 0 = no such stop), stop_on_break, chat (the results as fake party
 //   chat messages), sound, debug (the packet log);
-//   then a [job] block per range: on, name, from, to, scroll (item ID), stone_on, stone (item ID),
+//   then a [job] block per range: on, name, from, to, scroll (item ID), stone_on, stone (item ID), stone_from /
+//   stone_to (the stone only on tries at +stone_from .. +(stone_to - 1); -1: the range's from / to),
 //   kind=<item ID>|<name> per kind of item (every one of that item ID in the bag, any level, not worn: mass
 //   enchanting), item=<OID>|<item ID>|<name> per single item (a worn one), cryst (after the run: none / done
 //   (the items at their target or over) / left (under it) / all - never a worn one).
@@ -20,7 +22,8 @@ uses SysUtils, Classes, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 // <to> (another job may go on with it: the next range), breaks, or the scrolls / stones run out. A blessed
 // fail (back to +0) puts the item back into a job of +0, if there is one. order=seq: the jobs in their order,
 // the single items first, then the kinds in the bag's order (one item to the end); order=round: the item
-// tried longest ago.
+// tried longest ago. order=seq goes on with the item of the last try while a range takes it (one item to its last
+// target, then the next one).
 // Library\Enchanter\<character>.ench.json - written here every STATE_MS and after every try: the run (state,
 // counts, the try now), the tries (LOG_N last), counts per item, the bag (gear; the rest with counts).
 //
@@ -33,7 +36,7 @@ uses SysUtils, Classes, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //   D0:4B (empty) cancel: closes the window (87 with 2). After a break the server closes the window itself.
 //   2F + item OID + count (int64, 1): crystallize (the game's crystallize window sends these back to back;
 //   the answers: system messages 1258 / 53 and 21 with the item removed, the crystals added). A stone: D0:4A + stone OID + item OID - NOT seen in
-//   a sniff yet (from the order 49 / 4A / 4B).
+//   a sniff yet (from the order 49 / 4A / 4B): STONE_PKT = 0 stops a run before its first try with a stone (stonepkt).
 // RequestItemList (14) - the whole bag from the server, it opens the inventory in the game - only at a run
 // start / end and when the page asks (<character>.ench.req). During a run the levels and counts come from
 // 87 / 21 (kept in an own table: the bot's copy of the bag misses changes on this server).
@@ -66,6 +69,8 @@ const
   MAX_CV        = 16;       // stacks (scrolls / stones) whose count a run knows better than the bot
   NONE_MAX      = 3;        // one item: refused this many times in a row -> skipped
   NONE_RUN_MAX  = 6;        // any items: this many in a row -> the run stops
+  STONE_PKT     = 0;        // 1: the stone packets are sniffed and right; 0: a try with a stone stops the run (a wrong
+                            // enchant packet got a character kicked here once)
   PK_N          = 128;      // packets kept for the debug log ...
   PK_B          = 48;       // ... their first bytes
   DBG_TRIES     = 10;       // the packets around this many tries of a run go to the debug log
@@ -101,12 +106,14 @@ var
   CfgRun, FirstCfg, CfgMissTold: boolean;
   CfgRunId, SeenRunId, CfgText, CfgReadAt, CfgErrJson, CfgErrOld: string;
   DelayMs, PutDelayMs, OrderMode, MaxScrolls: integer;  // OrderMode: 0 one item to the end, 1 in turn
+  DoneMax: integer;                                     // the run stops at this many items at their last target (0 never)
   StopOnBreak, ChatOn, SoundOn, DebugOn: boolean;
   JobN: integer;
   JOn, JStoneOn, JWant: array[0..15] of boolean;       // JWant: on in the page (JOn: also usable)
   JCryst: array[0..15] of integer;                      // after the run: 0 none, 1 done, 2 left, 3 all
   JName: array[0..15] of string;
   JFrom, JTo, JScroll, JStone, JItemN, JKindN: array[0..15] of integer;
+  JStFrom, JStTo: array[0..15] of integer;              // the stone only on tries at +JStFrom .. +(JStTo - 1)
   JItem: array[0..1023] of integer;                     // job j: JItem[j * MAX_JI + k] = a single item's OID
   JKind: array[0..511] of integer;                      // job j: JKind[j * MAX_JK + k] = an item ID (all of them)
   // the run
@@ -115,6 +122,7 @@ var
   RunEndId, RunSecs: integer;
   RunAt: cardinal;
   Tries, OkN, FailN, BrokeN, NoneN, ScrollsN, StonesN, DbgTries: integer;
+  DoneRun, KeepOID: integer;                            // items at their last target this run; the item of the last try
   NoneOID, NoneCnt, NoneRun, UseFails, PutFails: integer;
   // skipped this run: an item (SkOID, any job) or an item ID in a job (SkOID 0: the scroll / stone of that
   // job does not fit it)
@@ -664,6 +672,8 @@ begin
   NoneN := 0;
   ScrollsN := 0;
   StonesN := 0;
+  DoneRun := 0;
+  KeepOID := 0;
   SkN := 0;
   StN := 0;
   NoneOID := 0;
@@ -703,7 +713,7 @@ begin
   Running := false;
   StopWanted := false;
   RunSecs := (GetTickCount - RunAt) div 1000;
-  if (Code = 'done') or (Code = 'crystal') then RunState := 'done' else RunState := 'stopped';
+  if (Code = 'done') or (Code = 'crystal') or (Code = 'count') then RunState := 'done' else RunState := 'stopped';
   RunEnd := Code;
   RunEndId := Id;
   if Code = 'crystal' then Say(Txt + ' - ' + IntToStr(CrystN) + ' crystallized')
@@ -711,7 +721,7 @@ begin
     ' failed, ' + IntToStr(BrokeN) + ' broke; ' + IntToStr(CrystN) + ' crystallized')
   else Say(Txt + ' - ' + IntToStr(Tries) + ' tries: ' + IntToStr(OkN) + ' ok, ' + IntToStr(FailN) + ' failed, ' +
     IntToStr(BrokeN) + ' broke');
-  if (Code = 'done') or (Code = 'crystal') then PlaySnd(SND_DONE);
+  if (Code = 'done') or (Code = 'crystal') or (Code = 'count') then PlaySnd(SND_DONE);
   Dbg('RUN END ' + Code + ': ' + Txt);
   Dirty := true;
 end;
@@ -724,7 +734,8 @@ begin
   end else if Why = 'nostone' then begin
     if Id = 0 then result := 'Enchanting: a range has no stone chosen'
     else result := 'Enchanting: out of stones (item ID ' + IntToStr(Id) + ')';
-  end else if Why = 'skipped' then result := 'Enchanting: nothing left but skipped items'
+  end else if Why = 'stonepkt' then result := 'Enchanting: stones are not ready yet - the stone packet is not sniffed (enchant_sniffer.txt)'
+  else if Why = 'skipped' then result := 'Enchanting: nothing left but skipped items'
   else if Why = 'empty' then result := 'Enchanting: no items picked (enchant.html)'
   else result := 'Enchanting: done, every item is at its target';
 end;
@@ -803,7 +814,8 @@ var j: integer;
   Want: boolean;
 begin
   Want := false;
-  if (Code = 'done') or (Code = 'noscroll') or (Code = 'nostone') or (Code = 'skipped') or (Code = 'limit') then
+  if (Code = 'done') or (Code = 'noscroll') or (Code = 'nostone') or (Code = 'skipped') or (Code = 'limit') or
+     (Code = 'count') then
     for j := 0 to JobN - 1 do
       if JWant[j] and (JCryst[j] > 0) then Want := true;
   if Want and (Phase <> PH_CRYST) then begin
@@ -858,6 +870,73 @@ end;
 
 // an item for job j: in its range, not skipped, the job has its scroll (+ stone) -> the best one so far?
 // order=seq: the first one found; round: the one tried longest ago (never: 0)
+// OID a single item of job j
+function ItemIn(j, OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to JItemN[j] - 1 do
+    if JItem[j * MAX_JI + k] = OID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// OID worn now
+function IsWorn(OID: integer): boolean;
+var i, O: integer;
+  It: TL2Item;
+begin
+  result := false;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    It := Inventory.User.Items(i);
+    if It = nil then continue;
+    O := It.OID;
+    if O <> OID then continue;
+    result := It.Equipped;
+    exit;
+  end;
+end;
+
+// job j: its scroll / stone in the bag (CnScOk / CnStOk for Consider)
+procedure JobStock(j: integer);
+var Sc, Cnt: integer;
+begin
+  Sc := StackOf(JScroll[j], Cnt);
+  CnScOk := (Sc <> 0);
+  CnStOk := true;
+  if JStoneOn[j] then begin
+    Sc := StackOf(JStone[j], Cnt);
+    CnStOk := (Sc <> 0);
+  end;
+end;
+
+// job j puts its stone on a try at +Lv
+function StoneAt(j, Lv: integer): boolean;
+begin
+  result := false;
+  if not JStoneOn[j] then exit;
+  if Lv < JStFrom[j] then exit;
+  if Lv >= JStTo[j] then exit;
+  result := true;
+end;
+
+// item OID (item ID) at +Lv: a range still takes it (its next range); false = at its last target
+function MoreFor(OID, ID, Lv: integer): boolean;
+var j: integer;
+begin
+  result := false;
+  for j := 0 to JobN - 1 do begin
+    if not JOn[j] then continue;
+    if Lv < JFrom[j] then continue;
+    if Lv >= JTo[j] then continue;
+    if ItemIn(j, OID) or KindIn(j, ID) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
 procedure Consider(j, OID, Lv, ID: integer);
 var s: integer;
   LastAt: cardinal;
@@ -871,7 +950,7 @@ begin
     if CnNoSc < 0 then CnNoSc := JScroll[j];
     exit;
   end;
-  if not CnStOk then begin
+  if (not CnStOk) and StoneAt(j, Lv) then begin
     if CnNoSt < 0 then CnNoSt := JStone[j];
     exit;
   end;
@@ -891,8 +970,9 @@ end;
 
 // the next try: true + Cur*; false + why not (done / noscroll / nostone / skipped / empty)
 function PickNext(var Why: string; var WhyId: integer): boolean;
-var i, j, k, OID, Lv, ID, Cnt, Sc, Conf: integer;
+var i, j, k, OID, Lv, ID, Conf: integer;
   It: TL2Item;
+  Ok: boolean;
 begin
   result := false;
   Why := 'done';
@@ -903,16 +983,23 @@ begin
   CnNoSc := -1;
   CnNoSt := -1;
   Conf := 0;
+  // order=seq: the item of the last try goes on while a range takes it (one item to its last target)
+  if (OrderMode = 0) and (KeepOID <> 0) then
+    if FindItem(KeepOID, Lv, ID) then
+      for j := 0 to JobN - 1 do begin
+        if not JOn[j] then continue;
+        Ok := ItemIn(j, KeepOID);
+        if (not Ok) and KindIn(j, ID) then Ok := not IsWorn(KeepOID);
+        if not Ok then continue;
+        JobStock(j);
+        Consider(j, KeepOID, Lv, ID);
+        if BestOID <> 0 then break;
+      end;
+  if BestOID = 0 then
   for j := 0 to JobN - 1 do begin
     if not JOn[j] then continue;
     Conf := Conf + JItemN[j] + JKindN[j];
-    Sc := StackOf(JScroll[j], Cnt);
-    CnScOk := (Sc <> 0);
-    CnStOk := true;
-    if JStoneOn[j] then begin
-      Sc := StackOf(JStone[j], Cnt);
-      CnStOk := (Sc <> 0);
-    end;
+    JobStock(j);
     for k := 0 to JItemN[j] - 1 do begin   // the single items (a worn one too)
       OID := JItem[j * MAX_JI + k];
       if FindItem(OID, Lv, ID) then Consider(j, OID, Lv, ID);
@@ -939,7 +1026,12 @@ begin
     CurTo := JTo[BestJ];
     CurScroll := JScroll[BestJ];
     CurStone := 0;
-    if JStoneOn[BestJ] then CurStone := JStone[BestJ];
+    if StoneAt(BestJ, BestLv) then CurStone := JStone[BestJ];
+    if (CurStone > 0) and (STONE_PKT = 0) then begin   // the stone packets not sniffed: no guessing at the server
+      Why := 'stonepkt';
+      WhyId := CurStone;
+      exit;
+    end;
     result := true;
     exit;
   end;
@@ -957,6 +1049,7 @@ end;
 procedure BeginTry();
 var n: integer;
 begin
+  KeepOID := CurOID;                     // order=seq: it goes on next time while a range takes it
   CurName := ItemNameOf(CurOID);
   n := StatIdx(CurOID, CurItemID);
   if n >= 0 then StAt[n] := GetTickCount;   // order=round: tried now
@@ -1091,6 +1184,12 @@ begin
   else if R = R_DROP then T := T + ': failed -> +' + IntToStr(Lv)
   else if R = R_BROKE then T := T + ': failed, the item is gone'
   else T := T + ': nothing happened (answer ' + IntToStr(ResCode) + ')';
+  if (R = R_OK) and (Lv >= CurTo) then
+    if not MoreFor(CurOID, CurItemID, Lv) then begin   // its last target: one more done
+      DoneRun := DoneRun + 1;
+      KeepOID := 0;
+      if DoneMax > 0 then T := T + ' (' + IntToStr(DoneRun) + ' of ' + IntToStr(DoneMax) + ')';
+    end;
   Say(T);
   Dbg('RESULT ' + ResWord(R) + ': ' + T + ' | 87 code=' + IntToStr(ResCode) + ' lv=' + IntToStr(ResLv) +
     ' | 21 item=' + B01(InvGot) + ' gone=' + B01(InvGone) + ' lv=' + IntToStr(InvLv) +
@@ -1125,7 +1224,9 @@ begin
     StopRun('broke', 0, 'Enchanting: ' + CurName + ' broke - stopped');
     exit;
   end;
-  if (MaxScrolls > 0) and (ScrollsN >= MaxScrolls) then
+  if (DoneMax > 0) and (DoneRun >= DoneMax) then
+    StopRun('count', DoneRun, 'Enchanting: ' + IntToStr(DoneRun) + ' items at their target - done')
+  else if (MaxScrolls > 0) and (ScrollsN >= MaxScrolls) then
     StopRun('limit', MaxScrolls, 'Enchanting: ' + IntToStr(ScrollsN) + ' scrolls used, the limit');
 end;
 
@@ -1356,6 +1457,8 @@ begin
   JScroll[n] := 0;
   JStoneOn[n] := false;
   JStone[n] := 0;
+  JStFrom[n] := -1;
+  JStTo[n] := -1;
   JItemN[n] := 0;
   JWant[n] := true;
   JCryst[n] := 0;
@@ -1375,6 +1478,7 @@ begin
   PutDelayMs := 2000;
   OrderMode := 0;
   MaxScrolls := 0;
+  DoneMax := 0;
   StopOnBreak := false;
   ChatOn := false;
   SoundOn := true;
@@ -1408,6 +1512,7 @@ begin
         if LowerCase(Val) = 'round' then OrderMode := 1 else OrderMode := 0;
       end
       else if Fld = 'max_scrolls' then MaxScrolls := StrToIntDef(Val, 0)
+      else if Fld = 'done_max' then DoneMax := StrToIntDef(Val, 0)
       else if Fld = 'stop_on_break' then StopOnBreak := (Val = '1')
       else if Fld = 'chat' then ChatOn := (Val = '1')
       else if Fld = 'sound' then SoundOn := (Val <> '0')
@@ -1433,6 +1538,8 @@ begin
     else if Fld = 'scroll' then JScroll[n] := StrToIntDef(Val, 0)
     else if Fld = 'stone_on' then JStoneOn[n] := (Val = '1')
     else if Fld = 'stone' then JStone[n] := StrToIntDef(Val, 0)
+    else if Fld = 'stone_from' then JStFrom[n] := StrToIntDef(Val, -1)
+    else if Fld = 'stone_to' then JStTo[n] := StrToIntDef(Val, -1)
     else if Fld = 'kind' then begin
       k := Pos('|', Val);
       if k > 0 then Val := Copy(Val, 1, k - 1);
@@ -1461,10 +1568,13 @@ begin
   if PutDelayMs < 0 then PutDelayMs := 0;
   if PutDelayMs > MAX_DELAY_MS then PutDelayMs := MAX_DELAY_MS;
   if MaxScrolls < 0 then MaxScrolls := 0;
+  if DoneMax < 0 then DoneMax := 0;
   for n := 0 to JobN - 1 do begin
     Nm := JName[n];
     if JFrom[n] < 0 then JFrom[n] := 0;
     if JTo[n] > 100 then JTo[n] := 100;
+    if JStFrom[n] < 0 then JStFrom[n] := JFrom[n];   // the stone: the whole range unless said
+    if JStTo[n] < 0 then JStTo[n] := JTo[n];
     if not JOn[n] then continue;
     if JFrom[n] >= JTo[n] then begin
       CfgErr(Nm + ': from +' + IntToStr(JFrom[n]) + ' to +' + IntToStr(JTo[n]) + ' - nothing to do, off');
@@ -1634,7 +1744,8 @@ begin
     ', "end_id": ' + IntToStr(RunEndId) + ', "started": ' + JsonStr(RunStarted) + ', "secs": ' + IntToStr(Secs) +
     ', "tries": ' + IntToStr(Tries) + ', "ok": ' + IntToStr(OkN) + ', "fail": ' + IntToStr(FailN) +
     ', "broke": ' + IntToStr(BrokeN) + ', "none": ' + IntToStr(NoneN) + ', "scrolls": ' + IntToStr(ScrollsN) +
-    ', "stones": ' + IntToStr(StonesN) + ', "cryst": ' + IntToStr(CrystN) + ', "cr_n": ' + IntToStr(CrN) +
+    ', "stones": ' + IntToStr(StonesN) + ', "done": ' + IntToStr(DoneRun) + ', "done_max": ' + IntToStr(DoneMax) +
+    ', "cryst": ' + IntToStr(CrystN) + ', "cr_n": ' + IntToStr(CrN) +
     ', "cr_i": ' + IntToStr(CrIdx) + ', "cur": ' + Cur + '},');
   S := '';
   for k := 0 to SkN - 1 do begin
@@ -1686,6 +1797,9 @@ begin
   NoneN := 0;
   ScrollsN := 0;
   StonesN := 0;
+  DoneRun := 0;
+  KeepOID := 0;
+  DoneMax := 0;
   SkN := 0;
   StN := 0;
   LgN := 0;
