@@ -1,10 +1,10 @@
-uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
+uses SysUtils, Classes, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 
 // =============================================================================
-// Enchant: enchants the items of the bag picked in the page Library\Binds\enchant.html (open it in Chrome /
+// Enchant: enchants the items of the bag picked in the page Library\Enchanter\enchant.html (open it in Chrome /
 // Edge). Started and stopped from the page.
 //
-// Library\Binds\<character>.ench - written by the page, read here every CFG_MS (a change counts at once):
+// Library\Enchanter\<character>.ench - written by the page, read here every CFG_MS (a change counts at once):
 //   run=1 + run_id=<n>: a start (only a run_id not seen before: the one in the file when the script starts
 //   does not count, so a restart of the script never starts enchanting by itself); run=0: a stop.
 //   delay_ms (a result -> this long -> the next "enchant"), put_ms (a new item put into the window -> this
@@ -21,7 +21,7 @@ uses SysUtils, Classes, ChatMenu in 'Core\chat_menu.pas';
 // fail (back to +0) puts the item back into a job of +0, if there is one. order=seq: the jobs in their order,
 // the single items first, then the kinds in the bag's order (one item to the end); order=round: the item
 // tried longest ago.
-// Library\Binds\<character>.ench.json - written here every STATE_MS and after every try: the run (state,
+// Library\Enchanter\<character>.ench.json - written here every STATE_MS and after every try: the run (state,
 // counts, the try now), the tries (LOG_N last), counts per item, the bag (gear; the rest with counts).
 //
 // The packets, as this server's client does it (enchant_sniffer.txt, 2026-11-18):
@@ -71,7 +71,7 @@ const
   DBG_TRIES     = 10;       // the packets around this many tries of a run go to the debug log
   DBG_MAX       = 6000;     // lines of the debug log at most
   CLI_WATCH_MS  = 8000;     // an enchant packet of the game client: the server's answers this long after it
-  BINDS_DIR     = '..\Binds\';   // from Library\Scripts: the page and its files
+  DATA_DIR      = '';             // the page and its files: next to this script (Library\Enchanter)
   LOGS_DIR      = '..\Logs\';
   SOUND_DIR     = '..\Sounds\';
   SND_TARGET    = 'notification.wav';     // an item reached its target
@@ -1492,7 +1492,7 @@ begin
     if Running then StopWanted := true;
     if not CfgMissTold then begin
       CfgMissTold := true;
-      Engine.Msg('[Ench]', 'No settings yet (' + CfgPath + ') - open Library\Binds\enchant.html', 128);
+      Engine.Msg('[Ench]', 'No settings yet (' + CfgPath + ') - open Library\Enchanter\enchant.html', 128);
     end;
     exit;
   end;
@@ -1740,10 +1740,10 @@ begin
   DbgAt := GetTickCount;
   while User.Name = '' do Delay(500);   // in the game
   CharName := User.Name;
-  CfgPath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench';
-  StatePath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench.json';
-  ReqPath := Script.Path + BINDS_DIR + FileTag(CharName) + '.ench.req';
-  Engine.Msg('[Ench]', 'Enchant: set it up and start it in Library\Binds\enchant.html (Chrome / Edge)', 0);
+  CfgPath := Script.Path + DATA_DIR + FileTag(CharName) + '.ench';
+  StatePath := Script.Path + DATA_DIR + FileTag(CharName) + '.ench.json';
+  ReqPath := Script.Path + DATA_DIR + FileTag(CharName) + '.ench.req';
+  Engine.Msg('[Ench]', 'Enchant: set it up and start it in Library\Enchanter\enchant.html (Chrome / Edge)', 0);
 
   Engine.SendActID(2);   // packet hooks on: the server's answers to a try (OnPacket), the debug log
   FirstCfg := true;      // till the settings are first read: their run_id is an old one

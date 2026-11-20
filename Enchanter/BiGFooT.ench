@@ -1,6 +1,6 @@
-; Enchant settings of BiGFooT: made in enchant.html (Library\Binds), read by enchant.txt on the fly
+; Enchant settings of BiGFooT: made in enchant.html (Library\Enchanter), read by enchant.txt on the fly
 run=1
-run_id=1794965343264
+run_id=1795145740342
 cryst_id=1794961907519
 delay_ms=0
 put_ms=0
@@ -8,7 +8,7 @@ order=seq
 max_scrolls=0
 stop_on_break=0
 chat=0
-sound=1
+sound=0
 debug=1
 
 [job]
@@ -22,10 +22,9 @@ stone_on=0
 stone=0
 stone_name=
 cryst=done
-kind=2383|Majestic Plate Armor
 kind=5311|Sealed Armor of Nightmare
 kind=5320|Sealed Leather Armor of Nightmare
 kind=5323|Sealed Majestic Leather Armor
-kind=5329|Sealed Majestic Robe
+kind=5316|Sealed Majestic Plate Armor
 kind=5326|Sealed Robe of Nightmare
-kind=5293|Sealed Tallum Plate Armor
+kind=5301|Sealed Tallum Leather Armor

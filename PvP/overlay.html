@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PvP overlay</title>
+<link rel="icon" href="data:,">
+<!-- The overlay of PvpPanel over a game window (overlay.html?char=<character>): what that bot has on, its switches.
+     See-through for the mouse; clickable by the panel's hot key (Ctrl+Alt+O): then the switches work.
+     A switch of a group: on= of the profile (saved like pvp.html saves); res-kill / assist: on / off in the bot
+     (PUT /api/cmd?c=key: as its key pressed); an auto group: res_auto= too. -->
+<style>
+  :root { --text: #e6ebf3; --text2: #c2cbd9; --muted: #8893a5; --dim: #5b6678; --ok: #45d09e; --warn: #f2b14c; --bad: #ff6b7a; --acc: #5aa9ff; --auto: #ffb86b; }
+  html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+  body { font: 12.5px/1.35 'Segoe UI', system-ui, sans-serif; color: var(--text); user-select: none; -webkit-user-select: none; }
+  #box { position: absolute; top: 0; right: 0; width: 278px; box-sizing: border-box; padding: 9px 10px 8px; border-radius: 12px;
+    background: rgba(9, 12, 17, .58); border: 1px solid rgba(255, 255, 255, .08); box-shadow: 0 6px 22px rgba(0, 0, 0, .35);
+    transition: background .15s, border-color .15s, box-shadow .15s, opacity .15s; opacity: .86; }
+  body.click #box { opacity: 1; background: rgba(13, 17, 25, .95); border-color: rgba(90, 169, 255, .55); box-shadow: 0 0 0 1px rgba(90, 169, 255, .2), 0 10px 30px rgba(0, 0, 0, .55); }
+  .hd { display: flex; align-items: center; gap: 7px; }
+  .hd b { font-size: 12.5px; font-weight: 750; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 130px; }
+  .hd .pr { flex: 1; min-width: 0; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hd .srv { color: var(--muted); font-size: 11px; white-space: nowrap; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.warn { background: var(--warn); }
+  .rows { display: grid; gap: 1px; margin-top: 7px; }
+  .r { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: 7px; align-items: center; min-height: 25px; padding: 1px 6px; border-radius: 7px; }
+  .r.sub { grid-template-columns: minmax(0, 1fr) auto; padding-left: 34px; min-height: 22px; }
+  body.click .r.t:hover { background: rgba(255, 255, 255, .07); cursor: pointer; }
+  .k { min-width: 20px; height: 18px; padding: 0 5px; box-sizing: border-box; border-radius: 5px; display: inline-grid; place-items: center; font-size: 10.5px; font-weight: 800;
+    color: #cfe3ff; background: rgba(90, 169, 255, .14); border: 1px solid rgba(90, 169, 255, .35); white-space: nowrap; }
+  .k.none { color: var(--dim); background: transparent; border-color: rgba(255, 255, 255, .1); }
+  .nm { color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .nm small { color: var(--muted); margin-left: 4px; font-size: 10.5px; }
+  .r.off .nm { color: var(--dim); }
+  .r.sub .nm { color: var(--muted); font-size: 11.5px; }
+  .st { font-size: 10px; font-weight: 800; letter-spacing: .05em; }
+  .st.on { color: var(--ok); } .st.off { color: var(--warn); }
+  .sw { width: 28px; height: 16px; border-radius: 99px; background: rgba(255, 255, 255, .13); position: relative; transition: background .12s; }
+  .sw::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #8f99a8; transition: left .12s, background .12s; }
+  .sw.on { background: rgba(69, 208, 158, .5); }
+  .sw.on::after { left: 14px; background: #fff; }
+  .sw.busy { opacity: .5; }
+  .ft { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255, 255, 255, .07); color: var(--muted); font-size: 11px; }
+  .ft b { color: var(--text2); font-weight: 650; }
+  .hint { color: var(--dim); }
+  body.click .hint { color: #9cc9ff; }
+  .msg { color: var(--muted); padding: 4px 2px 2px; }
+</style>
+</head>
+<body>
+<div id="box"><div class="msg">Connecting…</div></div>
+<script>
+'use strict';
+const CHAR = new URLSearchParams(location.search).get('char') || '';
+const lc = s => String(s || '').toLowerCase();
+let profiles = {}, bot = null, botAt = 0, busy = {}, sig = '';
+const $ = id => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === undefined || v === null || v === false) continue;
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e[k] = v; else e.setAttribute(k, v);
+  }
+  for (const c of kids) if (c !== null && c !== undefined && c !== false) e.append(c);
+  return e;
+}
+window.setClickable = c => { document.body.classList.toggle('click', !!c); };
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, body, cache: 'no-store', headers: { 'X-PvP': '1', 'Content-Type': 'text/plain; charset=utf-8' } });
+  if (!r.ok) throw new Error(r.status);
+  return /json/.test(r.headers.get('content-type') || '') ? r.json() : r.text();
+}
+
+// the groups of a profile text: [{ i, on, name, mode, key, res_auto, assist_src }]
+function groupsOf(text) {
+  const G = []; let g = null;
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const l = raw.trim();
+    if (l === '[group]') { g = { i: G.length }; G.push(g); continue; }
+    if (!g || !l || l[0] === ';') continue;
+    const k = l.indexOf('='); if (k > 0) g[l.slice(0, k)] = l.slice(k + 1);
+  }
+  return G;
+}
+// field= of group gi in the text set to val (the line added when it is not there)
+function setField(text, gi, field, val) {
+  const L = String(text).split(/\r?\n/); let n = -1, i = 0;
+  for (; i < L.length; i++) if (L[i].trim() === '[group]' && ++n === gi) break;
+  if (i >= L.length) return null;
+  for (let j = i + 1; j < L.length && L[j].trim() !== '[group]'; j++)
+    if (L[j].startsWith(field + '=')) { L[j] = field + '=' + val; return L.join('\r\n'); }
+  L.splice(i + 1, 0, field + '=' + val);
+  return L.join('\r\n');
+}
+async function saveField(id, gi, field, val) {
+  const t = setField(profiles[id], gi, field, val); if (t === null) return;
+  profiles[id] = t; draw();
+  try { await api('PUT', '/api/profile?id=' + encodeURIComponent(id), t); } catch (e) { }
+}
+async function press(name) {   // as the group's key pressed on this bot (res-kill / assist: on / off)
+  busy[lc(name)] = Date.now(); draw();
+  try { await api('PUT', '/api/cmd?c=key&char=' + encodeURIComponent(CHAR) + '&g=' + encodeURIComponent(name)); } catch (e) { delete busy[lc(name)]; draw(); }
+}
+
+function draw() {
+  const box = $('box'), fresh = bot && Date.now() - botAt < 6000;
+  const pr = fresh && bot.profile, id = pr && pr.id, text = id && profiles[id];
+  const net = fresh && bot.net, live = (pr && pr.live || []).map(lc);
+  for (const k of Object.keys(busy)) if (Date.now() - busy[k] > 1500) delete busy[k];
+  const s = JSON.stringify([fresh, id, text, live, net && [net.link, net.rtt], pr && pr.rk && pr.rk.t, Object.keys(busy), document.body.className]);
+  if (s === sig) return; sig = s;
+  box.textContent = '';
+  const srv = !net || net.link < 0 ? null : net.link === 1 ? el('span', { class: 'srv', text: (net.rtt >= 0 ? net.rtt + ' ms' : 'server') }) : el('span', { class: 'srv', text: 'no server' });
+  box.append(el('div', { class: 'hd' }, el('span', { class: 'dot' + (fresh ? net && net.link === 0 ? ' warn' : ' ok' : '') }), el('b', { text: CHAR || '?' }),
+    el('span', { class: 'pr', text: pr ? '· ' + (pr.name || id) : '' }), srv));
+  if (!fresh) { box.append(el('div', { class: 'msg', text: 'pvp_focus.txt is not running on ' + (CHAR || 'this character') + '.' })); return; }
+  if (!text) { box.append(el('div', { class: 'msg', text: 'Profile «' + id + '» not found.' })); return; }
+  const rows = el('div', { class: 'rows' });
+  for (const g of groupsOf(text)) {
+    const name = g.name || 'group ' + (g.i + 1), on = g.on !== '0', mode = g.mode || 'class';
+    const kc = el('span', { class: 'k' + (g.key ? '' : ' none'), text: g.key || '–' });
+    if ((mode === 'reskill' || mode === 'assist' || mode === 'antiaggro') && on) {   // on / off in the bot: as its key
+      const ison = live.includes(lc(name)), wait = busy[lc(name)];
+      rows.append(el('div', { class: 'r t', title: 'Click: as its key pressed - on / off', onclick: () => press(name) }, kc,
+        el('span', { class: 'nm', text: name }, mode === 'assist' && g.assist_src === 'net' ? el('small', { text: 'via server' }) : null),
+        el('span', { class: 'st ' + (ison ? 'on' : 'off'), text: ison ? 'ON' : 'OFF' }), el('span', { class: 'sw' + (ison ? ' on' : '') + (wait ? ' busy' : '') })));
+    } else {   // the group itself on / off (the profile)
+      rows.append(el('div', { class: 'r t' + (on ? '' : ' off'), title: 'Click: the group on / off (the profile)', onclick: () => saveField(id, g.i, 'on', on ? 0 : 1) }, kc,
+        el('span', { class: 'nm', text: name }, mode === 'auto' ? el('small', { text: 'by weight' }) : null), el('span'), el('span', { class: 'sw' + (on ? ' on' : '') })));
+    }
+    if (mode === 'auto' && on) {
+      const ra = g.res_auto === '1';
+      rows.append(el('div', { class: 'r sub t', title: 'Click: res-kill by itself on / off', onclick: () => saveField(id, g.i, 'res_auto', ra ? 0 : 1) },
+        el('span', { class: 'nm', text: 'Res-kill by itself' }), el('span', { class: 'sw' + (ra ? ' on' : '') })));
+    }
+  }
+  if (!rows.children.length) rows.append(el('div', { class: 'msg', text: 'No groups in this profile.' }));
+  box.append(rows);
+  const ft = el('div', { class: 'ft' });
+  if (pr.rk && pr.rk.t) ft.append(el('span', null, 'Res-kill: ', el('b', { text: pr.rk.t }), ' · ' + Math.round((pr.rk.ago | 0) / 1000) + ' s ago'));
+  ft.append(el('span', { class: 'hint', text: document.body.classList.contains('click') ? 'Clickable · Ctrl+Alt+O: back to the game' : 'Ctrl+Alt+O: make it clickable' }));
+  box.append(ft);
+}
+
+// live: the bots' states and the profiles from the server
+async function start() {
+  try { const s = await api('GET', '/api/state'); profiles = s.profiles || {}; const d = (s.bots || {})[Object.keys(s.bots || {}).find(n => lc(n) === lc(CHAR))]; if (d) { bot = d; botAt = Date.now(); } } catch (e) { }
+  const es = new EventSource('/api/events');
+  es.addEventListener('state', e => { const m = JSON.parse(e.data); if (lc(m.name) !== lc(CHAR)) return; bot = m.d; botAt = Date.now(); delete busy[Object.keys(busy).find(k => (m.d.profile && m.d.profile.live || []).map(lc).includes(k))]; draw(); });
+  es.addEventListener('gone', e => { if (lc(JSON.parse(e.data).name) === lc(CHAR)) { bot = null; draw(); } });
+  es.addEventListener('profiles', e => { const m = JSON.parse(e.data); profiles = m.profiles || profiles; draw(); });
+  draw();
+}
+setInterval(draw, 1000);
+start();
+</script>
+</body>
+</html>

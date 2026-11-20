@@ -76,6 +76,12 @@
   .seg button { height: 26px; padding: 0 11px; border: 0; background: transparent; color: var(--muted); border-radius: 7px; }
   .seg button:hover { background: var(--panel3); color: var(--text); }
   .seg button.on { background: var(--accent-bg); color: #fff; box-shadow: inset 0 0 0 1px rgba(90, 169, 255, .4); }
+  .seg.mk button { padding: 0 4px; min-width: 30px; display: inline-grid; place-items: center; }
+  .seg.mk button:first-child { padding: 0 10px; }
+  .seg.mk img { width: 22px; height: 22px; display: block; border-radius: 5px; opacity: .45; filter: saturate(.5) brightness(.9); transition: opacity .12s, filter .12s, box-shadow .12s; }
+  .seg.mk button:hover img { opacity: .9; filter: none; }
+  .seg.mk button.on { background: rgba(120, 200, 255, .1); box-shadow: inset 0 0 0 1px rgba(150, 215, 255, .35); }
+  .seg.mk button.on img { opacity: 1; filter: none; box-shadow: 0 0 0 1px rgba(170, 225, 255, .6), 0 0 10px rgba(120, 200, 255, .45); }
 
   /* ===== layout ===== */
   #app { display: grid; grid-template-columns: 236px minmax(0, 1fr); height: 100vh; }
@@ -106,6 +112,9 @@
   .bot.on { background: var(--panel2); border-color: var(--line2); }
   .bot .nm { font-weight: 650; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bot .sub { grid-column: 2; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bot .cnts { display: flex; flex-wrap: wrap; gap: 0 8px; white-space: normal; color: var(--muted); }
+  .bot .cnts b { color: var(--text2); font-weight: 700; }
+  .bot .cnts .hot b { color: var(--foe); }
   .nobot { font-size: 12px; color: var(--dim); padding: 4px 4px 0; line-height: 1.45; }
   #saveState { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 11px; border-radius: 9px; font-size: 12px; color: var(--muted);
     background: var(--panel); border: 1px solid var(--line); transition: color .15s, border-color .15s; }
@@ -178,6 +187,74 @@
   .m-names { --mc: #c7a8ff; --mbg: rgba(199, 168, 255, .09); }
   .m-smart { --mc: #ff7aa8; --mbg: rgba(255, 122, 168, .09); }
   .m-assist { --mc: #9be36b; --mbg: rgba(155, 227, 107, .09); }
+  .m-auto { --mc: #ffb86b; --mbg: rgba(255, 184, 107, .09); }
+  .m-anti { --mc: #ff7ab6; --mbg: rgba(255, 122, 182, .09); }
+  .team { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 14px; }
+  .team > .pane { display: flex; flex-direction: column; min-height: 0; }
+  .team .ab1 { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 14px; display: grid; gap: 7px; align-content: start; }
+  .trow { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 11px;
+    background: rgba(255, 255, 255, .025); border: 1px solid rgba(255, 255, 255, .06); }
+  .trow.lead { background: rgba(255, 209, 102, .08); border-color: rgba(255, 209, 102, .4); }
+  .trow .tnm { display: grid; min-width: 0; line-height: 1.35; }
+  .trow .tnm b { font-size: 14px; color: var(--text); }
+  .trow .tnm span { font-size: 11.5px; color: var(--muted); }
+  .trow .tnm span.f { color: var(--ok); }
+  .tcrown { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--dim); background: rgba(255, 255, 255, .04); }
+  .trow.lead .tcrown { color: var(--gold); background: rgba(255, 209, 102, .14); }
+  .tcrown svg { width: 16px; height: 16px; }
+  .tprof { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 7px 2px; border-bottom: 1px solid rgba(255, 255, 255, .05); font-size: 12.5px; }
+  .tprof .y { color: var(--ok); } .tprof .x { color: var(--dim); }
+  .tprof .u { color: var(--muted); font-size: 11.5px; }
+  .tprof .s { display: block; color: var(--muted); font-size: 11.5px; margin-top: 1px; }
+  .tprof .s.w { color: var(--warn, #ffb454); }
+  .chip.sk.part { opacity: .6; border-style: dashed; }
+  .tnote { color: var(--muted); font-size: 12.5px; line-height: 1.45; margin: 0 0 4px; }
+  .lstat .rkon { color: var(--ok); font-size: 12px; } .lstat .rkoff { color: var(--warn); font-size: 12px; }
+  .auto { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 14px; }
+  .auto > .pane { display: flex; flex-direction: column; min-height: 0; }
+  .auto .ab { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 16px; display: grid; gap: 12px; align-content: start; }
+  .auto .ph .n { font-size: 11.5px; color: var(--muted); }
+  .auto .keycap { height: 38px; min-width: 64px; }
+  .crit { --mc: #ffb86b; display: grid; gap: 6px; padding: 9px 12px; border-radius: 11px; background: rgba(255, 255, 255, .02); border: 1px solid rgba(255, 255, 255, .06); }
+  .crit.off { opacity: .55; }
+  .crit .ch { display: flex; align-items: center; gap: 10px; }
+  .crit .no { flex: none; width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; font-weight: 750; font-size: 12px; color: #0b0f15; background: var(--mc); }
+  .crit.off .no { background: rgba(255, 255, 255, .08); color: var(--muted); }
+  .crit .ct { display: grid; line-height: 1.3; flex: 1; min-width: 0; }
+  .crit .ct b { font-size: 13px; color: var(--text); font-weight: 650; }
+  .crit .ct span { font-size: 11.5px; color: var(--dim); }
+  .crit .mv { display: flex; gap: 2px; }
+  .crit .mv button { width: 26px; height: 26px; padding: 0; }
+  .crit .cb { display: grid; gap: 2px; padding-left: 32px; min-width: 0; }
+  .why { display: inline-flex; gap: 4px; flex-wrap: wrap; margin-left: 4px; vertical-align: middle; }
+  .why i { font-style: normal; font-size: 10.5px; line-height: 15px; padding: 0 6px; border-radius: 99px; background: rgba(255, 184, 107, .12); color: #ffcf9b; border: 1px solid rgba(255, 184, 107, .28); }
+  .why i.d { background: rgba(255, 255, 255, .05); color: var(--muted); border-color: rgba(255, 255, 255, .08); }
+  .why i.neg { background: rgba(255, 107, 122, .1); color: #ffb3bb; border-color: rgba(255, 107, 122, .3); }
+  .why i .ski { display: inline-block; vertical-align: -3px; margin-right: 3px; width: 14px; height: 14px; }
+  .auto .ab { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .auto .ab > .wide { grid-column: 1 / -1; }
+  .auto .lt .x { color: #ffcf9b; font-weight: 750; font-size: 12.5px; }
+  .ski { width: 16px; height: 16px; border-radius: 3px; flex: none; display: block; }
+  .wv { width: 62px !important; text-align: right; }
+  .cw { display: inline-flex; align-items: center; gap: 6px; height: 27px; padding: 0 3px 0 9px; border-radius: 8px; font-size: 12px; color: var(--muted); background: rgba(255, 255, 255, .03); border: 1px solid rgba(255, 255, 255, .06); }
+  .cw.on { color: #fff; background: color-mix(in srgb, var(--rc) 16%, transparent); border-color: color-mix(in srgb, var(--rc) 50%, transparent); }
+  .cw input { width: 46px !important; height: 21px; padding: 0 5px; text-align: right; font-size: 12px; }
+  .cw:not(.on) input { color: var(--dim); }
+  .why.wl { margin: 3px 0 0; display: flex; }
+  .swl { display: grid; gap: 4px; }
+  .swr { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto 62px 26px; gap: 8px; align-items: center; min-height: 30px; padding: 2px 4px 2px 8px; border-radius: 8px; background: rgba(255, 255, 255, .03); }
+  .swr .nm { color: var(--text); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .swr .n { color: var(--dim); font-size: 11px; }
+  .swr button { width: 26px; height: 26px; padding: 0; }
+  .spick { display: grid; gap: 5px; }
+  .spick input[type=text] { width: 100% !important; }
+  .sres { display: grid; gap: 1px; max-height: 210px; overflow-y: auto; }
+  .srow { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 8px; align-items: center; height: 26px; padding: 0 8px; text-align: left; background: transparent; border: 0; border-radius: 6px; color: var(--text2); }
+  .srow:hover { background: var(--panel3); color: var(--text); }
+  .srow .n { color: var(--dim); font-size: 11px; }
+  .sseen { gap: 4px; }
+  .sseen .chip { cursor: pointer; }
+  .sseen .chip .ski { margin-right: 2px; }
   .m-onus { --mc: #ff8f6b; --mbg: rgba(255, 143, 107, .09); }
 
   #gedit { display: flex; flex-direction: column; overflow: hidden; }
@@ -465,11 +542,13 @@
     </div>
     <nav id="nav">
       <button data-view="keys"><span data-icon="keys"></span><span class="t">Keys</span><span class="cnt" id="nc-keys"></span><span class="kb">Ctrl+1</span></button>
-      <button data-view="enemies"><span data-icon="enemies"></span><span class="t">Enemies</span><span class="cnt" id="nc-enemies"></span><span class="kb">Ctrl+2</span></button>
-      <button data-view="stats"><span data-icon="stats"></span><span class="t">Stats</span><span class="kb">Ctrl+3</span></button>
-      <button data-view="profiles"><span data-icon="profiles"></span><span class="t">Profiles</span><span class="cnt" id="nc-profiles"></span><span class="kb">Ctrl+4</span></button>
-      <button data-view="settings"><span data-icon="settings"></span><span class="t">Settings</span><span class="kb">Ctrl+5</span></button>
-      <button data-view="help"><span data-icon="help"></span><span class="t">Help</span><span class="kb">Ctrl+6</span></button>
+      <button data-view="auto"><span data-icon="auto"></span><span class="t">Auto target</span><span class="kb">Ctrl+2</span></button>
+      <button data-view="team"><span data-icon="team"></span><span class="t">Team</span><span class="kb">Ctrl+3</span></button>
+      <button data-view="enemies"><span data-icon="enemies"></span><span class="t">Enemies</span><span class="cnt" id="nc-enemies"></span><span class="kb">Ctrl+4</span></button>
+      <button data-view="stats"><span data-icon="stats"></span><span class="t">Stats</span><span class="kb">Ctrl+5</span></button>
+      <button data-view="profiles"><span data-icon="profiles"></span><span class="t">Profiles</span><span class="cnt" id="nc-profiles"></span><span class="kb">Ctrl+6</span></button>
+      <button data-view="settings"><span data-icon="settings"></span><span class="t">Settings</span><span class="kb">Ctrl+7</span></button>
+      <button data-view="help"><span data-icon="help"></span><span class="t">Help</span><span class="kb">Ctrl+8</span></button>
     </nav>
     <div class="sbox" style="flex:1;min-height:0;align-content:start">
       <div class="lbl">Bots</div>
@@ -496,6 +575,16 @@
         </div>
         <div class="pane" id="gedit"></div>
       </div>
+    </section>
+
+    <section class="view" id="v-auto" hidden>
+      <div class="vhead"><h1>Auto target</h1><span class="vsub">One key: the heaviest enemy by weight, the next one on the next press</span></div>
+      <div class="auto" id="autoBox"></div>
+    </section>
+
+    <section class="view" id="v-team" hidden>
+      <div class="vhead"><h1>Team</h1><span class="vsub">One leader picks the targets, everyone else on the server takes them</span></div>
+      <div class="team" id="teamBox"></div>
     </section>
 
     <section class="view" id="v-enemies" hidden>
@@ -585,7 +674,10 @@ const ICONS = {
   star: '<path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/>', edit: '<path d="M4 20h4L19 9l-4-4L4 16v4z"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
   radar: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/><path d="M12 12l6-6"/>',
-  wifi: '<path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0M12 19.5h.01"/>' };
+  wifi: '<path d="M2 9a15 15 0 0 1 20 0M5.5 12.5a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0M12 19.5h.01"/>',
+  auto: '<path d="M13 2 4.5 13.5h6.5L10 22l8.5-11.5H12z"/>',
+  team: '<circle cx="9" cy="8" r="3.2"/><circle cx="17.5" cy="9.5" r="2.4"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M15 14.6c.8-.3 1.6-.4 2.5-.4 2.5 0 4.5 2 4.5 4.6"/>',
+  crown: '<path d="M3 8.5l4.6 3.8L12 5l4.4 7.3L21 8.5 19.2 19H4.8z"/>' };
 function svgI(n, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'i' + (cls ? ' ' + cls : '')); s.innerHTML = ICONS[n] || '';
@@ -644,7 +736,22 @@ const CLS_NAME = {}, CLS_ROLE = {};
 ROLES.forEach(([, , list], r) => { for (const [nm, ids, second] of list) ids.forEach((id, i) => { CLS_NAME[id] = i === 0 || (nm === 'Soul Hound' && i === 1) ? nm : second; CLS_ROLE[id] = r; }); });
 const clsName = id => CLS_NAME[id] || '#' + id;
 const roleColor = id => CLS_ROLE[id] !== undefined ? ROLES[CLS_ROLE[id]][1] : '#9aa4b2';
-const KNOWN_SK = { 426: 'Battle Force', 427: 'Spell Force' };   // skills the bot can not name (not ours)
+const KNOWN_SK = { 426: 'Battle Force', 427: 'Spell Force' };
+// the marks (tokens), as in the game's Token Action bar: 1 star, 2 heart, 3 moon, 4 cross (cut from the game, 32 px)
+const MARK_NAME = ['Star', 'Heart', 'Moon', 'Cross'];
+const MARK_IMG = [
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsIAAA7CARUoSoAAAAQ3SURBVFhHtZZRaFtVGMcvoxhZZRmWGTJKQyXsQhgNVNcLkdqQtiQYSqPFNqWjI4tWI9sw0BmK00koCAV9EgdziFCUYUEFYU++KAxh0JdBYQgbglDElwgTC0785P/d+52cc3J7ax98+PWcXL57/r/vu8mljvP4E3QoYvFo7HqbmEVPwUHYgTZ2vY0E9z/p4zx2lCLpi5mf7UAb1CAo7BydeMKnx3A/+oPutLDqm5dpavHsf58ANxBMQAn0n/BvxMpgr5MwiMW77Dwi2n7Y6akxCT/vyPFBf+/Ek2Qghcd8mSPxpIGEX1zfUAKvvtvuBh5LduHPJ0yCur6nhil20g0ROG6C0L6BQYXevQgYU0BnAksEDcl5QedYfYGBFEXBoQl/FQHpXhdQU8B9Es4iSeM8BAM1gb5EmnRsgVjCNXBzJdoh6hKIgMSIRzHco2Pdr2fFh7KHF7j+/Q/7Clz+6PqhBI6ezJCDPzpRAtOLDTPcEgDTL9cjBZBhCGAM2MiK0NSzBcovr1DtvQ1a/3KLbnc6ioMEbv/WUax/cZNqb29QYalB6bGSmoDRcPyUR8IHX9/qOfA+Ed37x+fu31Z4CKiRety7vbdnsHZjk5sVDIGZV1o9AjhQxw60settgdHp+f0FQLl+6X8TKJTN8FCB2JBrSNgH2oE2dr0e7jixXoHESIlAcrTMayKTZ5offuy/ZKwRbuPlE4VVv/Noj+Zfb1HilMckR0sUf9pTOINjMxxuCygJ68A7f/4ViV2vh4NUrmJIOLjgXwwkNAHwzo1N48Aff/8jEr22+kbTCBcBgHCIKAGRsAWykxXjUP13HoZem8pk9xVAOFYn/XyVhBQujlUoPV5lsK+2Nui7B7tddjuRfPtgV+EV/TOGn5tX63BujveCEhj2KoZAZqoWKnDr518jCRNIF5b88EAkPeGLAGMC7mSNg4FMYe3aTUPgm3u/RKIL1N56nwPdYq0rkZsjdxJZVV8AoegeYJ8tN5QAVltg6+59xu5crh8kgO5FAHvHnagSOF2s+ZRq6ouCfevaZ7R5Z0ex9dMus/rJ5zReWaHCYpNan26p6yIC2ptfUeqZEmVnG4rTxXqQV6fM5DI5Ejw622AQqqOHAwmODbhMfMhjlIglgG++hLsFv1kEA0g4CPUWmoxMILfYVKsEYxKpDP7j8YMhIRMAIpKdqHCwLsDBARIssIBI6AKg9FpbBQsSbAsIEBCqF6/yI0Cwegxl/zGoCUj342dbTOHcFSa/tMakRvLMmZcuUL7eJm9hlfLn1hTeXFOB+jMvXmAyU8v+d2mspCbMzDUp+8IK404skcOh568ocMh0/Sp3zyL1tokevrDKvxwJtwWwGuEL3XDcwwII0hEBIUwAwdnZS7zHSIEuISJYVfBMnZFpITxUQAXLYVo4HgOC3WKDgYgEi4RMIExAHgHA+wGT+BfDY3o28l5f5QAAAABJRU5ErkJggg==',
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsIAAA7CARUoSoAAAAPqSURBVFhHvZNRaFtVGMcvMhZZBhFHvXQULh11F8LohcAWCdSGlLDQMXcxLO2MZMRgt8sEjS8jUNgIg4mwF6E+yHzqg4PBGAiOQUAUijAoiBgfhKoIFhEhDxUCFvnG/7v9bs85N9etlvnw4zs957vn/7vfTS3r+cO0PzIG5rlByiDWsGf+o0D6xRDr4CH6Vw6k4ntglEAqs3tm9uMelYwdEjNMIp3wdocyIRBI6hEgIhOIBNJjoTmqrBUytqNhnpukbEfDStsjee6FiXBtZcZJ438SOPDSJKWOuskC5WqDbt2/R+vDocbNz+5Qya/HgrGHM7P/1r27VD7fjL05aihwxCGNnfA+EWNeuL4VokpgLftmf387RCQQDKIJpGyXVLw5n/rbtMuOSIRyZh/3yM7m4z0J/bjbzIsJfPrV2lMLrDx4SCu9XrwnoR93m3mawIliVQ9/gsDIcxOjf+pUKVmg+v612ANPujB2bmL0l+oNXSBzLE+C/24n9kDswr1i3FdcCMjKODT2cp7RBAoLrdgDsQv3inFftugnC4AvNn55ZgL3v+9r4SMFOrdXn5lAcL0bF7CzRRr3KgzWTq5C69uUyLfb/+wJVcA+Hr7kWLYUVQvBEyf9SAICi+/diAXvV6B2ucMCTmGRxnNndwWwAUQCAuCj3tcc+Gj4975A+MqDHoeLAIAARCwEy6YqIJ9ibTBgvtn6i1nbGj41IiDhqgDCUa2JfJXcuUWafLVGds4ne7pC7uwi10qrQ71fNzXWBkOdPwYavU2d/EKbrLRDU7M1ZrJQI+eUz2AdCaCqAiIRfPCxJvDl5kDntz811PC3r3+ohQMET83WORxVmwCqhCdJPPzJ4OffNdTwzFFXC5cJuHNNDmcBBENCRPKvB1E41hBQJT7/YUPnx00NNRzgE+gSdRYQLIzEna2TN78U8loQ/VCw9k43GfT5V7q0+qivcfe7DY3KlS6ljrg0MV1mvHMBueUGV5Cda/DLoQJLwvPVNoNQsTMFWOLScqJA5UIQhefOtRg1HGs1/MTpFlla+PzSbvAOxTfakQCqW/CZzu07kUDnk1Wyj3mMBAOI8I8aweUGOa9Uo2DBkmCpCMV3E0RAwARUCTUcE1AFZALqFLwzAQdHE5CgmTevMqWLy0yx3mFmLlyNJhSu36HixQ4DCXu6yOR87HfJOxsw8nyh1qaTfsAVf0cvimnjv4BD31qOQFO5dY0ql7pcS81lDQkHkJmaqUXhIH++zbiYmCECJBwiLIAgFREQECpnIoBgmQTCBZbYCTTDvTNNnoRME+EjBSQYD+JTqOH4BKaAvLlIyASAhKPKZxAB/lHPL9Fjf49IOJ7gLNQAAAAASUVORK5CYII=',
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsIAAA7CARUoSoAAAAR0SURBVFhHnZVRaFtVGMcvJXjHWryjpb22xoWWrldiWVyljQZra2tdIJTFh27FarVmWIIwEAdxECiUwiAwfR2iMCjqoDA6B4XCZDiYD8ONbtCBMhFEh4jQBx8C1vnJ/7v5Ts45vW2cD798Jyf3nv/vfOcmcZx9LfRIuO7e2Nfv80xcrKGx84YG2IE29vW7CTS3hjiP7ac9ibnmezvQBtcgWN2DOZecmFMDY5cczw/ZabwLzdhBC3mdcUqNZxXJ54ep/anuugAW1643dg8R6YASaG4nx/WIK4Oxjr+Ds198Tre2tpjNbWI+++Y6vVteIrctYWDfKzQdiIdjx+skAwl+PJRp8joNZIGx12YNAeFWtUrFpUpDgVhHN7ldQYTAAROExtriCnuhKAEhSkB2jhoK4KI9QKjrhzVKAM/BbgIg+cLEDgGgOhDze0mnqS1h0tFLsSeSXFnK83k+5gdcscvKpUsqcONvUtz9J5Ry2wKFnuUdTEULyBPKIR29BpgDbldKCYAoAQCBjy+vRQrs70qSgxcdWZgX70ox6ICiFs7zGFtdiBIAuddPsQAyjA7gBZOoQC1cC2nIfxSQLtgbdryeNOm09AySC5EaLYlBIxDvZQ7VO5hmJudKLHDnIRnoD2ji8Ci5T/Yz3qEMV6f1UMYQaO3LsISAz4EeDmT+UQRmTi3wgywC/uEsOe3BMAFZUARQgZ8c5Xk7WOb/jwDClQAW0tGDJUQC9Tlb4NxXa+E3YXt3gfPr1wwB4MACdA7kuNqgO3g4O4/kmPZnJsjrG61TO7obv28xN6t/0cb2Q4X+o3T+66t8lF5vRuHEhyY5fC8BkMhMKwkRYZmeNOXePq0E9HBboPDhIgv4z07UBRKZPAGRwOLckSM5ij83qQJtASAdkHDpgI4tgFDkSVUCSqIWLOgCtgQEzq6sGgI3/qwa6AKpkSzvHllSne6XpknwB7JKRjFgoh/PwvIqXfv1D8aQ0NmqMpXVNfKTaUoM5RXdmeN1gXg6z+Tmyw0FcifLHH7lhwe0/tNvSoL5xUQE8vMlJdA7MsPhSiAYn1NdKH16kZZvbrIImDy5YCDBAgQM7pvouwcIRx4qcPBGdo8xdg0BYeXujwZ6eCT36oiAhOsCIuEEI9ME+o/OMaka5y6v09WfH9DK7U0TS2jltsU9k/SJ9/nPChUkx2c5T6ojwQPHiowIiIQt8OV33xvsJTA2VeDw4OXjHI4q4YKDULHTOyAUlz4yBJa/NblwfYPRBUqfXOBwrysg/+lMGFwDof1HC4wSEIkogSCTZURktw5AonLxigoGGEuwbDKVK6pwFpAPht8oMWNvlWmisECjM2dCCmVKvTrL/+Wg/5VZmv6gosi+t0jpqSIFL+bJ70sz3YM5FZieqoP10scgEB47vnUOh75TVuAiCGTnF0ORQtkAAsb/RS0UAhBRx5md5SobsQVQWQBBOiIg2AJjb5424FCdCAGEBzjSySIHi0SkgAqeOcPH0UgARyDHoAvYR8DhGNcE/KE8S/wLebv2xLxTNpMAAAAASUVORK5CYII=',
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsIAAA7CARUoSoAAAAQPSURBVFhHrZVPaBxVHMcHCY404hRFB4O4tJQMhNKBQLoQCNluWBMoa6bVbBaiq3FJdcFEFoKhEAhIUQluCwGL5NqDh2pcGtAE9iTEWzwIexGSg4c9eMmhhxw8/OT7m/ebvnkzu9nSHj77mz/vve/n/WZn17JeepmeCts2cOKY401sg8SAs3heAoOvhlgvnqOeDNjx87MEMAZBaevoOG5IwrAbg2p3KnjsWoEe/H5A23ut/jvAG1AdiAQGXw8nojI41pCBggpqNHeoTUTt/4ju/dIk23EZa9DEWE9df+H8W+Gx5bxJMWTgK0omRaDwXiUMVwKgqwDW0VHXB964QPaQlyJw3kALnwgWnuzcEJBOjBWC9A6o9WTnqKHAaxnqiSbQ+qcTDzcEwIM/DuICCNbWQzCIOjDgXiIdU8B2PSb//i1qHXcSgSat4yOyMU9Q8wU9y3nb719AJApz1USoUCiWKX+z0rfAuaERsvCh00sAoK2NnWZquGXZ8fCU+ciIdUCCccIXVPBEUKHW30fcdlMgrQumADqBx7HZbNHoO+WYQGzDznCWdOwhn9EXt2y8fiG4t7x5PyHgXvQZa8BlCrOh5OHpKW02d6N1nYvZGKkC1z9ejS3e+LlJhZtVpptAaWmVBRAMGj+FjwkCoG+Be7v7icWfBRGQTvQUOHx8mljgWdEFwNZeKy7gXpkhUPp8g9qnJ3SISTrGAon7Z2AKtTodckdyEZGASJgLPG+B4tJadwGQuZKj8oomooKXv77LFD9cocajXxNB9bv3mW92mowpUPpsldxhPxbeVQDoAo7rxYCEKRC9huo/ID9XjQS+/20/DE8TuDBeokuTC4SauRqQN1lmbv/wI38pH/7Z5usRowHVvt2m3eMOgx8q4I0HTEZRqt+hg39P6ODkhEpf3InmS44cRwJyUQSEWPhTCIhEYv7VINowaiQAvKnFvgQkXBeof7edEGCM+chDjmRaONFvdBMoLq3z49DDdQGh8Wi/p0C0UYUlQZenFxn/3RplxssMjr3pRab8ZYMDHv511BP8+TjDuQh/tkbe1AJXMDJV4TxUYEnw6GyN4VBlpwuIhBlokr1R42BUoIfjWA+/PF0lC6HZ+ToDEQkWdAHgTwZUXt5IBOdvVMPXVAvHMV41DlZIsMACIiGPQIRAmgAwBRAOCQnXO6B3wb9e4+CoAxI08cEak/9onckt3GYm5teY7Gw9rGp8ZX2Lv5Rbe23Kzdd5p6jZuTr5xVo0f7y0SmPBClecZyExU2XwPbM49JP1CAwqVDdo5tOvuIqQoHcHyC8awkUAcLcMEV0AlQUQpCMCAkLlXjcBCWdUoBmO1gMEA+9ahUkISDAmmuH6IxBi4fNh+wV0Au0HCEcVAX7NZ6r0P0lmQVXkg729AAAAAElFTkSuQmCC'];
+// a group's mark: None or one of the four pictures
+function markSeg(g) {
+  const box = el('div', { class: 'seg mk', title: 'A mark (token) over the selected target, the same as set by hand' });
+  box.append(el('button', { class: g.mark ? '' : 'on', text: 'None', onclick: () => { if (g.mark) { g.mark = 0; changed(true); } } }));
+  MARK_IMG.forEach((src, k) => box.append(el('button', { class: g.mark === k + 1 ? 'on' : '', title: MARK_NAME[k] + ' (' + (k + 1) + ')',
+    onclick: () => { if (g.mark !== k + 1) { g.mark = k + 1; changed(true); } } }, el('img', { src, alt: MARK_NAME[k], draggable: 'false' }))));
+  return box;
+}   // skills the bot can not name (not ours)
 
 // mode: [title, css class, the long explanation, a short line for the add menu]
 const MODES = {
@@ -652,9 +759,12 @@ const MODES = {
   reskill: ['Res-kill', 'm-reskill', 'An enemy who was resurrected: got up no sooner than «from» and no later than «to» milliseconds ago. The key turns res-kill on / off; while it is on, the bot selects such an enemy itself and at once does «after selecting» (an attack). Classes are a filter.', 'An enemy who was just resurrected'],
   cast: ['Cast / Forces', 'm-cast', 'An enemy casting the chosen skill, or the one it is cast on (the charged one: more Forces first).', 'Break a cast: Forces, a res, any skill'],
   names: ['By names', 'm-names', 'The ★ players of the «Enemies & names» list, strictly in order, any class and clan.', 'The ★ players, in list order'],
-  assist: ['Assist', 'm-assist', 'The target of an assister: the 1st if he is near, alive and not aggroed, else the 2nd, then the 3rd (all empty: the party leader). The key turns assist on / off; while it is on, the bot takes his target and then each new one at once, and does «after selecting». A character on the list follows only the ones above him. «Volley»: he starts one of those skills, yours goes at his target at once. «Via server»: one assister (from the party or any nickname); his bot sends his target over the relay server and it is taken as it is - any distance, no aggro check, he may be dead.', 'The target of your assister or party leader'],
+  assist: ['Assist', 'm-assist', 'The target of an assister: the 1st if he is near, alive and not aggroed, else the 2nd, then the 3rd (all empty: the party leader). The key turns assist on / off; while it is on, the bot takes his target and then each new one at once, and does «after selecting». A character on the list follows only the ones above him. «Volley»: he starts one of those skills, yours goes at his target at once. «Via server»: one assister (from the party or any nickname); what his PvP focus picks (his keys, res-kill - not mouse clicks) comes over the relay server and is taken as it is - any distance, no aggro check, he may be dead. The same key again re-focuses everyone.', 'The target of your assister or party leader'],
   onus: ['Who targets us', 'm-onus', 'An enemy targeting you or someone of your party. Those on you first, then the nearest. Classes are a filter.', 'An enemy targeting you or your party'],
-  smart: ['Assist caller', 'm-smart', 'An enemy calling assist on you or your party: he switches first and the others follow him. The more often they follow him, the sooner. Classes are a filter. No assist callers near: the one holding you in target.', 'An enemy calling assist on you'] };
+  smart: ['Assist caller', 'm-smart', 'An enemy calling assist on you or your party: he switches first and the others follow him. The more often they follow him, the sooner. Classes are a filter. No assist callers near: the one holding you in target.', 'An enemy calling assist on you'],
+  auto: ['Auto target', 'm-auto', 'One key, every enemy by weight: the sum of his class, his name, the skill he casts, the forces at him, just resurrected, holding you or your party, calling assist - the heaviest first, a tie: the nearest. The key again: the next one. Can res-kill by itself. Set it up in the «Auto target» view.', 'One key: the heaviest target by weight'],
+  antiaggro: ['Anti-aggro', 'm-anti', 'An enemy starts casting an aggro skill at you (Aggression…): your target goes onto him at once while he casts; once the aggro effect is on you - back to the target you had (and put back again if the aggro still moved it); no effect (resisted) - back after «Wait for it». You took another one meanwhile: left alone. The key turns it on / off.', 'Aggro at you: onto him, then back'] };
+const AGGRO_SK = [28, 979, 1682, 680, 985, 10026];   // the aimed aggro skills of the game (Aggression, Divine Knight Hate, Challenge for Fate, Superior Aggression)
 
 // the bot reads and writes ANSI (cp1251)
 function decode(buf) { try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); } catch (e) { return new TextDecoder('windows-1251').decode(buf); } }
@@ -674,7 +784,7 @@ let sel = { active: 'main' };   // the profile EVERY character uses (pvp.ini)
 let bots = {}, curBot = null;   // the bots linked to the server: { d (what it sees), mod }; the one looked through
 let equipKeys = {};             // keyNorm -> ['char «bind»'] (equip binds that are on)
 let saveT = 0, saving = false, saveAgain = null, savedAt = 0, saveErr = '', readAtSave = {};
-const VIEWS = ['keys', 'enemies', 'stats', 'profiles', 'settings', 'help'];
+const VIEWS = ['keys', 'auto', 'team', 'enemies', 'stats', 'profiles', 'settings', 'help'];
 let view = (() => { const h = location.hash.slice(1), t = store.get('view') || ({ foes: 'enemies' }[store.get('tab')] || store.get('tab'));
   return VIEWS.includes(h) ? h : VIEWS.includes(t) ? t : 'keys'; })();
 const P = () => profs[curId] ? profs[curId].p : null;
@@ -689,9 +799,22 @@ async function api(method, path, body) {
 // ===== a profile: the general lines, then a [group] block per group (as pvp_focus.txt reads it) =====
 // the range of group g: its own, else the profile's
 const gRange = g => g.range > 0 ? g.range : (P() && P().range) || 1200;
+// the rules of an auto group (order=): [title, what it means, the reason chip]; their bases as the bot sorts
+const AUTO_CR = {
+  star: ['★ Players', 'The ★ players of «Enemies», in list order', '★'],
+  cast: ['Break casts', 'Casting one of these skills right now', 'casts'],
+  res: ['Just resurrected', 'Got up after a res within the window · can res-kill by itself', 'got up'],
+  onus: ['Targets you', 'Holds you in target, then a party member', 'on you'],
+  smart: ['Assist callers', 'Calls assist on you or your party: the others follow him', 'caller'],
+  class: ['Classes', 'By class priority: 1 before 2 before 3', 'class'] };
+const AUTO_ORDER = Object.keys(AUTO_CR), AUTO_BASE = { star: 32, cast: 10, res: 2, onus: 3, smart: 2, class: 10 };
+// 'id:weight|...' <-> {id: weight} (an auto group's weights)
+function pairsIn(v) { const o = {}; for (const x of v.split('|')) { const [a, b] = x.split(':'); const id = parseInt(a, 10), w = parseInt(b, 10); if (id >= 0 && w) o[id] = w; } return o; }
+const pairsOut = o => Object.entries(o || {}).filter(([, w]) => w).map(([id, w]) => id + ':' + w).join('|');
 function newGroup(o) {
   return Object.assign({ on: true, name: '', key: '', mode: 'class', range: 0, height: 400, mark: 0, after: '', afterSk: 0, ctrl: false,
-    auto: false, autoMs: 3000, window: 15, resMin: 0, resMax: 15000, assist: '', asAggro: 2, asSrc: 'game', who: 'target', prio: false, cls: {}, skills: [], volley: [], killSound: '', killMs: 20000 }, o);
+    auto: false, autoMs: 3000, window: 15, resMin: 0, resMax: 15000, assist: '', asAggro: 2, asSrc: 'game', who: 'target', prio: false, cls: {}, skills: [], volley: [], killSound: '', killMs: 20000, order: AUTO_ORDER.slice(), clsOnly: false, resAuto: false, resKey: '', resOn: false, resCls: {},
+    clsW: {}, plW: [], skW: {}, forceSk: [426, 427], forceW: {}, castRange: 0, resRange: 0, resW: 100, onusW: 30, partyW: 15, smartW: 20, sitSkip: {}, aaBack: 0, aaGuard: 800, aaWait: 1500, aaEff: [] }, o);
 }
 const clsMap = list => { const o = {}; for (const [id, t] of list) o[id] = t; return o; };
 function defaultProfile(name) {
@@ -742,6 +865,28 @@ function parseProfile(text) {
     else if (k === 'assist') g.assist = v;
     else if (k === 'assist_aggro') g.asAggro = [0, 1, 2].includes(+v) ? +v : 2;
     else if (k === 'assist_src') g.asSrc = v === 'net' ? 'net' : 'game';
+    else if (k === 'order') g.order = [...new Set(v.split('|').map(s => s.trim()).filter(s => AUTO_CR[s]))];
+    else if (k === 'cls_only') g.clsOnly = v === '1';
+    else if (k === 'res_auto') g.resAuto = v === '1';
+    else if (k === 'res_key') g.resKey = v;
+    else if (k === 'res_on') g.resOn = v === '1';
+    else if (k === 'cls_w') { g.clsW = pairsIn(v); g._clsW = true; }
+    else if (k === 'sk_w') g.skW = pairsIn(v);
+    else if (k === 'force_w') g.forceW = pairsIn(v);
+    else if (k === 'pl_w') g.plW = v.split('|').map(x => { const i = x.lastIndexOf(':'); return i > 0 ? [x.slice(0, i).trim(), parseInt(x.slice(i + 1), 10) || 0] : null; }).filter(x => x && x[0] && x[1]);
+    else if (k === 'force_sk') g.forceSk = v.split('|').map(x => parseInt(x, 10)).filter(n => n > 0).slice(0, 8);
+    else if (k === 'cast_range') g.castRange = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'res_range') g.resRange = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'res_w') g.resW = parseInt(v, 10) || 0;
+    else if (k === 'onus_w') g.onusW = parseInt(v, 10) || 0;
+    else if (k === 'party_w') g.partyW = parseInt(v, 10) || 0;
+    else if (k === 'smart_w') g.smartW = parseInt(v, 10) || 0;
+    else if (k === 'aa_back_ms') g.aaBack = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'aa_guard_ms') g.aaGuard = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'aa_wait_ms') g.aaWait = Math.max(0, parseInt(v, 10) || 0);
+    else if (k === 'aa_effects') g.aaEff = v.split('|').map(x => parseInt(x, 10)).filter(n => n > 0).slice(0, 8);
+    else if (k === 'sit_skip') { g.sitSkip = {}; for (const x of v.split('|')) { const id = parseInt(x, 10); if (id >= 0) g.sitSkip[id] = 1; } }
+    else if (k === 'res_classes') { g.resCls = {}; for (const x of v.split('|')) { const id = parseInt(x, 10); if (id >= 0) g.resCls[id] = 1; } }
     else if (k === 'res_max_ms') { g.resMax = Math.max(0, parseInt(v, 10) || 0); Object.defineProperty(g, '_resMaxSet', { value: true, configurable: true }); }
     else if (k === 'who') g.who = lc(v) === 'caster' ? 'caster' : 'target';
     else if (k === 'prio_first') g.prio = v !== '0';
@@ -752,7 +897,18 @@ function parseProfile(text) {
     else if (k === 'volley') g.volley = v.split('|').map(s => parseInt(s, 10)).filter(n => n > 0).slice(0, 8);
   }
   if (!hasRange) for (const x of p.groups) if (x.range === p.range) x.range = 0;   // an old profile: the old default 1200 = the general one
+  for (const x of p.groups) if (x.mode === 'auto' && !x._clsW && Object.keys(x.cls).length) {   // an auto group of the ordered rules: its tiers -> weights
+    for (const [id, t] of Object.entries(x.cls)) x.clsW[id] = Math.max(5, 40 - 10 * t);
+    x.cls = {};
+  }
   return p;
+}
+// the weights of an auto group, as the bot reads them
+function autoLines(g) {
+  return ['cls_w=' + pairsOut(g.clsW), 'pl_w=' + (g.plW || []).filter(([n, w]) => clean(n) && w).map(([n, w]) => clean(n).replace(/:/g, '') + ':' + w).join('|'),
+    'sk_w=' + pairsOut(g.skW), 'force_sk=' + (g.forceSk || []).join('|'), 'force_w=' + pairsOut(g.forceW),
+    'cast_range=' + Math.max(0, g.castRange | 0), 'res_range=' + Math.max(0, g.resRange | 0), 'res_w=' + (g.resW | 0),
+    'onus_w=' + (g.onusW | 0), 'party_w=' + (g.partyW | 0), 'smart_w=' + (g.smartW | 0), 'sit_skip=' + Object.keys(g.sitSkip || {}).join('|')];
 }
 function profileText(p) {
   const L = ['; PvP focus profile: made in pvp.html (Library\\PvP), read by pvp_focus.txt on the fly', 'name=' + (clean(p.name) || 'Profile'),
@@ -765,7 +921,7 @@ function profileText(p) {
     'after=' + (g.after === 'attack' ? 'attack' : g.after === 'skill' && g.afterSk > 0 ? 'skill:' + g.afterSk : ''),
     'ctrl=' + (g.ctrl ? 1 : 0), 'prio_first=' + (g.prio ? 1 : 0), 'window=' + Math.max(1, Math.ceil((g.resMax | 0) / 1000)),
     'res_min_ms=' + Math.max(0, g.resMin | 0), 'res_max_ms=' + Math.max(g.resMin | 0, g.resMax | 0), 'auto=' + (g.auto ? 1 : 0),
-    'auto_ms=' + Math.max(500, g.autoMs | 0), 'who=' + g.who, 'assist=' + (g.assist || '').split('|').map(clean).filter(Boolean).slice(0, 3).join('|'), 'assist_aggro=' + (g.asAggro | 0), 'assist_src=' + (g.asSrc === 'net' ? 'net' : 'game'), 'skills=' + g.skills.join('|'), 'volley=' + (g.volley || []).join('|'), 'kill_sound=' + clean(g.killSound), 'kill_ms=' + Math.max(1000, g.killMs | 0),
+    'auto_ms=' + Math.max(500, g.autoMs | 0), 'who=' + g.who, 'assist=' + (g.assist || '').split('|').map(clean).filter(Boolean).slice(0, 3).join('|'), 'assist_aggro=' + (g.asAggro | 0), 'assist_src=' + (g.asSrc === 'net' ? 'net' : 'game'), 'skills=' + g.skills.join('|'), 'volley=' + (g.volley || []).join('|'), 'order=' + (g.order || []).join('|'), 'cls_only=' + (g.clsOnly ? 1 : 0), 'res_auto=' + (g.resAuto ? 1 : 0), 'res_key=' + (g.resKey || ''), 'res_on=' + (g.resOn ? 1 : 0), 'res_classes=' + Object.keys(g.resCls || {}).join('|'), 'kill_sound=' + clean(g.killSound), 'kill_ms=' + Math.max(1000, g.killMs | 0), ...(g.mode === 'auto' ? autoLines(g) : []), ...(g.mode === 'antiaggro' ? ['aa_back_ms=' + Math.max(0, g.aaBack | 0), 'aa_guard_ms=' + Math.max(0, g.aaGuard | 0), 'aa_wait_ms=' + Math.max(0, g.aaWait | 0), 'aa_effects=' + (g.aaEff || []).join('|')] : []),
     'classes=' + Object.entries(g.cls).map(([id, t]) => id + ':' + t).join('|'), ''));
   return L.join('\r\n');
 }
@@ -824,6 +980,7 @@ function takeProfiles(m, first) {
 const pending = id => profs[id] && profileText(profs[id].p) !== profs[id].saved;
 const typing = () => document.activeElement && document.activeElement.matches('input[type=text], input[type=number]');
 function applyServer(m) {
+  if (m.lead !== undefined) serverLead = m.lead || '';
   const pw = takeProfiles(m.profiles, false), na = m.active || 'main', sw2 = na !== sel.active;
   sel.active = na;
   if (!profs[curId]) { curId = profs[sel.active] ? sel.active : Object.keys(profs).sort()[0]; renderAll(); }
@@ -909,10 +1066,17 @@ const liveBots = () => online ? Object.keys(bots).filter(k => Date.now() - bots[
 function botData() { const b = online && curBot && bots[curBot]; return b && Date.now() - b.mod < FRESH_MS ? b.d : null; }
 const nearList = () => { const d = botData(); return d ? d.near || [] : null; };
 function usersOf(id) { return liveBots().filter(k => bots[k].d.profile && bots[k].d.profile.id === id).map(k => bots[k].d.char || k); }
+// what a bot counts around it: enemies holding the party / you, the clan and the others alive / dead
+function cntLine(c) {
+  const n = v => el('b', { text: String(v | 0) });
+  return el('span', { class: 'sub cnts', title: 'Not of your party / clan / alliance holding a party member in target (on you) · your clan in sight alive † dead · everyone else alive † dead' },
+    el('span', { class: c.onus ? 'hot' : '' }, 'on party ', n(c.onus), c.onme ? el('span', null, ' · you ', n(c.onme)) : null),
+    el('span', null, 'clan ', n((c.clan || [])[0]), ' †' + ((c.clan || [])[1] | 0)), el('span', null, 'others ', n((c.other || [])[0]), ' †' + ((c.other || [])[1] | 0)));
+}
 function renderBots() {
   const box = $('botList'), all = Object.keys(bots).sort(), live = liveBots();
   const sig = JSON.stringify([online, curBot, all.map(k => { const d = bots[k].d, pr = d.profile || {}, pf = d.perf || {};
-    return [k, live.includes(k), d.char, pr.name || pr.id, pf.key]; })]);
+    return [k, live.includes(k), d.char, pr.name || pr.id, pf.key, d.cnt]; })]);
   if (box.dataset.sig === sig) return;
   box.dataset.sig = sig; box.textContent = '';
   if (!all.length) { box.append(el('div', { class: 'nobot', text: online ? 'No bot connected. Run Library\\PvP\\pvp_focus.txt in the bot.' : 'Offline.' })); return; }
@@ -921,7 +1085,8 @@ function renderBots() {
     box.append(el('button', { class: 'bot' + (k === curBot ? ' on' : ''), title: (all.length > 1 ? 'Look through his eyes: who is near, whom a key takes, the stats. ' : '') +
         (pr.read ? 'Read its profile at ' + pr.read : ''), onclick: () => { curBot = k; store.set('bot', k); renderBots(); refresh(); } },
       el('span', { class: 'dot ' + (on ? 'ok' : 'warn') }), el('span', { class: 'nm', text: d.char || k }),
-      el('span', { class: 'sub', text: on ? (pr.name || pr.id || '?') + (pf.key ? ' · ' + pf.key + ' ms' : '') : 'not running · ' + hhmm(d.written) })));
+      el('span', { class: 'sub', text: on ? (pr.name || pr.id || '?') + (pf.key ? ' · ' + pf.key + ' ms' : '') : 'not running · ' + hhmm(d.written) }),
+      ...(on && d.cnt ? [cntLine(d.cnt)] : [])));
   }
 }
 
@@ -968,16 +1133,36 @@ function renderStatus() {
 // ===== who a group would take (the same order as the script) =====
 function plMap() { const m = {}; let r = 0; for (const x of P().players) { const k = lc(x.name); if (!k || m[k]) continue; m[k] = { tag: x.tag, rank: x.tag === 'prio' ? r++ : 99 }; } return m; }
 function isFoeClan(p) { const L = P().clans.map(lc); return !L.length || (p.c && L.includes(lc(p.c))) || (p.a && L.includes(lc(p.a))); }
+// an auto group: the weight of a name
+function plWOf(g, n) { const x = (g.plW || []).find(([m]) => lc(m) === lc(n)); return x ? x[1] : 0; }
+// an auto group: the weight of near player p - the same sum as the bot (AutoWeigh)
+function autoWeigh(g, p, N, me, us, fo, rng) {
+  const cr = g.castRange > 0 ? g.castRange : rng, rr = g.resRange > 0 ? g.resRange : rng, fs = new Set(g.forceSk || []);
+  const a = { cls: (g.clsW || {})[p.k] || 0, pl: plWOf(g, p.n), sk: 0, force: 0, nf: 0, res: 0, up: false, onus: 0, party: 0, smart: 0 };
+  if (p.d <= cr) {
+    if (p.s) a.sk = (g.skW || {})[p.s] || 0;
+    a.nf = N.filter(q => q.s && fs.has(q.s) && q.t === p.o).length;
+    if (a.nf) a.force = ((g.forceW || {})[p.k] || 0) * a.nf;
+  }
+  if (p.d <= rr && p.rv !== undefined && p.rv >= g.resMin && p.rv <= g.resMax && (!Object.keys(g.resCls || {}).length || g.resCls[p.k])) { a.up = true; a.res = g.resW | 0; }
+  if (!(g.sitSkip || {})[p.k]) {   // holding us / calling assist: not for the skipped classes
+    if (p.g && p.g === me) a.onus = g.onusW | 0; else if (p.g && us.has(p.g)) a.party = g.partyW | 0;
+    if (fo[p.o] && fo[p.o].sc / 10 >= 0.5) a.smart = g.smartW | 0;
+  }
+  a.total = a.cls + a.pl + a.sk + a.force + a.res + a.onus + a.party + a.smart;
+  a.inn = p.d <= rng || a.sk !== 0 || a.force !== 0 || a.up;
+  return a;
+}
 function cands(g, N) {
   const pl = plMap(), sk = new Set(g.skills), ch = {}, fo = {}, hasCls = Object.keys(g.cls).length > 0;
-  if (g.mode === 'cast') for (const p of N) if (p.s && sk.has(p.s) && p.t) ch[p.t] = (ch[p.t] || 0) + 1;
-  if (g.mode === 'smart') { const d = botData(); for (const f of (d && d.foes) || []) fo[f.o] = f; }
+  if (g.mode === 'cast' || g.mode === 'auto') for (const p of N) if (p.s && sk.has(p.s) && p.t) ch[p.t] = (ch[p.t] || 0) + 1;
+  if (g.mode === 'smart' || g.mode === 'auto') { const d = botData(); for (const f of (d && d.foes) || []) fo[f.o] = f; }
   const dd = botData(), me = dd && dd.me ? dd.me.oid : 0, us = new Set([me, ...N.filter(p => p.f & 1).map(p => p.o)]);
   const inr = [], far = [], rng = gRange(g);
   for (const p of N) {
     if ((p.f & 2) || (p.f & 5)) continue;   // dead, party, our clan / alliance
     let T = 1, cnt = 0;
-    if (g.mode !== 'names' && (g.mode === 'class' || hasCls)) { T = g.cls[p.k] || 0; if (!T) continue; }
+    if (g.mode !== 'names' && g.mode !== 'auto' && (g.mode === 'class' || hasCls)) { T = g.cls[p.k] || 0; if (!T) continue; }
     if (g.mode === 'reskill' && !(p.rv >= g.resMin && p.rv <= g.resMax)) continue;
     if (g.mode === 'onus') { if (!us.has(p.g)) continue; cnt = p.g === me ? 0 : 1; }   // holds me / a party member
     if (g.mode === 'cast') { if (g.who === 'caster') { if (!(p.s && sk.has(p.s))) continue; } else { cnt = ch[p.o] || 0; if (!cnt) continue; } }
@@ -986,7 +1171,12 @@ function cands(g, N) {
     if (t && t.tag === 'skip') continue;
     let rk = t && t.tag === 'prio' ? t.rank : 99;
     if (g.mode === 'names') { if (!t || t.tag !== 'prio') continue; }
-    else { if (!(t && t.tag === 'prio') && !isFoeClan(p)) continue; if (!g.prio) rk = 0; }
+    else { if (!(t && t.tag === 'prio') && !isFoeClan(p) && !(g.mode === 'auto' && plWOf(g, p.n) > 0)) continue; if (!g.prio) rk = 0; }
+    if (g.mode === 'auto') {   // his weight: the sum of what fits him; in range or in the range of what fits him
+      const a = autoWeigh(g, p, N, me, us, fo, rng), ok = a.inn && Math.abs(p.h | 0) <= g.height;
+      (ok ? inr : far).push(Object.assign({ T: 1, cnt: 0, rk, sc: -a.total * 1e5 + p.d, star: !!(t && t.tag === 'prio'), aw: a }, p));
+      continue;
+    }
     const q = Object.assign({ T, cnt, rk, sc: rk * 1e8 + T * 1e7 + (g.mode === 'smart' ? (99 - Math.min(cnt, 99)) * 1e5 : g.mode === 'onus' ? cnt * 1e6 : (20 - Math.min(cnt, 20)) * 1e5) + p.d, star: !!(t && t.tag === 'prio') }, p);
     (p.d <= rng && Math.abs(p.h | 0) <= g.height ? inr : far).push(q);
   }
@@ -1019,9 +1209,12 @@ function netAssisterRow(g) {
   const setFirst = v => { const L = (g.assist || '').split('|'); L[0] = clean(v); g.assist = L.join('|').replace(/\|+$/, ''); changed(false); };
   const party = () => { const d = botData(); return (d && d.party) || []; };
   const onSrv = nm => { const d = botData(), r = ((d && d.net && d.net.room) || '').split(','); return r.some(x => lc(x) === lc(nm)); };
-  if (!g._pick) Object.defineProperty(g, '_pick', { value: !first() || party().some(n => lc(n) === lc(first())) ? 'party' : 'name', writable: true, configurable: true });
+  if (!g._pick) Object.defineProperty(g, '_pick', { value: lc(first()) === '@lead' ? 'lead' : !first() || party().some(n => lc(n) === lc(first())) ? 'party' : 'name', writable: true, configurable: true });
   let box;
-  if (g._pick === 'party') {
+  if (g._pick === 'lead') {
+    const t = teamData();
+    box = el('span', { class: 'muted' }, 'Now: ', el('b', { text: t.lead || 'nobody' }), ' · ', el('button', { class: 'sm', text: 'Team view', onclick: () => setView('team') }));
+  } else if (g._pick === 'party') {
     const sel = el('select', { onchange: e => setFirst(e.target.value) });
     const fill = () => {
       const cur = first(), P = party(), opts = [el('option', { value: '', text: 'The party leader', selected: !cur })];
@@ -1032,9 +1225,9 @@ function netAssisterRow(g) {
     fill(); sel.addEventListener('focus', fill); sel.addEventListener('mousedown', fill);
     box = sel;
   } else box = el('input', { type: 'text', value: first(), maxlength: 24, placeholder: 'Any character\'s nickname', oninput: e => setFirst(e.target.value.trim()) });
-  return frc('Assister', 'His bot sends his target: in the party or not',
-    seg([['party', 'From party', 'Pick a member of your party'], ['name', 'Nickname', 'Type any character\'s nickname (his bot must run with PvpPanel)']],
-      g._pick, v => { g._pick = v; renderEditor(); }),
+  return frc('Assister', 'In the party or not: what his script picks',
+    seg([['lead', 'Team leader', 'Whoever leads in the Team view: one click there changes it for every PC'], ['party', 'From party', 'Pick a member of your party'], ['name', 'Nickname', 'Type any character\'s nickname (his bot must run with PvpPanel)']],
+      g._pick, v => { g._pick = v; if (v === 'lead') setFirst('@lead'); else if (lc(first()) === '@lead') setFirst(''); renderEditor(); }),
     el('div', { class: 'fc' }, box));
 }
 // an assist group via the server: whose target (from the bot's relay state: the room, everyone's target)
@@ -1043,12 +1236,13 @@ function netPick(g, N) {
   if (!net) return { msg: 'This bot does not know the relay server yet: restart pvp_focus.txt.' };
   if (net.link < 0) return { msg: 'The PvP server on this PC does not link to the relay: run PvpPanel (rebuilt), not pvp_server.py.' };
   const room = (net.room || '').split(',').filter(Boolean), inRoom = nm => room.some(x => lc(x) === lc(nm));
-  const nm = (g.assist || '').split('|')[0] || '';
+  const nm0 = (g.assist || '').split('|')[0] || '', isLead = lc(nm0) === '@lead', nm = isLead ? net.lead || '' : nm0;
+  if (isLead && !nm) return { msg: 'No team leader yet: pick one in the Team view.' };
   if (!nm) return { msg: 'Follows the party leader, if his bot is on the server.' };
-  if (d.char && lc(nm) === lc(d.char)) return { msg: 'You are the assister: your bot sends your target to the others.' };
+  if (d.char && lc(nm) === lc(d.char)) return { msg: 'You are the assister: your PvP picks (keys, res-kill) go to the others.' };
   if (!inRoom(nm)) return { msg: nm + ' is not on the server: his bot is off or his PC has no PvpPanel / relay.ini.' };
   const he = room.find(x => lc(x) === lc(nm)), t = (net.t || []).find(x => lc(x.c) === lc(he));
-  if (!t || !t.o) return { msg: 'Assister ' + he + ': he has no target.' };
+  if (!t || !t.o) return { msg: 'Assister ' + he + ': no pick of his yet (his PvP keys, res-kill).' };
   return { he: { n: he }, why: '', t: N.find(p => p.o === t.o) || null, tn: t.n || '?' };
 }
 // the relay as the bot knows it: a line for «Takes now»
@@ -1111,6 +1305,8 @@ function renderView() {
   else if (view === 'profiles') renderProfiles();
   else if (view === 'settings') renderSettings();
   else if (view === 'help') renderHelp();
+  else if (view === 'auto') renderAuto();
+  else if (view === 'team') renderTeam();
   refresh();
 }
 // the sidebar: the profile picker, who uses it, the counts
@@ -1165,7 +1361,7 @@ function setSel(i, focus) { store.set('sel.' + curId, String(i)); if (cap) capSt
 function renderKeys() { renderGroupList(); renderEditor(); }
 function keyChip(g) {
   if (g.key) return el('span', { class: 'kchip', text: keyShow(g.key) });
-  if (g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist')) return el('span', { class: 'kchip auto', text: 'auto' });
+  if (g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist' || g.mode === 'antiaggro')) return el('span', { class: 'kchip auto', text: 'auto' });
   return el('span', { class: 'kchip none', text: 'no key' });
 }
 const classCount = g => { let n = 0; for (const [, , list] of ROLES) for (const [, ids] of list) if (ids.some(id => g.cls[id])) n++; return n; };
@@ -1174,11 +1370,13 @@ function shortSum(g) {
   if (g.mode === 'class') s.push(nc ? nc + (nc === 1 ? ' class' : ' classes') : 'no classes');
   else if (g.mode === 'cast') s.push(g.skills.length ? g.skills.map(skName).join(', ') : 'no skills');
   else if (g.mode === 'reskill') s.push(g.resMin + '–' + g.resMax + ' ms', g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
-  else if (g.mode === 'assist') s.push(g.asSrc === 'net' ? 'via server: ' + ((g.assist || '').split('|')[0] || 'party leader') : ((g.assist || '').split('|').filter(Boolean).join(' → ') || 'party leader'), g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
+  else if (g.mode === 'auto') { s.push('by weight'); if (g.resAuto) s.push('res-kill by itself'); }
+  else if (g.mode === 'antiaggro') s.push(g.skills.length ? g.skills.map(skName).join(', ') : 'no skills', g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
+  else if (g.mode === 'assist') s.push(g.asSrc === 'net' ? 'via server: ' + ((lc((g.assist || '').split('|')[0]) === '@lead' ? 'team leader' : (g.assist || '').split('|')[0]) || 'party leader') : ((g.assist || '').split('|').filter(Boolean).join(' → ') || 'party leader'), g.key ? 'key: on / off' : g.auto ? 'always on' : 'never on');
   if (nc && g.mode !== 'class' && g.mode !== 'names' && g.mode !== 'assist') s.push(nc + (nc === 1 ? ' class' : ' classes'));
   if (g.mode === 'assist' && g.volley && g.volley.length) s.push('volley ' + g.volley.map(skName).join(', '));
   if (g.after === 'attack') s.push('attack'); else if (g.after === 'skill' && g.afterSk) s.push(skName(g.afterSk));
-  if (g.mark) s.push('mark ' + g.mark);
+  if (g.mark) s.push('mark ' + (MARK_NAME[g.mark - 1] || String(g.mark)).toLowerCase());
   return s.join(' · ');
 }
 let dragI = -1;
@@ -1283,7 +1481,15 @@ const fr = (label, sub, ...c) => el('div', { class: 'fr' }, el('div', { class: '
 const frc = (label, sub, ...c) => el('div', { class: 'fr col' }, el('div', { class: 'fl' }, el('b', { text: label }), sub ? el('span', { text: sub }) : null), el('div', { class: 'fv' }, ...c));
 // a number with its unit inside the field
 const numU = (val, min, step, set, unit, title, max) => el('span', { class: 'ig', title }, numIn(val, min, step, set, undefined, max), unit ? el('span', { class: 'u', text: unit }) : null);
-function renderEditor() {
+// a re-render keeps the scroll of the same thing (a click inside must not jump to the top); another thing: from the top
+function keepScroll(sel, key, draw) {
+  const old = document.querySelector(sel), top = old && old.dataset.key === key ? old.scrollTop : 0;
+  draw();
+  const nw = document.querySelector(sel);
+  if (nw) { nw.dataset.key = key; if (top) nw.scrollTop = top; }
+}
+function renderEditor() { keepScroll('#gedit .ebody', curId + ':' + selIdx(), renderEditorNow); }
+function renderEditorNow() {
   const p = P(), box = $('gedit'), i = selIdx();
   box.textContent = ''; box.className = 'pane';
   if (i < 0) { box.append(el('div', { class: 'empty', style: 'margin:auto' }, el('b', { text: 'Nothing selected' }), el('span', { text: 'Add a group on the left.' }))); return; }
@@ -1312,12 +1518,18 @@ function renderEditor() {
     ab.lastChild.append(s0);
   }
   if (g.after) ab.append(tog(g.ctrl, 'Ctrl', v => { g.ctrl = v; changed(false); }, 'As with Ctrl held: hit a player without a flag too'));
-  ab.append(el('div', { class: 'grp' }, el('span', { class: 'al', text: 'Mark' }), seg([[0, 'None'], [1, '1'], [2, '2'], [3, '3'], [4, '4']], g.mark, v => { g.mark = v; changed(true); }, 'A mark (token) over the selected target, the same as set by hand')));
-  if (g.mode !== 'names') ab.append(tog(g.prio, '★ first', v => { g.prio = v; changed(false); }, 'The ★ players of the list before everyone else, in list order'));
-  box.append(ab);
+  ab.append(el('div', { class: 'grp' }, el('span', { class: 'al', text: 'Mark' }), markSeg(g)));
+  if (g.mode !== 'names' && g.mode !== 'auto') ab.append(tog(g.prio, '★ first', v => { g.prio = v; changed(false); }, 'The ★ players of the list before everyone else, in list order'));
+  if (g.mode !== 'antiaggro') box.append(ab);   // anti-aggro: no after action, no mark
 
   const body = el('div', { class: 'ebody' });
   box.append(body);
+  if (g.mode === 'auto') {   // its rules, their order and the ranking: the «Auto target» view
+    body.append(el('div', { class: 'esec wide' }, el('h5', null, 'Auto target'),
+      el('p', { class: 'muted', style: 'margin:2px 0 10px', text: 'Its weights (classes, names, skills he casts, forces, the resurrected, who targets you, assist callers), the res-kill and whom it takes now are in the «Auto target» view.' }),
+      el('div', null, el('button', { class: 'primary', onclick: () => setView('auto') }, svgI('auto'), 'Open Auto target'))));
+    return;
+  }
   // ----- whom it takes -----
   const tg = el('div', { class: 'esec' }, el('h5', null, 'Whom it takes', el('span', { class: 'info', title: M[2] }, svgI('info', 's'))));
   if (g.mode === 'cast') tg.append(...castRows(g));
@@ -1335,16 +1547,17 @@ function renderEditor() {
       placeholder: k === 0 ? 'Empty: party leader' : 'Name',
       oninput: e => { const L = (g.assist || '').split('|'); while (L.length < 3) L.push(''); L[k] = e.target.value.trim(); g.assist = L.join('|').replace(/\|+$/, ''); changed(false); } });
     const net = g.asSrc === 'net';
-    tg.append(fr('Source', net ? 'His bot sends his target' : 'His target as you see him',
+    tg.append(fr('Source', net ? 'His script sends its picks' : 'His target as you see him',
       seg([['game', 'In game', 'His target as this game client sees it: he must be near, alive'],
-           ['net', 'Via server', 'His bot sends his target over the relay server: he may be far, out of sight or dead']],
+           ['net', 'Via server', 'What his PvP focus picks (his keys, res-kill; not mouse clicks) comes over the relay server: he may be far, out of sight or dead']],
         net ? 'net' : 'game', v => { g.asSrc = v; changed(true); renderEditor(); })));
     if (net) tg.append(netAssisterRow(g));
     else tg.append(fr('Assister', 'Whose target it takes', nameIn(0)), fr('Then', 'If he is aggroed, dead or away', nameIn(1)), fr('Then', 'The last one', nameIn(2)),
       fr('If aggroed', 'An enemy targets him', el('select', { onchange: e => { g.asAggro = +e.target.value; changed(false); } },
         [[2, 'Skip to the next'], [1, 'Wait while I am aggroed'], [0, 'Do not check']].map(([v, t]) => el('option', { value: v, text: t, selected: v === g.asAggro })))));
   }
-  if (!(g.mode === 'assist' && g.asSrc === 'net')) tg.append(rangeRow(g),   // via server: his target as it is, any distance
+  if (g.mode === 'antiaggro') tg.append(...antiRows(g));
+  if (!(g.mode === 'assist' && g.asSrc === 'net') && g.mode !== 'antiaggro') tg.append(rangeRow(g),   // via server: his target as it is, any distance
     fr('Height', 'Up / down: floors, cliffs', numU(g.height, 50, 50, v => g.height = v, '± units', 'Takes no one higher or lower than you by more than this')));
   if (g.mode === 'reskill')
     tg.append(fr('On at start', 'The key turns it on / off', sw(g.auto, v => { g.auto = v; changed(true); }, 'Res-kill works by itself: as soon as an enemy gets up it selects and hits him')),
@@ -1362,7 +1575,7 @@ function renderEditor() {
   body.append(el('div', { class: 'esec' }, el('h5', null, 'Takes now', el('span', { class: 'n', id: 'liveWho' })), el('div', { class: 'live', id: 'liveBox' }),
     el('div', { class: 'warns', id: 'warnBox' })));
   // ----- classes -----
-  if (g.mode !== 'names' && g.mode !== 'assist') {
+  if (g.mode !== 'names' && g.mode !== 'assist' && g.mode !== 'antiaggro') {
     const nc = classCount(g), opt = g.mode !== 'class', open = !opt || nc > 0 || openFilt.has(g._uid);
     const sec = el('div', { class: 'esec wide' }, el('h5', null, opt ? 'Class filter' : 'Classes',
       el('span', { class: 'n', text: nc ? nc + ' ticked · click a digit to change its priority' : opt ? 'any class' : 'tick at least one' }), el('span', { class: 'sp' }),
@@ -1391,24 +1604,31 @@ function setMode(g, k) {
   if (g.mode === k) return;
   g.mode = k;
   if (k === 'cast' && !g.skills.length) g.skills = [426, 427];
-  if ((k === 'assist' || k === 'reskill') && !g.after) g.after = 'attack';
+  if ((k === 'assist' || k === 'reskill' || k === 'auto') && !g.after) g.after = 'attack';
+  if (k === 'antiaggro') { g.skills = AGGRO_SK.slice(); g.after = ''; g.mark = 0; }
+  if (k === 'auto') { if (!g.order || !g.order.length) g.order = AUTO_ORDER.slice(); g.who = 'caster'; }
   changed(true);
 }
-function classGrid(g) {
+function classGrid(g, key, tiers) {
+  key = key || 'cls'; if (tiers === undefined) tiers = true;
+  const M = g[key] || (g[key] = {});
   const box = el('div', { class: 'cgrid' });
   for (const [role, color, list] of ROLES) {
-    const has = list.some(([, ids]) => ids.some(id => g.cls[id]));
+    const has = list.some(([, ids]) => ids.some(id => M[id]));
     const row = el('div', { class: 'cls' });
     for (const [nm, ids, second] of list) {
-      const t = Math.min(...ids.map(id => g.cls[id] || 9)), on = t < 9;
-      const chip = el('span', { class: 'cl' + (on ? ' on t' + t : ''), 'data-ids': ids.join(','), title: nm + ' and ' + second + (on ? '. The digit is its priority: click it to change' : '. Click to tick') },
-        on ? el('span', { class: 'tier t' + t, text: String(t), title: 'Priority: 1 goes first. Click: 1 → 2 → 3',
-          onclick: ev => { ev.stopPropagation(); const nt = t >= 3 ? 1 : t + 1; for (const id of ids) g.cls[id] = nt; changed(true); } }) : null,
+      const t = tiers ? Math.min(...ids.map(id => M[id] || 9)) : ids.some(id => M[id]) ? 1 : 9, on = t < 9;
+      const chip = el('span', { class: 'cl' + (on ? ' on t' + t : ''), 'data-ids': ids.join(','), title: nm + ' and ' + second + (on ? (tiers ? '. The digit is its priority: click it to change' : '. Click to untick') : '. Click to tick') },
+        on && tiers ? el('span', { class: 'tier t' + t, text: String(t), title: 'Priority: 1 goes first. Click: 1 → 2 → 3',
+          onclick: ev => { ev.stopPropagation(); const nt = t >= 3 ? 1 : t + 1; for (const id of ids) M[id] = nt; changed(true); } }) : null,
         el('span', { text: nm }), el('span', { class: 'cnt' }));
-      chip.onclick = () => { if (on) for (const id of ids) delete g.cls[id]; else for (const id of ids) g.cls[id] = 1; changed(true); };
+      chip.onclick = () => { if (on) for (const id of ids) delete M[id]; else for (const id of ids) M[id] = 1; changed(true); };
       row.append(chip);
     }
-    box.append(el('div', { class: 'crow', style: '--rc:' + color }, el('span', { class: 'rl' + (has ? ' has' : ''), text: role }), row));
+    const all = list.every(([, ids]) => ids.some(id => M[id]));
+    box.append(el('div', { class: 'crow', style: '--rc:' + color }, el('span', { class: 'rl' + (has ? ' has' : ''), text: role, style: 'cursor:pointer',
+      title: all ? 'Click: untick all ' + role : 'Click: tick all ' + role,
+      onclick: () => { for (const [, ids] of list) for (const id of ids) { if (all) delete M[id]; else if (!M[id]) M[id] = 1; } changed(true); } }), row));
   }
   return box;
 }
@@ -1473,6 +1693,25 @@ function volleyRow(g) {
   };
   return frc('Volley', 'He starts one of these: the same skill of yours at his target at once (when yours is ready)', chips, el('div', { class: 'fc' }, s));
 }
+// anti-aggro: its aggro skills (with icons), on at start, its times
+function antiRows(g) {
+  const list = el('div', { class: 'swl' });
+  for (const id of g.skills) list.append(el('div', { class: 'swr', style: 'grid-template-columns:16px minmax(0,1fr) auto 26px' }, skIcon(id), el('span', { class: 'nm', text: skName(id) }),
+    el('span', { class: 'n', text: String(id) }), el('button', { class: 'icon ghost', title: 'Remove', onclick: () => { g.skills = g.skills.filter(x => x !== id); changed(true); } }, '×')));
+  if (!g.skills.length) list.append(el('span', { class: 'muted', text: 'No skills: find one below.' }));
+  const missing = AGGRO_SK.filter(id => !g.skills.includes(id));
+  return [frc('Aggro skills', 'An enemy casting one of these at you', el('div', { style: 'display:grid;gap:8px;width:100%' }, list,
+      skillPicker(id => { if (!g.skills.includes(id)) { g.skills.push(id); changed(true); } }, id => g.skills.includes(id)),
+      missing.length ? el('div', null, el('button', { class: 'sm', text: '+ the aimed aggro skills of the game (' + missing.length + ')', onclick: () => { g.skills.push(...missing); changed(true); } })) : null)),
+    frc('Aggro effects on you', g.aaEff && g.aaEff.length ? 'Back only once one of these is on you' : 'None set: the effect of the skill (the same ID) - set others if this server differs',
+      el('div', { class: 'chips' }, ...(g.aaEff || []).map(id => el('span', { class: 'chip sk' }, skIcon(id), el('span', { text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+        el('button', { text: '×', title: 'Remove', onclick: () => { g.aaEff = g.aaEff.filter(x => x !== id); changed(true); } }))),
+        el('button', { class: 'sm', text: '+ ID', onclick: async () => { const v = parseInt(await dialog({ title: 'Effect ID (a buff / debuff on you)', input: '' }) || '', 10); if (v > 0 && !(g.aaEff || []).includes(v)) { g.aaEff = (g.aaEff || []).concat(v).slice(0, 8); changed(true); } } }))),
+    fr('On at start', 'The key turns it on / off', sw(g.auto, v => { g.auto = v; changed(true); }, 'Anti-aggro works from the start')),
+    fr('Back after', 'The aggro effect on you: back to your target in', numU(g.aaBack, 0, 50, v => g.aaBack = v, 'ms', '0: at once')),
+    fr('Keep it', 'Put back again if the aggro still moved it, for', numU(g.aaGuard, 0, 100, v => g.aaGuard = v, 'ms')),
+    fr('Wait for it', 'No effect this long after his cast (resisted): back anyway', numU(g.aaWait, 200, 100, v => g.aaWait = v, 'ms'))];
+}
 function castRows(g) {
   const chips = el('div', { class: 'chips' });
   for (const id of g.skills) chips.append(el('span', { class: 'chip sk' }, el('span', { text: skName(id) }), el('span', { class: 'n', text: String(id) }),
@@ -1495,15 +1734,22 @@ function castRows(g) {
 }
 function warnsOf(g, i) {
   const W = [], p = P(), hasCls = Object.keys(g.cls).length > 0;
-  const auto = g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist');
-  if (!g.key && !auto) W.push(['bad', g.mode === 'reskill' ? 'No key and off at start: the res-kill will never turn on.' : g.mode === 'assist' ? 'No key and off at start: the assist will never turn on.' : 'No key: the bot skips this group.']);
+  const auto = g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist' || g.mode === 'antiaggro');
+  if (!g.key && !auto) W.push(['bad', g.mode === 'reskill' ? 'No key and off at start: the res-kill will never turn on.' : g.mode === 'assist' ? 'No key and off at start: the assist will never turn on.' : g.mode === 'antiaggro' ? 'No key and off at start: the anti-aggro will never turn on.' : 'No key: the bot skips this group.']);
+  if (g.mode === 'antiaggro' && !g.skills.length) W.push(['bad', 'No aggro skills: the bot skips this group.']);
   if (g.mode === 'reskill' && !(g.resMax > g.resMin)) W.push(['bad', '«To» must be more than «after».']);
   if (g.mode === 'reskill' && g.after !== 'attack' && g.after !== 'skill') W.push(['soft', 'Nothing after selecting: a res-kill usually has «Attack».']);
   if (g.mode === 'reskill' && g.after && g.ctrl && !p.clans.length) W.push(['', 'The res-kill hits with Ctrl by itself and the enemy clan list is empty: it will take and hit anyone resurrected outside your clan / alliance / party, even without a flag (karma). Add the clans in «Enemies» or turn Ctrl off.']);
   if (g.mode === 'class' && !hasCls) W.push(['bad', 'No class ticked: the bot skips this group.']);
   if (g.mode === 'cast' && !g.skills.length) W.push(['bad', 'No skills: the bot skips this group.']);
   if (g.mode === 'names' && !p.players.some(x => x.tag === 'prio')) W.push(['bad', 'No ★ player in «Enemies»: the bot skips this group.']);
-  if (g.after === 'skill' && !(g.afterSk > 0)) W.push(['', 'No skill picked for after selecting: it will only select.']);
+  if (g.mode === 'auto') {
+    const ws = [g.resW, g.onusW, g.partyW, g.smartW, ...Object.values(g.clsW || {}), ...Object.values(g.skW || {}), ...Object.values(g.forceW || {}), ...(g.plW || []).map(x => x[1])];
+    if (!ws.some(w => w)) W.push(['soft', 'Every weight is 0: the key takes the nearest.']);
+    if (Object.values(g.forceW || {}).some(w => w) && !(g.forceSk || []).length) W.push(['', 'Forces have class weights but no force skills.']);
+    if (g.resAuto && !g.after) W.push(['soft', 'Res-kill by itself only selects: «Then» is Nothing.']);
+    if (g.resAuto && g.after && g.ctrl && !p.clans.length) W.push(['', 'The res-kill hits with Ctrl by itself and the enemy clan list is empty: it will hit anyone resurrected outside your clan / alliance / party. Add the clans in «Enemies» or turn Ctrl off.']);
+  }
   const kn = keyNorm(g.key);
   if (kn) {
     const j = p.groups.findIndex((x, k) => k < i && x.on && keyNorm(x.key) === kn);
@@ -1515,9 +1761,12 @@ function warnsOf(g, i) {
   return W;
 }
 // the live parts of a group: its top pick in the list, its whole pick in the editor
+// anti-aggro: the enemies casting one of its skills at you now
+function aggroOnMe(g, N) { const d = botData(), me = d && d.me ? d.me.oid : 0, sk = new Set(g.skills); return N.filter(p => !(p.f & 5) && p.s && sk.has(p.s) && p.t === me); }
 function rowLive(g) {
   const N = nearList(); if (!N) return null;
   if (botOn(g) === false) return ['off in the bot'];
+  if (g.mode === 'antiaggro') { const A = aggroOnMe(g, N); return A.length ? ['aggro from ', el('b', { text: A[0].n }), A.length > 1 ? ' +' + (A.length - 1) : ''] : ['no aggro at you']; }
   if (g.mode === 'assist') {
     const a = g.asSrc === 'net' ? netPick(g, N) : assistPick(g, N);
     if (a.t && !(a.t.f & 5)) return ['→ ', el('b', { text: a.t.n }), ' ' + clsName(a.t.k) + ' · via ' + a.he.n];
@@ -1537,7 +1786,7 @@ function ltRow(no, q, g, note) {
 const lempty = t => el('div', { class: 'lempty' }, svgI('radar'), el('span', { text: t }));
 // a res-kill / assist group: on or off in the bot now (its key turns it on / off in game); null = not known
 function botOn(g) {
-  if ((g.mode !== 'reskill' && g.mode !== 'assist') || !g.on) return null;   // a group off in the profile: not loaded
+  if ((g.mode !== 'reskill' && g.mode !== 'assist' && g.mode !== 'antiaggro') || !g.on) return null;   // a group off in the profile: not loaded
   const d = botData(), pr = d && d.profile;
   if (!pr || !Array.isArray(pr.live) || pr.id !== curId) return null;   // an older bot / another profile
   const nm = lc(clean(g.name) || '');
@@ -1547,7 +1796,7 @@ function botOnRow(g) {
   const on = botOn(g); if (on === null) return [];
   const pr = botData().profile, R = [];
   R.push(el('div', { class: 'lstat ' + (on ? 'on' : 'off') }, el('b', { text: on ? 'ON' : 'OFF' }),
-    el('span', { text: on ? (g.mode === 'reskill' ? 'in the bot: takes them by itself' : 'in the bot: follows') :
+    el('span', { text: on ? ({ reskill: 'in the bot: takes them by itself', antiaggro: 'in the bot: watches the aggro at you' }[g.mode] || 'in the bot: follows') :
       'in the bot: ' + (g.key ? 'press ' + g.key + ' in game' : 'no key: it stays off') })));
   if (g.mode === 'reskill' && pr.rk && pr.rk.t) R.push(el('div', { class: 'lstat' }, el('span', { text: 'Last:' }),
     el('span', { class: 'last', text: pr.rk.t + ' · ' + Math.round((pr.rk.ago | 0) / 1000) + ' s ago' })));
@@ -1557,12 +1806,17 @@ function liveList(g) { const L = liveCore(g); return botOnRow(g).concat(L); }
 function liveCore(g) {
   const N = nearList();
   if (!N) return [lempty(!online ? 'Offline.' : liveBots().length ? 'The bot sends nothing yet.' : 'Whom it takes shows while pvp_focus.txt runs.')];
+  if (g.mode === 'antiaggro') {
+    const A = aggroOnMe(g, N);
+    return A.length ? [el('div', { class: 'lmsg', text: 'Casting aggro at you now: the target goes onto him' }), ...A.slice(0, 4).map((q, k) => ltRow(k + 1, q, g, skName(q.s)))]
+      : [lempty('Nobody casts an aggro skill at you now.')];
+  }
   if (g.mode === 'assist' && g.asSrc === 'net') {
     const a = netPick(g, N), st = netStat(); if (a.msg) return st.concat(lempty(a.msg));
     const r = a.t ? ltRow('→', a.t, g, a.t.f & 5 ? 'a friend: selected, no attack' : '')
       : el('div', { class: 'lmsg' }, '→ ', el('b', { text: a.tn }), ': not in your sight yet, taken as soon as he is');
     if (a.t && !(a.t.f & 5)) r.classList.add('top');
-    return st.concat(el('div', { class: 'lmsg' }, 'Target of ', el('b', { text: a.he.n }), ' (his bot)', a.why), r);
+    return st.concat(el('div', { class: 'lmsg' }, 'Last pick of ', el('b', { text: a.he.n }), ' (his PvP keys)', a.why), r);
   }
   if (g.mode === 'assist') {
     const a = assistPick(g, N); if (a.msg) return [lempty(a.msg)];
@@ -1824,6 +2078,354 @@ $('profFile').onchange = async e => {
 
 // ===== settings =====
 const cpLast = {};   // the CP potion turned off: its item ID kept to turn it on again
+// ===== team: one leader on the server picks, everyone else takes his picks (a «Team follow» group: assist via the
+// server, assister @lead = the leader the relay keeps for every PC) =====
+let serverLead = '';
+const TEAM_GROUP = 'Team follow';
+const TEAM_PROF = 'team';     // the team profile: the leader's, sent to every PC (the panel writes profiles\team.pvp)
+const isTeamGroup = g => g.mode === 'assist' && g.asSrc === 'net' && lc((g.assist || '').split('|')[0]) === '@lead';
+// who is on the server, who leads, the link (from the live bots of this PC); here: name -> its bot
+function teamData() {
+  const out = { room: [], lead: serverLead, link: -1, rtt: -1, here: {} };
+  for (const k of liveBots()) {
+    const d = bots[k].d, n = d.net, ch = d.char || k;
+    out.here[lc(ch)] = k;
+    if (!out.room.some(y => lc(y) === lc(ch))) out.room.push(ch);
+    if (!n) continue;
+    if (n.link > out.link) { out.link = n.link; out.rtt = n.rtt; }
+    for (const x of (n.room || '').split(',').filter(Boolean)) if (!out.room.some(y => lc(y) === lc(x))) out.room.push(x);
+    if (n.lead !== undefined && n.link >= 0) out.lead = n.lead;
+  }
+  out.room.sort((a, b) => a.localeCompare(b));
+  return out;
+}
+async function setLead(name) {
+  try { await api('PUT', '/api/cmd?c=lead&name=' + encodeURIComponent(name)); serverLead = name; toast(name ? name + ' leads: the others take his picks' : 'No leader now'); }
+  catch (e) { toast('Not set: ' + e.message, { kind: 'bad' }); }
+  renderTeam();
+}
+// the leader's whole profile to every PC (there: profile «Team», the active one)
+async function sendTeamProf(id, ch) {
+  if (saveT) await saveNow();
+  try {
+    const r = await api('PUT', '/api/cmd?c=teamprof&id=' + encodeURIComponent(id) + '&char=' + encodeURIComponent(ch));
+    if (r === 'sent') toast('Sent: every PC on the server takes it now');
+    else toast('Taken here only: no link to the server now', { kind: 'bad' });
+  } catch (e) { toast('Not sent: ' + e.message, { kind: 'bad' }); }
+}
+async function pressKey(ch, g) {
+  try { await api('PUT', '/api/cmd?c=key&char=' + encodeURIComponent(ch) + '&g=' + encodeURIComponent(g)); }
+  catch (e) { toast('Not sent: ' + e.message, { kind: 'bad' }); }
+}
+// every «Team follow» group of every profile changed, the profiles saved
+function teamAll(fn) {
+  for (const id of Object.keys(profs)) { let any = false; for (const g of profs[id].p.groups) if (isTeamGroup(g)) { fn(g); any = true; } if (any) saveProfile(id); }
+  renderAll();
+}
+function renderTeam() {
+  const box = $('teamBox'); if (!box) return;
+  box.textContent = '';
+  const left = el('div', { class: 'pane' }, el('div', { class: 'ph' }, el('h3', null, 'On the server'), el('span', { class: 'n', id: 'teamSrv' })),
+    el('div', { class: 'ab1', id: 'teamList' }));
+  // this PC: the «Team follow» group of each profile
+  const ids = sortedIds(), has = id => profs[id].p.groups.some(isTeamGroup), miss = ids.filter(id => !has(id));
+  const tg0 = ids.filter(has).map(id => profs[id].p.groups.find(isTeamGroup))[0] || null;
+  const TG = ids.filter(has).map(id => profs[id].p.groups.find(isTeamGroup));
+  const thenOf = g => g.after === 'attack' ? 'attack' : g.after === 'skill' && g.afterSk > 0 ? 'skill' : '';
+  const thenTxt = g => g.after === 'attack' ? 'then attack' : g.after === 'skill' && g.afterSk > 0 ? 'then ' + skName(g.afterSk) : 'then nothing (takes the target only)';
+  const rows = ids.map(id => { const u = usersOf(id), g = profs[id].p.groups.find(isTeamGroup);
+    const what = g ? el('span', { class: 's' + (thenOf(g) ? '' : ' w'), text: thenTxt(g) + ' · ' + ((g.volley || []).length ? 'volley ' + g.volley.map(skName).join(', ') : 'no volley') }) : null;
+    return el('div', { class: 'tprof' }, el('span', { class: has(id) ? 'y' : 'x', text: has(id) ? '✓' : '–' }), el('span', null, profs[id].p.name || id, what),
+      el('span', { class: 'u', text: u.length ? u.join(', ') : id === sel.active ? 'everyone without an own profile' : '' })); });
+  const right = el('div', { class: 'pane' }, el('div', { class: 'ph' }, el('h3', null, 'This PC')), el('div', { class: 'ab1' },
+    el('p', { class: 'tnote', text: 'Every character here follows the leader through the «Team follow» group of its profile: whatever the leader\'s script picks (his keys, Auto target, res-kill) is taken at once, any distance. The leader himself just leads. Each PC sets this up once; the leader is one for all.' }),
+    ...rows,
+    el('div', { style: 'margin:8px 0 4px' }, miss.length ? el('button', { class: 'primary', onclick: () => {
+      for (const id of miss) profs[id].p.groups.push(newGroup({ name: TEAM_GROUP, mode: 'assist', asSrc: 'net', assist: '@lead', after: 'attack', auto: true, key: tg0 ? tg0.key : '' }));
+      for (const id of miss) saveProfile(id);
+      toast('«Team follow» added to ' + miss.length + (miss.length === 1 ? ' profile' : ' profiles')); renderAll(); } }, svgI('plus'), 'Add «Team follow» to ' + (miss.length === ids.length ? 'every profile' : miss.length + (miss.length === 1 ? ' profile' : ' profiles')))
+      : el('span', { class: 'muted', text: 'Every profile has it.' })),
+    ...(tg0 ? (() => {
+      const proxy = { mode: 'assist', name: TEAM_GROUP, get auto() { return tg0.auto; } };
+      Object.defineProperty(proxy, 'key', { get: () => tg0.key, set: v => teamAll(g => { g.key = v; }) });
+      const kb = el('button', { class: 'keycap', onclick: e => capStart(e.currentTarget, proxy) }); keyBtnLook(kb, proxy);
+      return [el('div', { class: 'esec', style: 'margin-top:8px' }, el('h5', null, 'Following, in every profile'),
+        fr('Key', 'Turns following on / off (the overlay too)', kb),
+        fr('On at start', 'Follows as soon as the bot starts', sw(tg0.auto, v => teamAll(g => { g.auto = v; }))),
+        fr('Then', new Set(TG.map(thenOf)).size > 1 ? 'Differs (see above): a click sets all' : 'Right after taking his pick',
+          seg([['', 'Nothing'], ['attack', 'Attack']], new Set(TG.map(thenOf)).size > 1 ? null : thenOf(tg0), v => teamAll(g => { g.after = v; }))),
+        teamVolleyRow(TG, ids.filter(has)))];
+    })() : [])));
+  // the team profile: who sends it (the leader, from his PC), what this PC has
+  const t = teamData(), lk = t.lead ? t.here[lc(t.lead)] : null, lpr = lk && bots[lk].d.profile;
+  const lpn = lpr ? (profs[lpr.id] ? profs[lpr.id].p.name || lpr.id : lpr.name || lpr.id) : '';
+  const own = Object.entries(t.here).filter(([n, k]) => n !== lc(t.lead) && bots[k].d.profile && bots[k].d.profile.how === 'char')
+    .map(([n, k]) => (bots[k].d.char || k) + ' (' + (bots[k].d.profile.name || bots[k].d.profile.id) + ')');
+  const tp = profs[TEAM_PROF];
+  const psec = el('div', { class: 'esec' }, el('h5', null, 'Team profile'),
+    lpr ? fr('Send to the team', 'His «' + lpn + '» to every PC, as «Team». Again after a change',
+      el('button', { class: 'primary', id: 'teamSend', onclick: () => sendTeamProf(lpr.id, t.lead) }, svgI('team'), 'Send'))
+      : el('p', { class: 'tnote', text: t.lead ? 'The leader (' + t.lead + ') sends his profile from his PC: then it is here as «Team».' : 'Pick a leader: he sends his profile to everyone.' }),
+    el('p', { class: 'tnote', id: 'teamProfHere', text: tp ? 'Here: «' + (tp.p.name || TEAM_PROF) + '»' + (sel.active === TEAM_PROF ? ', active: every character without its own profile uses it.' : ', but another profile is active now.') : 'Here: no team profile yet.' }),
+    own.length ? el('p', { class: 'tnote', style: 'color: var(--warn)', text: 'Their own profile, not the team one: ' + own.join(', ') + '. Delete it in Profiles to take the team one.' }) : null);
+  const ab = right.querySelector('.ab1');
+  ab.insertBefore(psec, ab.children[1] || null);
+  box.dataset.rsig = teamRsig(t);
+  box.append(left, right);
+  refreshTeam();
+}
+// what the right side shows depends on: the leader, which of ours is he, the profiles of ours
+const teamRsig = t => JSON.stringify([t.lead, Object.entries(t.here).map(([n, k]) => [n, (bots[k].d.profile || {}).id, (bots[k].d.profile || {}).how])]);
+// the volley of every «Team follow»: the leader starts one of these -> the same skill of the follower at his target.
+// Shown: every skill of any profile (dashed: not in every one); a skill added / removed here: in / from every profile
+function teamVolleyRow(G, ids) {
+  const all = [];
+  for (const g of G) for (const id of g.volley || []) if (!all.includes(id)) all.push(id);
+  const chips = el('div', { class: 'chips' });
+  for (const id of all) {
+    const miss = ids.filter((pid, i) => !(G[i].volley || []).includes(id)).map(pid => profs[pid].p.name || pid);
+    chips.append(el('span', { class: 'chip sk' + (miss.length ? ' part' : ''), title: miss.length ? 'Not in: ' + miss.join(', ') : '' },
+      el('span', { text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+      el('button', { text: '×', title: 'Remove from every profile', onclick: () => teamAll(g => { g.volley = (g.volley || []).filter(x => x !== id); }) })));
+  }
+  if (!all.length) chips.append(el('span', { class: 'muted', text: 'off · no skills' }));
+  const s = skillOptions(0);
+  s.firstChild.textContent = '+ Add a skill…';
+  s.onchange = async () => {
+    const v = s.value === 'id' ? parseInt(await dialog({ title: 'Skill ID', input: '' }) || '', 10) : +s.value;
+    if (v > 0) teamAll(g => { if (!g.volley) g.volley = []; if (!g.volley.includes(v) && g.volley.length < 8) g.volley.push(v); }); else s.value = '';
+  };
+  return frc('Volley', 'The leader casts one: the same skill at his target', chips, el('div', { class: 'fc' }, s));
+}
+function refreshTeam() {
+  const list = $('teamList'); if (!list) return;
+  const t = teamData(), fol = {}, tb = $('teamBox');
+  if (tb && tb.dataset.rsig !== teamRsig(t)) { renderTeam(); return; }
+  for (const [lcn, k] of Object.entries(t.here)) {
+    const d = bots[k].d, pr = d.profile || {}, prof = profs[pr.id], g = prof && prof.p.groups.find(isTeamGroup);
+    fol[lcn] = g ? { name: clean(g.name), on: (pr.live || []).some(x => lc(x) === lc(clean(g.name))), bot: k } : null;
+  }
+  const sig = JSON.stringify([t, fol]);
+  if (list.dataset.sig === sig) return;
+  list.dataset.sig = sig; list.textContent = '';
+  const st = $('teamSrv');
+  if (st) st.textContent = t.link === 1 ? 'the server · ' + (t.rtt >= 0 ? t.rtt + ' ms' : 'linked') : t.link === 0 ? 'no server link: this PC only' : '';
+  if (!t.room.length) { list.append(lempty(!online ? 'Offline.' : 'Nobody yet: run pvp_focus.txt (each PC: PvpPanel + relay.ini).')); return; }
+  for (const name of t.room) {
+    const isLead = !!t.lead && lc(t.lead) === lc(name), here = t.here[lc(name)], f = fol[lc(name)];
+    const sub = isLead ? el('span', { text: (here ? 'this PC' : 'another PC') + ' · leads: his picks go to everyone' })
+      : here ? (f ? el('span', { class: f.on ? 'f' : '', text: 'this PC · ' + (f.on ? 'follows the leader' : 'does not follow now') }) : el('span', { text: 'this PC · its profile has no «Team follow»' }))
+      : el('span', { text: 'another PC' });
+    list.append(el('div', { class: 'trow' + (isLead ? ' lead' : '') }, el('span', { class: 'tcrown', title: isLead ? 'The leader' : '' }, svgI('crown')),
+      el('div', { class: 'tnm' }, el('b', { text: name }), sub),
+      here && f && !isLead ? sw(f.on, () => pressKey(f.bot, f.name), 'Follow on / off (as its key)') : el('span'),
+      isLead ? el('button', { class: 'sm', text: 'Stop leading', onclick: () => setLead('') }) : el('button', { class: 'sm primary', text: 'Make leader', onclick: () => setLead(name) })));
+  }
+}
+
+// ===== auto target: ONE group (mode auto), every enemy by weight, set up here =====
+const autoIdx = () => P().groups.findIndex(g => g.mode === 'auto');
+function renderAuto() { keepScroll('#autoBox .ab', 'auto:' + curId, renderAutoNow); }
+// a weight field: more goes first, negative: later
+const wIn = (val, set, title) => { const i = numIn(val | 0, -999, 5, set, title || 'Weight: more goes first, negative: later', 999); i.classList.add('wv'); return i; };
+// the icon of a skill (the server serves the bot's L2ICO icons)
+const skIcon = id => el('img', { class: 'ski', src: '/skillicon/' + id + '.png', alt: '', onerror: e => { e.target.style.visibility = 'hidden'; } });
+function renderAutoNow() {
+  const p = P(), box = $('autoBox'), i = autoIdx();
+  box.textContent = '';
+  if (i < 0) {
+    box.append(el('div', { class: 'pane', style: 'grid-column:1/-1;display:grid;place-items:center' },
+      el('div', { class: 'empty', style: 'max-width:460px' }, svgI('auto'), el('b', { text: 'No auto target yet' }),
+        el('span', { text: 'One key, every enemy by weight: his class, his name, the skill he casts, the forces at him, just resurrected, who targets you, assist callers. Press it: the heaviest; again: the next one.' }),
+        el('button', { class: 'primary', onclick: () => { p.groups.push(newGroup({ name: 'Auto target', mode: 'auto', after: 'attack', who: 'caster', resMax: 3000 })); changed(true); } }, svgI('plus'), 'Make the auto target'))));
+    return;
+  }
+  const g = p.groups[i];
+  if (!Object.keys(SK_NAMES).length) loadSkillNames().then(() => { if (view === 'auto') renderAuto(); });
+  // ---- the key and what it does ----
+  const keyBtn = el('button', { class: 'keycap', onclick: e => capStart(e.currentTarget, g) }); keyBtnLook(keyBtn, g);
+  const thenRow = fr('Then', 'Right after selecting', seg([['', 'Nothing'], ['attack', 'Attack'], ['skill', 'Skill']], g.after, v => { g.after = v; changed(true); }));
+  if (g.after === 'skill') {
+    const s0 = skillOptions(g.afterSk);
+    s0.onchange = async () => { if (s0.value === 'id') { const v = parseInt(await dialog({ title: 'Skill ID', input: '' }) || '', 10); if (v > 0) g.afterSk = v; changed(true); return; } g.afterSk = +s0.value || 0; changed(false); };
+    thenRow.lastChild.append(s0);
+  }
+  const keySec = el('div', { class: 'esec' }, el('h5', null, 'Key and action'),
+    fr('Key', g.key ? 'Press: the heaviest · again: the next' : 'Not set: click and press a key', keyBtn),
+    fr('On', 'Off: the bot skips it', sw(g.on, v => { g.on = v; changed(true); })),
+    thenRow,
+    ...(g.after ? [fr('Ctrl', 'Hit a player without a flag too', sw(g.ctrl, v => { g.ctrl = v; changed(false); }))] : []),
+    fr('Mark', 'A mark over him', markSeg(g)),
+    rangeRow(g),
+    fr('Height', 'Up / down: floors, cliffs', numU(g.height, 50, 50, v => g.height = v, '± units', 'Takes no one higher or lower than you by more than this')));
+  // ---- who targets us, assist callers ----
+  if (!g.sitSkip) g.sitSkip = {};
+  const ns = Object.keys(g.sitSkip).length;
+  const sitSec = el('div', { class: 'esec' }, el('h5', null, 'Situations', el('span', { class: 'n', text: 'added to his weight' })),
+    fr('Targets you', 'Holds you in target', wIn(g.onusW, v => g.onusW = v)),
+    fr('Targets your party', 'Holds a party member', wIn(g.partyW, v => g.partyW = v)),
+    fr('Assist caller', 'Calls assist on you or your party', wIn(g.smartW, v => g.smartW = v)),
+    fr('Ignore classes', ns ? skipText(g.sitSkip) : 'None: every class counts', el('button', { class: 'sm', text: sitFiltOpen ? 'Done' : ns ? 'Change' : 'Choose',
+      onclick: () => { sitFiltOpen = !sitFiltOpen; renderAuto(); } })));
+  const sitGrid = sitFiltOpen ? el('div', { class: 'esec wide' }, el('h5', null, 'Situations: ignored classes',
+    el('span', { class: 'n', text: 'click a class, or a role for all of it' }), el('span', { class: 'sp' }),
+    ns ? el('button', { class: 'ghost sm', text: 'Clear', onclick: () => { g.sitSkip = {}; changed(true); } }) : null), classGrid(g, 'sitSkip', false)) : null;
+  // ---- the res-kill ----
+  const nr = Object.keys(g.resCls || {}).length, openR = nr > 0 || resFiltOpen;
+  const resSec = el('div', { class: 'esec wide' }, el('h5', null, 'Res-kill', el('span', { class: 'n', text: 'an enemy just resurrected' })),
+    fr('Weight', 'Added while he counts as just up', wIn(g.resW, v => g.resW = v)),
+    ownRange(g, 'resRange', 'Res-kill range', 'Fastest reaction: often wider than the group'),
+    fr('Got up', 'After the res: from – to',
+      numU(g.resMin, 0, 50, v => g.resMin = v, 'ms', 'How many milliseconds after the res NOT to count him yet (0 = at once)'), el('span', { class: 'dash', text: '–' }),
+      numU(g.resMax, 100, 100, v => g.resMax = v, 'ms', 'After how many milliseconds after the res he counts no more')),
+    fr('Res-kill by itself', g.resAuto ? 'No key: he gets up - taken and «Then» at once' : 'Off: he only weighs more when you press', sw(g.resAuto, v => { g.resAuto = v; changed(true); }, 'As a res-kill group switched on: an enemy gets up, the bot selects and hits him by itself')),
+    ...(g.resAuto ? [fr('Key', g.resKey ? 'Turns res-kill on / off in game (the overlay too)' : 'None: always on. Set one to res-kill only when you want',
+        resKeyBtn(g)),
+      ...(g.resKey ? [fr('On at start', 'Off: press the key to start res-killing', sw(!!g.resOn, v => { g.resOn = v; changed(true); }))] : []),
+      fr('Pace', 'Between two resurrected', numU(g.autoMs, 500, 100, v => g.autoMs = v, 'ms', 'Res-kills two in a row no more often than this')), soundRow(g),
+      ...(g.killSound ? [fr('Counts within', 'After his res', numU(Math.round(g.killMs / 1000), 1, 1, v => g.killMs = v * 1000, 's', 'A death later than this after getting up is no res-kill', 600))] : [])] : []),
+    el('div', { class: 'fr' }, el('div', { class: 'fl' }, el('b', { text: 'Res-kill classes' }),
+      el('span', { text: nr ? 'Only they count as resurrected (' + nr + ')' : 'Any class: tick classes to res-kill only them' })),
+      el('div', { class: 'fv' }, nr ? el('button', { class: 'ghost sm', text: 'Clear', onclick: () => { g.resCls = {}; changed(true); } })
+        : el('button', { class: 'sm', text: openR ? 'Hide' : 'Choose classes', onclick: () => { resFiltOpen = !openR; renderAuto(); } }))),
+    ...(openR ? [classGrid(g, 'resCls', false)] : []));
+  // ---- break casts: the skill he casts, the forces at him ----
+  if (!g.skW) g.skW = {};
+  const skList = el('div', { class: 'swl' });
+  for (const id of Object.keys(g.skW).map(Number)) skList.append(el('div', { class: 'swr' }, skIcon(id), el('span', { class: 'nm', text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+    wIn(g.skW[id], v => { g.skW[id] = v; }), el('button', { class: 'icon ghost', title: 'Remove', onclick: () => { delete g.skW[id]; changed(true); } }, '×')));
+  if (!skList.children.length) skList.append(el('span', { class: 'muted', text: 'No skills yet: find one below or pick one seen near you.' }));
+  const fsk = el('div', { class: 'chips' }, ...(g.forceSk || []).map(id => el('span', { class: 'chip sk' }, skIcon(id), el('span', { text: skName(id) }), el('span', { class: 'n', text: String(id) }),
+    el('button', { text: '×', title: 'Remove', onclick: () => { g.forceSk = g.forceSk.filter(x => x !== id); changed(true); } }))),
+    el('button', { class: 'sm', text: '+ ID', onclick: async () => { const v = parseInt(await dialog({ title: 'Force skill ID', input: '' }) || '', 10); if (v > 0 && !(g.forceSk || []).includes(v)) { g.forceSk = (g.forceSk || []).concat(v).slice(0, 8); changed(true); } } }));
+  const castSec = el('div', { class: 'esec wide' }, el('h5', null, 'Break casts', el('span', { class: 'n', text: 'the skill he casts right now, the forces cast at him' })),
+    ownRange(g, 'castRange', 'Break-cast range', 'Casts and forces count only this near'),
+    frc('He casts', 'The weight of the skill he is casting now', el('div', { style: 'display:grid;gap:8px;width:100%' }, skList, skillPicker(id => { if (!(id in g.skW)) { g.skW[id] = 50; changed(true); } }, id => id in g.skW))),
+    frc('Forces at him', 'Charged with these skills: the weight of his class below, per force on him', fsk),
+    el('div', { class: 'fr col' }, el('div', { class: 'fl' }, el('b', { text: 'Forces: by his class' }), el('span', { text: 'The weight per force on a player of the class' }))),
+    classWGrid(g, 'forceW'));
+  // ---- classes, names ----
+  const clsSec = el('div', { class: 'esec wide' }, el('h5', null, 'Classes', el('span', { class: 'n', text: 'his class: the weight' })), classWGrid(g, 'clsW'));
+  if (!g.plW) g.plW = [];
+  const pl = el('div', { class: 'swl' });
+  g.plW.forEach(([n, w], k) => pl.append(el('div', { class: 'swr', style: 'grid-template-columns:minmax(0,1fr) 62px 26px' }, el('span', { class: 'nm', text: n }),
+    wIn(w, v => { g.plW[k][1] = v; }), el('button', { class: 'icon ghost', title: 'Remove', onclick: () => { g.plW.splice(k, 1); changed(true); } }, '×'))));
+  if (!g.plW.length) pl.append(el('span', { class: 'muted', text: 'No names yet. A name with a weight is an enemy in any clan.' }));
+  const nmIn = el('input', { type: 'text', placeholder: 'A nickname', maxlength: 24, list: 'autoNames' });
+  const addName = () => { const n = clean(nmIn.value); if (!n) return; if (g.plW.some(([m]) => lc(m) === lc(n))) { toast('«' + n + '» is in the list already'); return; } g.plW.push([n, 50]); changed(true); };
+  nmIn.onkeydown = e => { if (e.key === 'Enter') addName(); };
+  const dl = el('datalist', { id: 'autoNames' }, ...((nearList() || []).filter(x => !(x.f & 5)).map(x => el('option', { value: x.n }))));
+  const stars = p.players.filter(x => x.tag === 'prio' && !g.plW.some(([m]) => lc(m) === lc(x.name)));
+  const plSec = el('div', { class: 'esec wide' }, el('h5', null, 'Names', el('span', { class: 'n', text: 'a certain character: the weight' })), pl,
+    el('div', { class: 'fc', style: 'margin-top:6px' }, nmIn, dl, el('button', { class: 'sm', text: 'Add', onclick: addName }),
+      stars.length ? el('button', { class: 'sm', text: '+ ★ of «Enemies» (' + stars.length + ')', onclick: () => { for (const x of stars) g.plW.push([x.name, 50]); changed(true); } }) : null));
+  const left = el('div', { class: 'pane' }, el('div', { class: 'ab' }, keySec, sitSec, sitGrid, resSec, castSec, clsSec, plSec));
+  const right = el('div', { class: 'pane' }, el('div', { class: 'ph' }, el('h3', null, 'Takes now'), el('span', { class: 'n', id: 'autoWho' })),
+    el('div', { class: 'ab', style: 'grid-template-columns:minmax(0,1fr)' }, el('div', { class: 'live', id: 'autoLive' }), el('div', { class: 'warns', id: 'autoWarn' })));
+  box.append(left, right);
+  refreshAuto();
+}
+let resFiltOpen = false;   // the res-kill class grid shown while none is ticked yet
+let sitFiltOpen = false;   // the class grid of the situations open
+// the classes of a set, short: the whole roles by name, the rest counted
+function skipText(M) {
+  const roles = []; let n = 0;
+  for (const [role, , list] of ROLES) { const k = list.filter(([, ids]) => ids.some(id => M[id])).length; if (k && k === list.length) roles.push(role); else n += k; }
+  return 'Not counted: ' + roles.concat(n ? [n + (n === 1 ? ' class' : ' classes')] : []).join(', ');
+}
+// a range of its own (0: the group's), as rangeRow
+function ownRange(g, key, label, sub) {
+  const def = gRange(g), own = () => g[key] > 0;
+  const subEl = el('span'), back = el('button', { class: 'ghost rback', title: 'Back to the group range', onclick: () => { g[key] = 0; changed(false); look(); } }, '↺ ' + def);
+  const box = numU(own() ? g[key] : def, 100, 50, v => { g[key] = v; look(); }, 'units', 'Type a number: a range of its own');
+  const inp = box.querySelector('input');
+  function look() {
+    subEl.textContent = own() ? sub : 'As the group: ' + def;
+    box.classList.toggle('inh', !own()); back.hidden = !own();
+    if (!own() && document.activeElement !== inp) inp.value = def;
+  }
+  look();
+  return el('div', { class: 'fr' }, el('div', { class: 'fl' }, el('b', { text: label }), subEl), el('div', { class: 'fv' }, back, box));
+}
+// a class -> weight grid (g[key]: {class ID: weight}); a class chip covers its 2nd and 3rd profession
+function classWGrid(g, key) {
+  const M = g[key] || (g[key] = {}), box = el('div', { class: 'cgrid' });
+  for (const [role, color, list] of ROLES) {
+    const row = el('div', { class: 'cls' });
+    for (const [nm, ids, second] of list) {
+      const w = M[ids[0]] || 0;
+      const chip = el('label', { class: 'cw' + (w ? ' on' : ''), title: nm + ' and ' + second }, el('span', { text: nm }));
+      chip.append(numIn(w, -999, 5, v => { for (const id of ids) { if (v) M[id] = v; else delete M[id]; } chip.classList.toggle('on', !!v); }, 'Weight: more goes first, negative: later', 999));
+      row.append(chip);
+    }
+    box.append(el('div', { class: 'crow', style: '--rc:' + color }, el('span', { class: 'rl' + (list.some(([, ids]) => M[ids[0]]) ? ' has' : ''), text: role }), row));
+  }
+  return box;
+}
+// find a skill: by name / ID in the whole skill list of the bot (with icons), or one seen cast near you
+function skillPicker(onAdd, has) {
+  const inp = el('input', { type: 'text', placeholder: 'Find a skill: a name or an ID…', maxlength: 40 }), res = el('div', { class: 'sres' });
+  const row = id => el('button', { class: 'srow', onclick: () => { inp.value = ''; res.textContent = ''; onAdd(id); } }, skIcon(id), el('span', { text: skName(id) + (has(id) ? ' ✓' : '') }), el('span', { class: 'n', text: String(id) }));
+  inp.oninput = () => {
+    const q = inp.value.trim().toLowerCase(); res.textContent = '';
+    if (!q) return;
+    const out = [];
+    if (/^\d+$/.test(q)) out.push(+q);
+    const hits = [];   // the names starting with it first, then the shorter ones
+    for (const [id, nm] of Object.entries(SK_NAMES)) { const l = nm.toLowerCase(), at = l.indexOf(q); if (at >= 0) hits.push([at === 0 ? 0 : l.includes(' ' + q) ? 1 : 2, nm.length, +id]); }
+    hits.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+    const seenNm = new Set(out.map(skName));   // a name once (the NPC copies of it left out; a certain ID: type it)
+    for (const [, , id] of hits) { if (out.length >= 14) break; const nm = SK_NAMES[id]; if (seenNm.has(nm)) continue; seenNm.add(nm); out.push(id); }
+    for (const [id, nm] of Object.entries(KNOWN_SK)) if (nm.toLowerCase().includes(q) && !out.includes(+id)) out.unshift(+id);
+    for (const id of out) res.append(row(id));
+    if (!out.length) res.append(el('span', { class: 'muted', style: 'padding:4px 8px', text: Object.keys(SK_NAMES).length ? 'Nothing found' : 'The skill list is loading…' }));
+  };
+  const d = curBot && bots[curBot] && bots[curBot].d, seen = (d && d.casts || []).slice().sort((a, b) => b.n - a.n).filter(c => !has(c.id)).slice(0, 16);
+  return el('div', { class: 'spick' }, inp, res,
+    ...(seen.length ? [el('span', { class: 'muted', style: 'font-size:11.5px', text: 'Seen cast near you (most first):' }),
+      el('div', { class: 'chips sseen' }, ...seen.map(c => el('span', { class: 'chip sk', title: '×' + c.n + ' · ' + clsName(c.k) + ' · click to add', onclick: () => onAdd(c.id) },
+        skIcon(c.id), el('span', { text: skName(c.id) }), el('span', { class: 'n', text: '×' + c.n }))))] : []));
+}
+// why the auto group takes q: what his weight is made of
+function autoParts(q) {
+  const a = q.aw || {}, out = [];
+  const add = (t, w, ic) => { if (w) out.push([t, w, ic]); };
+  add('got up', a.res); add(q.s ? skName(q.s) : 'casts', a.sk, q.s); add('forces ×' + a.nf, a.force); add('name', a.pl); add('class', a.cls);
+  add('on you', a.onus); add('on party', a.party); add('caller', a.smart);
+  return out;
+}
+function autoRow(no, q, note) {
+  const parts = autoParts(q);
+  return el('div', { class: 'lt' }, el('span', { class: 'no', text: String(no) }),
+    el('div', { class: 'who' }, el('span', { class: 'nm', text: (q.star ? '★ ' : '') + q.n }),
+      el('span', { class: 'sub', text: (note ? note + ' · ' : '') + clsName(q.k) + (q.c ? ' · ' + q.c : '') + ' · ' + q.d }),
+      el('span', { class: 'why wl' }, ...(parts.length ? parts.map(([t, w, ic]) => el('i', { class: w < 0 ? 'neg' : '' }, ...(ic ? [skIcon(ic)] : []), t + ' ' + (w > 0 ? '+' : '−') + Math.abs(w))) : [el('i', { class: 'd', text: 'nearest' })]))),
+    el('span', { class: 'x', title: 'His weight', text: q.aw ? String(q.aw.total) : '' }), el('span', { class: 'd', text: '' }));
+}
+function refreshAuto() {
+  const lb = $('autoLive'), i = autoIdx(); if (!lb || i < 0) return;
+  const g = P().groups[i], N = nearList();
+  if (!N) lb.replaceChildren(lempty(!online ? 'Offline.' : liveBots().length ? 'The bot sends nothing yet.' : 'Whom it takes shows while pvp_focus.txt runs.'));
+  else {
+    const r = cands(g, N);
+    if (r.inr.length) {
+      const L = r.inr.slice(0, 8).map((q, k) => autoRow(k + 1, q)); L[0].classList.add('top');
+      if (r.inr.length > 8) L.push(el('div', { class: 'lmsg', text: '+ ' + (r.inr.length - 8) + ' more in range' }));
+      lb.replaceChildren(el('div', { class: 'lmsg', text: g.key ? 'Press ' + keyShow(g.key) + ': №1 · again: №2, №3… The number: his weight' : 'Set a key: the bot skips it without one.' }), ...L);
+    } else if (r.far) lb.replaceChildren(el('div', { class: 'lmsg', text: 'Nobody in range. The nearest:' }), autoRow('·', r.far, (r.far.d - gRange(g)) + ' too far'));
+    else lb.replaceChildren(lempty('No enemy nearby.'));
+  }
+  const lw = $('autoWho'), bd = botData(); if (lw) lw.textContent = bd ? 'live · as ' + (bd.char || curBot) : '';
+  const rk = g.resAuto && bd && bd.profile && bd.profile.rk;
+  const rkOn = g.resAuto && bd && bd.profile && (bd.profile.live || []).some(x => lc(x) === lc(g.name));
+  if (g.resAuto && bd) lb.append(el('div', { class: 'lstat' }, el('span', { text: 'Res-kill:' }),
+    el('b', { class: rkOn ? 'rkon' : 'rkoff', text: rkOn ? 'ON' : 'OFF' + (g.resKey ? ' · ' + keyShow(g.resKey) + ' turns it on' : '') }),
+    rk && rk.t ? el('span', { class: 'last', text: rk.t + ' · ' + Math.round((rk.ago | 0) / 1000) + ' s ago' }) : null));
+  const wb = $('autoWarn');
+  if (wb) { const W = warnsOf(g, i), sig = JSON.stringify(W); if (wb.dataset.sig !== sig) { wb.dataset.sig = sig; wb.textContent = '';
+    for (const [k, t] of W) wb.append(el('div', { class: 'wi ' + k }, svgI(k === 'soft' ? 'info' : 'alert', 's'), el('span', { text: t }))); } }
+}
+
 function renderSettings() {
   const p = P(), box = $('setGrid'); box.textContent = '';
   const sec = (title, ...kids) => el('div', { class: 'esec' }, el('h5', null, title), ...kids);
@@ -1846,7 +2448,7 @@ function renderSettings() {
   box.append(sec('Bot speed', el('div', { class: 'hint', text: 'Measured by the bots themselves: from a key press to the target, the slowest of them, and the main loop.' }),
     el('div', { class: 'perf', id: 'perfBox' })));
   box.append(sec('Shortcuts', el('div', { class: 'kl', style: 'padding:4px 0 6px' },
-    el('span', null, el('span', { class: 'kbd', text: 'Ctrl+1…6' })), el('span', { text: 'Keys, Enemies, Stats, Profiles, Settings, Help' }),
+    el('span', null, el('span', { class: 'kbd', text: 'Ctrl+1…8' })), el('span', { text: 'Keys, Auto target, Team, Enemies, Stats, Profiles, Settings, Help' }),
     el('span', null, el('span', { class: 'kbd', text: 'Ctrl+N' })), el('span', { text: 'Add a group (Keys)' }),
     el('span', null, el('span', { class: 'kbd', text: 'Ctrl+S' })), el('span', { text: 'Save now (it saves by itself anyway)' }),
     el('span', null, el('span', { class: 'kbd', text: '↑' }), ' ', el('span', { class: 'kbd', text: '↓' })), el('span', { text: 'Select a group' }),
@@ -1871,11 +2473,14 @@ function renderHelp() {
   if (helpDone) return; helpDone = true;
   const H = [
     ['', 'The setup', 'Everything lives in <b>Library\\PvP</b>. In the bot run <b>pvp_focus.txt</b> on every character. <b>PvpPanel.exe</b> (the tray app) runs the server and shows this page; without it <b>pvp_server.bat</b> does the same in the browser. Profiles are the files <b>profiles\\&lt;name&gt;.pvp</b>; the ★ profile works on every character at once. Changes reach the bots at once; without the server the keys work too, only this page is not live.'],
+    ['m-assist', 'Team', 'One leader for everyone on the server: in «Team» click «Make leader» at a character - whatever his script picks (his keys, Auto target, res-kill) every other character takes at once, on every PC, any distance. Each PC adds a «Team follow» group to its profiles once (a button there); its key / the overlay turn following on / off. The leader himself just leads. «Send» (Team profile, on the leader\'s PC): his whole profile to every PC - there it is «Team», the active one (characters with their own profile keep theirs).'],
+    ['m-anti', 'Anti-aggro', 'An enemy starts casting an aggro skill at you (Aggression, Divine Knight Hate, Challenge for Fate…): the bot puts your target onto him at once while he casts; it goes back to the target you had only once the aggro effect is on you (the effect of the skill, or the «Aggro effects» you set; a new one or a refreshed one) - after «Back after» ms, and for «Keep it» ms more it puts it back again if the aggro still moved it. No effect within «Wait for it» of his cast (resisted, missed): back all the same. If you took another target meanwhile, it is left alone. The group key turns it on / off (the overlay too).'],
+    ['m-auto', 'Auto target', 'One key for everything, by WEIGHT: an enemy weighs the sum of what fits him - his class, his name, the skill he is casting (break casts: per skill), the forces cast at him (per force, by his class), just resurrected, holding you / your party, calling assist. The heaviest goes first, a tie: the nearest. Break casts and the res-kill have ranges of their own (0: the group range). The key takes №1, pressed again №2, then №3. «Res-kill by itself»: no key for those - an enemy gets up within its range and window, the bot takes and hits him at once, its own classes, pace and sound.'],
     ['m-class', 'Classes', 'The nearest enemy of the ticked classes. The digit on a class is its priority: all «1» first; none of them in range, then «2», then «3». Click the digit to change it.'],
     ['m-reskill', 'Res-kill', 'An enemy who was resurrected: got up no sooner than «after» and no later than «to» milliseconds ago (the bot saw him dead, then alive). The group key <b>turns res-kill on / off</b>; while it is on, the bot selects such an enemy itself and at once does «after selecting», an attack. <b>Kill sound</b>: an enemy who got up dies again soon after (within «Counts within»), with no buffs seen on him: the bot plays your sound and says it.'],
     ['m-cast', 'Cast / Forces', 'An enemy casting the chosen skill (Battle Force 426, Spell Force 427, a res…). «The one cast on» takes the one being charged, more Forces first: Sword Muse / Spectral Dancer under Noise, Soultaker under DoD. «The caster» takes the caster himself.'],
     ['m-names', 'By names', 'The ★ players of the «Enemies» list, strictly in order, any class and clan.'],
-    ['m-assist', 'Assist', 'Up to three assisters in order: the target of the first one who is near, alive and not aggroed (no enemy the bot sees holds him in target); else the next one; all empty: the party leader. The group key <b>turns assist on / off</b>; while it is on, the bot takes his target and then each new one at once. Never takes your own. The list is a chain: a character on it follows only the ones above him, so one list fits all of them. <b>Volley</b>: when he starts one of the listed skills (Multiple Shot 987…), yours goes at his target at once, if it is ready. <b>Source: Via server</b>: one assister - a party member or any nickname (his bot must run, with PvpPanel and relay.ini on his PC). Not his target as your game sees it, but the one his bot sends over the relay server, taken as it is: any distance and height, no aggro check, he may be far or dead. Only a target out of your sight waits until you see it (the game cannot select it before). At a friend: selected, no attack. Characters on the same PC get it straight from the panel.'],
+    ['m-assist', 'Assist', 'Up to three assisters in order: the target of the first one who is near, alive and not aggroed (no enemy the bot sees holds him in target); else the next one; all empty: the party leader. The group key <b>turns assist on / off</b>; while it is on, the bot takes his target and then each new one at once. Never takes your own. The list is a chain: a character on it follows only the ones above him, so one list fits all of them. <b>Volley</b>: when he starts one of the listed skills (Multiple Shot 987…), yours goes at his target at once, if it is ready. <b>Source: Via server</b>: one assister - a party member or any nickname (his bot must run, with PvpPanel and relay.ini on his PC). Not his game target: what his PvP focus picks - a group key, res-kill, cast auto (never a mouse click or his own assist) - comes over the relay server and is taken as it is: any distance and height, no aggro check, he may be far or dead. His key pressed again on the same one re-focuses everyone (taken again, the attack again). Only a target out of your sight waits until you see it (the game cannot select it before). At a friend: selected, no attack. Characters on the same PC get it straight from the panel.'],
     ['m-onus', 'Who targets us', 'An enemy targeting you or someone of your party. Those on you first, then the nearest.'],
     ['m-smart', 'Assist caller', 'An enemy calling assist on you or your party: he switches to one of you first and others follow within 3 s. Only target switches count (not casts, AoE or hits, nor switches at the same instant). A point for each follower (1.5 if onto you), half burns off every 2 minutes.'],
     ['', 'Pick order', '★ name (if «★ names before everyone else» is on), class priority, Force count, distance. ⛔ players and your own (party, clan, alliance) are never taken. <b>Pressing again</b> while you are on the selected one takes the next one of the same turn; if only he fits, the «after» action repeats (stuns again, say).'],
@@ -1895,6 +2500,8 @@ function refresh() {
   else if (view === 'profiles' && !(document.activeElement && document.activeElement.matches('input.pname'))) {
     const sig = JSON.stringify([liveBots(), Object.keys(bots), sel.active]); if (sig !== refresh.psig) { refresh.psig = sig; renderProfiles(); } }
   else if (view === 'settings') renderPerf();
+  else if (view === 'auto') refreshAuto();
+  else if (view === 'team') refreshTeam();
 }
 
 // ===== keys: as pvp_focus.txt reads them (the same as equip_binds) =====
@@ -1940,7 +2547,7 @@ window.addEventListener('keydown', e => {
   }
   if (modalOpen()) return;
   if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); saveNow(); return; }
-  if (e.ctrlKey && /^Digit[1-6]$/.test(e.code)) { e.preventDefault(); setView(VIEWS[+e.code.slice(5) - 1]); return; }
+  if (e.ctrlKey && /^Digit[1-8]$/.test(e.code)) { e.preventDefault(); setView(VIEWS[+e.code.slice(5) - 1]); return; }
   if (e.ctrlKey && e.code === 'KeyN' && view === 'keys') { e.preventDefault(); openAdd(); return; }
   const ae = document.activeElement;
   if (view !== 'keys' || !P() || (ae && ae !== document.body && !ae.classList.contains('gi'))) return;
@@ -1961,16 +2568,24 @@ window.addEventListener('mousedown', e => {
 }, true);
 window.addEventListener('mouseup', e => { if (e.button === 3 || e.button === 4) e.preventDefault(); }, true);
 window.addEventListener('auxclick', e => { if (e.button === 1 && cap) e.preventDefault(); }, true);
+// the res-kill key of an auto group (res_key): its own button (the key capture works on a stand-in)
+function resKeyBtn(g) {
+  const proxy = { mode: 'reskill', auto: true, get name() { return (g.name || 'auto') + ' res-kill'; },
+    get key() { return g.resKey || ''; }, set key(v) { g.resKey = v; if (!v) g.resOn = false; setTimeout(renderAuto, 0); } };
+  const b = el('button', { class: 'keycap', onclick: e => capStart(e.currentTarget, proxy) });
+  keyBtnLook(b, proxy);
+  return b;
+}
 function keyBtnLook(btn, g) {
   btn.className = 'keycap'; btn.textContent = '';
   if (g.key) {
     const k = keyParts(g.key), mods = [k.ctrl ? 'Ctrl' : '', k.alt ? 'Alt' : '', k.shift ? 'Shift' : ''].filter(Boolean).join(' + ');
     if (mods) btn.append(el('small', { text: mods }));
     btn.append(el('span', { text: KEY_SHOW[k.base] || k.base }));
-    const tg = g.mode === 'reskill' || g.mode === 'assist';
-    btn.title = 'Key ' + keyShow(g.key) + (tg ? ' turns ' + (g.mode === 'assist' ? 'assist' : 'res-kill') + ' on / off' : '') + ' · click to set another';
+    const tg = g.mode === 'reskill' || g.mode === 'assist' || g.mode === 'antiaggro';
+    btn.title = 'Key ' + keyShow(g.key) + (tg ? ' turns ' + ({ assist: 'assist', antiaggro: 'anti-aggro' }[g.mode] || 'res-kill') + ' on / off' : '') + ' · click to set another';
     if (tg) btn.append(el('em', { class: 'kt', text: 'on / off' }));
-  } else if (g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist')) { btn.classList.add('opt'); btn.textContent = 'No key'; btn.title = g.mode === 'cast' ? 'The group fires by itself. Click: set a key too' : 'Always on. Click: set a key to turn it on / off'; }
+  } else if (g.auto && (g.mode === 'reskill' || g.mode === 'cast' || g.mode === 'assist' || g.mode === 'antiaggro')) { btn.classList.add('opt'); btn.textContent = 'No key'; btn.title = g.mode === 'cast' ? 'The group fires by itself. Click: set a key too' : 'Always on. Click: set a key to turn it on / off'; }
   else { btn.classList.add('none'); btn.textContent = 'Set a key'; btn.title = 'Click, then press a combo: Alt+1, F5, Z, the wheel / side mouse buttons'; }
 }
 

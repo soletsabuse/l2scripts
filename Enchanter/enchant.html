@@ -422,7 +422,7 @@
     <details class="help card">
       <summary>Как это работает</summary>
       <ul>
-        <li>В боте запусти <b>Scripts\enchant.txt</b> на персонаже. Он раз в секунду пишет сюда сумку (<i>&lt;ник&gt;.ench.json</i>) и читает настройки (<i>&lt;ник&gt;.ench</i>). Всё сохраняется само, правки действуют сразу, даже во время заточки.</li>
+        <li>В боте запусти <b>Enchanter\enchant.txt</b> на персонаже. Он раз в секунду пишет сюда сумку (<i>&lt;ник&gt;.ench.json</i>) и читает настройки (<i>&lt;ник&gt;.ench</i>). Всё сохраняется само, правки действуют сразу, даже во время заточки.</li>
         <li><b>Диапазон</b> — какие вещи, с какого до какого уровня, каким свитком и с камнем или без. Вещь точится, пока её уровень от «с» и меньше «до»: «с +0 до +3» доведёт до +3. Несколько диапазонов на одни вещи — разные свитки на разных уровнях: кнопка <b>«дальше»</b> делает следующий диапазон с теми же вещами.</li>
         <li>Свиток упал благословенный и вещь стала +0 — она снова попадёт в диапазон с +0 и будет точиться заново. Обычный свиток при неудаче ломает вещь — бот просто идёт к следующей.</li>
         <li><b>Вещи</b> выбираются по виду: «Avadon Leather Armor ×8» — все такие в сумке, с любой заточкой, кроме надетых (их не трогаем, чтобы не сломать свои). Докупил ещё — они тоже попадут. Надетую вещь можно выбрать отдельной строкой.</li>
@@ -492,7 +492,7 @@ const ICON = {
   next: '<svg class="i" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M4 16V6a2 2 0 0 1 2-2h10"/></svg>',
   del: '<svg class="i" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>' };
 
-// ===== files: Library\Binds, the folder handle kept in IndexedDB (the same one binds.html / pvp.html keep) =====
+// ===== files: Library\Enchanter, the folder handle kept in IndexedDB (key enchdir: its own, not the binds.html one) =====
 // the browser's memory of the folder; whatever goes wrong (or no answer in 2 s) -> null: the page asks for the folder
 function idb(mode, fn) { return new Promise(res => { let done = false; const fin = v => { if (!done) { done = true; res(v); } };
   setTimeout(() => fin(null), 2000);
@@ -566,7 +566,7 @@ function parseCfg(text) {
   return c;
 }
 function cfgText(c) {
-  const L = ['; Enchant settings of ' + clean(charLabel(cur)) + ': made in enchant.html (Library\\Binds), read by enchant.txt on the fly',
+  const L = ['; Enchant settings of ' + clean(charLabel(cur)) + ': made in enchant.html (Library\\Enchanter), read by enchant.txt on the fly',
     'run=' + (c.run ? 1 : 0), 'run_id=' + clean(c.runId), 'cryst_id=' + clean(c.crystId), 'delay_ms=' + clampInt(c.delayMs, 0, 60000, 200), 'put_ms=' + clampInt(c.putMs, 0, 60000, 2000), 'order=' + c.order,
     'max_scrolls=' + clampInt(c.maxScrolls, 0, 1e6, 0), 'stop_on_break=' + (c.stopOnBreak ? 1 : 0), 'chat=' + (c.chat ? 1 : 0),
     'sound=' + (c.sound ? 1 : 0), 'debug=' + (c.debug ? 1 : 0), ''];
@@ -631,12 +631,16 @@ async function start() {
   setTimeout(() => { if ($('page').hidden && $('intro').hidden) { startErr = startErr || 'браузер не открыл сохранённую папку'; intro(oldDir ? 'again' : 'first'); } }, 5000);
   let h = null;
   try {
-    h = await idb('readonly', st => st.get('dir'));
+    h = await idb('readonly', st => st.get('enchdir'));
     if (h && typeof h.queryPermission !== 'function') h = null;   // not a folder any more
     if (h) {
-      let p = 'prompt';
-      try { p = await Promise.race([h.queryPermission({ mode: 'readwrite' }), new Promise(r => setTimeout(() => r('prompt'), 2000))]); } catch (e) {}
+      let p = 'hang';
+      try { p = await Promise.race([h.queryPermission({ mode: 'readwrite' }), new Promise(r => setTimeout(() => r('hang'), 2000))]); } catch (e) { p = 'hang'; }
       if (p === 'granted') { await useDir(h); return; }
+      if (p === 'hang') {   // the browser does not answer about this folder: forgotten, the button picks the folder anew
+        forgetDir('браузер не отвечает про сохранённую папку');
+        return;
+      }
       oldDir = h; intro('again');
     } else intro('first');
   } catch (e) {
@@ -644,12 +648,24 @@ async function start() {
     dir = null; oldDir = null; intro('first');
   }
 }
+// the remembered folder does not work: forgotten (the next press opens the folder picker at once)
+function forgetDir(why) {
+  startErr = why;
+  dir = null; oldDir = null;
+  idb('readwrite', st => st.delete('enchdir'));
+  intro('first');
+}
 async function connect(pickNew) {
   try {
-    let h = pickNew ? null : oldDir;
-    if (h && await h.requestPermission({ mode: 'readwrite' }) !== 'granted') h = null;
-    if (!h) h = await showDirectoryPicker({ id: 'equipbinds', mode: 'readwrite' });
-    await useDir(h);
+    const h = pickNew ? null : oldDir;
+    if (h) {   // the folder from before: the browser's «allow» - it may never answer; then the picker on the next press
+      const p = await Promise.race([h.requestPermission({ mode: 'readwrite' }).catch(() => 'denied'), new Promise(r => setTimeout(() => r('hang'), 8000))]);
+      if (p === 'granted') { await useDir(h); return; }
+      forgetDir(p === 'hang' ? 'браузер не ответил про сохранённую папку' : 'доступ к папке не дан');
+      toast('Нажми «Подключить папку» ещё раз и выбери Library\\Enchanter');
+      return;
+    }
+    await useDir(await showDirectoryPicker({ id: 'enchanter', mode: 'readwrite' }));   // at once: the press still counts
   } catch (e) { if (e.name !== 'AbortError') toast('Не вышло: ' + e.message); }
 }
 $('connect').onclick = () => connect(false);
@@ -663,23 +679,23 @@ function intro(kind) {
   if (!kind) return;
   b.textContent = '';
   if (startErr && kind !== 'browser') b.append(el('p', { class: 'muted', text: 'Папка не открылась сама (' + startErr + ') — подключи её ещё раз.' }));
-  if (kind === 'browser') b.append(el('h2', { text: 'Нужен Chrome или Edge' }), el('p', { class: 'muted', text: 'Страница сама читает и пишет файлы в папке Library\\Binds — это умеют только Chrome и Edge.' }));
-  else if (kind === 'wrongdir') b.append(el('h2', { text: 'Это не та папка' }), el('p', { class: 'muted', html: 'Нужна папка <b>Library\\Binds</b> бота (или сама <b>Library</b>). Нажми «Подключить папку» ещё раз.' }));
+  if (kind === 'browser') b.append(el('h2', { text: 'Нужен Chrome или Edge' }), el('p', { class: 'muted', text: 'Страница сама читает и пишет файлы в папке Library\\Enchanter — это умеют только Chrome и Edge.' }));
+  else if (kind === 'wrongdir') b.append(el('h2', { text: 'Это не та папка' }), el('p', { class: 'muted', html: 'Нужна папка <b>Library\\Enchanter</b> бота (или сама <b>Library</b>). Нажми «Подключить папку» ещё раз.' }));
   else b.append(el('h2', { text: kind === 'again' ? 'Разреши доступ к папке' : 'Заточка из браузера' }),
-    el('ol', null, el('li', { html: 'В боте запусти <b>Scripts\\enchant.txt</b> на персонаже — он присылает сюда сумку.' }),
-      el('li', { html: 'Нажми <b>«Подключить папку»</b> и выбери <b>Library\\Binds</b> (или <b>Library</b>). Браузер запомнит.' }),
+    el('ol', null, el('li', { html: 'В боте запусти <b>Enchanter\\enchant.txt</b> на персонаже — он присылает сюда сумку.' }),
+      el('li', { html: 'Нажми <b>«Подключить папку»</b> и выбери <b>Library\\Enchanter</b> (или <b>Library</b>). Браузер запомнит.' }),
       el('li', { html: 'Сделай диапазон: вещи, с какого до какого уровня, свиток, камень. Задержка — сверху. Жми <b>Старт</b>.' })));
 }
 
 async function useDir(h) {
-  if (h.name.toLowerCase() !== 'binds') h = (await sub(h, 'Binds')) || (await sub(h, 'Library', 'Binds')) || h;
-  let ok = h.name.toLowerCase() === 'binds';
-  if (!ok) try { for await (const [name] of h.entries()) if (/^(pvp|binds|enchant)\.html$|\.binds$|\.ench(\.json)?$/i.test(name)) { ok = true; break; } } catch (e) {}
+  if (h.name.toLowerCase() !== 'enchanter') h = (await sub(h, 'Enchanter')) || (await sub(h, 'Library', 'Enchanter')) || h;
+  let ok = h.name.toLowerCase() === 'enchanter';
+  if (!ok) try { for await (const [name] of h.entries()) if (/^enchant\.html$|\.ench(\.json)?$/i.test(name)) { ok = true; break; } } catch (e) {}
   if (!ok) { dir = h; intro('wrongdir'); return; }
   try { for await (const e of h.entries()) break; }   // a folder remembered from before may be gone / not readable
   catch (e) { startErr = (e.name ? e.name + ': ' : '') + (e.message || ''); dir = null; oldDir = null; intro('first'); return; }
   dir = h; oldDir = null;
-  idb('readwrite', st => st.put(h, 'dir'));
+  idb('readwrite', st => st.put(h, 'enchdir'));
   $('connect').hidden = true; $('otherDir').hidden = false;
   await scanChars();
   const want = store.get('char');
@@ -794,7 +810,7 @@ $('go').onclick = async () => {
     await saveNow(); renderHero(); return;
   }
   if (pend) return;
-  if (!live()) { toast('Бот не на связи: запусти Scripts\\enchant.txt на этом персонаже'); return; }
+  if (!live()) { toast('Бот не на связи: запусти Enchanter\\enchant.txt на этом персонаже'); return; }
   const p = startProblem(); if (p) { toast(p); showTab('jobs'); return; }
   cfg.run = 1; cfg.runId = String(Date.now()); pend = { kind: 'start', id: cfg.runId, at: Date.now() };
   await saveNow(); renderHero();
@@ -860,7 +876,7 @@ function renderHero() {
   go.disabled = !cur || (mode === 'start' && !isLive);
   let st = '', stc = '';
   if (!cur) st = 'Запусти enchant.txt в боте';
-  else if (!isLive) { st = 'бот не на связи: запусти Scripts\\enchant.txt'; stc = 'bad'; }
+  else if (!isLive) { st = 'бот не на связи: запусти Enchanter\\enchant.txt'; stc = 'bad'; }
   else if (mode === 'wait') st = pend.kind === 'stop' ? 'остановка после попытки…' : 'жду бота…';
   else if (mode === 'stop') { st = r.cr_n && !r.cur ? 'кристаллизую' : 'идёт заточка'; stc = 'ok'; }
   else if (r.state === 'done' || r.state === 'stopped') { [stc, st] = endText(r); if (r.cryst && r.end !== 'crystal') st += ' · кристаллизовано ' + r.cryst; }
@@ -893,7 +909,7 @@ function renderHero() {
   } else {
     box.append(el('div', { class: 't', text: 'Сейчас' }),
       el('div', { class: 'nm muted', text: cur ? (cfg.jobs.length ? 'Ничего не точится' : 'Сделай диапазон ниже') : 'Нет персонажа' }),
-      el('div', { class: 'ph', text: cur ? 'Выбери вещи, свиток и жми «Старт».' : 'Запусти Scripts\\enchant.txt в боте — он появится здесь.' }));
+      el('div', { class: 'ph', text: cur ? 'Выбери вещи, свиток и жми «Старт».' : 'Запусти Enchanter\\enchant.txt в боте — он появится здесь.' }));
   }
   }
   // the streak
@@ -973,7 +989,7 @@ function renderJobs() {
   box.textContent = '';
   cardsSig = '';
   $('nJobs').textContent = cfg.jobs.length || '';
-  if (!cur) { box.append(el('div', { class: 'empty', html: 'Нет персонажа. Запусти <b>Scripts\\enchant.txt</b> в боте — через секунду он появится здесь.' })); return; }
+  if (!cur) { box.append(el('div', { class: 'empty', html: 'Нет персонажа. Запусти <b>Enchanter\\enchant.txt</b> в боте — через секунду он появится здесь.' })); return; }
   if (!cfg.jobs.length) {
     box.append(el('div', { class: 'empty', html: 'Диапазонов пока нет. <b>Диапазон</b> — какие вещи, с какого до какого уровня и каким свитком точить.<br>Нажми «Новый диапазон» ниже.' }));
     return;
@@ -1215,7 +1231,7 @@ function bagAge() {
 let pk = null;   // { i (the job), kinds: Set of item IDs, oids: Set of OIDs (single items), type, grade }
 function openPicker(i) {
   const j = cfg.jobs[i]; if (!j) return;
-  if (!bag.size) { toast(live() ? 'В сумке нет снаряжения' : 'Бот ещё не прислал сумку: запусти Scripts\\enchant.txt'); if (!live()) return; }
+  if (!bag.size) { toast(live() ? 'В сумке нет снаряжения' : 'Бот ещё не прислал сумку: запусти Enchanter\\enchant.txt'); if (!live()) return; }
   const kinds = new Set(j.kinds.map(x => x.id)), oids = new Set();
   for (const it of j.items) { const b = bag.get(it.oid); if (b && b.on) oids.add(it.oid); else if (b) kinds.add(b.id); }   // an old single item not worn: its kind now
   pk = { i, kinds, oids, type: -1, grade: '' };
@@ -1345,8 +1361,8 @@ function renderOpts() {
   $('optBreak').checked = cfg.stopOnBreak; $('optChat').checked = cfg.chat; $('optSound').checked = cfg.sound; $('optDebug').checked = cfg.debug;
   if (document.activeElement !== $('optMax')) $('optMax').value = cfg.maxScrolls;
   const f = $('filesInfo'); f.textContent = '';
-  if (cur) f.append(el('div', { html: 'Настройки: <code>Library\\Binds\\' + cur + '.ench</code> (пишет эта страница)' }),
-    el('div', { html: 'От бота: <code>Library\\Binds\\' + cur + '.ench.json</code> — сумка, ход заточки, раз в секунду' }),
+  if (cur) f.append(el('div', { html: 'Настройки: <code>Library\\Enchanter\\' + cur + '.ench</code> (пишет эта страница)' }),
+    el('div', { html: 'От бота: <code>Library\\Enchanter\\' + cur + '.ench.json</code> — сумка, ход заточки, раз в секунду' }),
     el('div', { html: 'Лог пакетов: <code>Library\\Logs\\enchant_' + cur + '_*.log</code>' }));
 }
 $('optOrder').onclick = e => { const v = e.target.dataset && e.target.dataset.v; if (!v) return; cfg.order = v; renderOpts(); scheduleSave(); };

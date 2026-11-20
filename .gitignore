@@ -1,2 +1,9 @@
 # live view of the running bots (SetLiveMap / K live): rewritten every 0.3 s, never committed
 *.navlive
+
+# logs of the scripts, the servers and the panel: never committed
+*.log
+*.log.old
+# written by enchant.txt every second (the bag, the run) and by enchant.html (a fresh bag asked for)
+*.ench.json
+*.ench.req

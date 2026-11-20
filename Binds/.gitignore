@@ -2,7 +2,3 @@
 *.game.json
 # written by pvp_focus.txt every 2 s (who it sees, what it read) for pvp.html
 *.focus.json
-# written by enchant.txt every second (the bag, the run) for enchant.html
-*.ench.json
-# written by enchant.html to ask the bot for a fresh bag
-*.ench.req

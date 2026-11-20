@@ -23,9 +23,10 @@ namespace PvpPanel
     ///       server -> bot:  RELOAD   PING   WATCH|1 / WATCH|0 (a page watches / none: the bot builds its STATE only
     ///                       while 1)   STATRESET   K (read: the bot's next line is not held back by Nagle)
     ///       assist via the server (Relay.cs): bot -> N|T|&lt;oid&gt;|&lt;name&gt;; server -> N|LINK, N|ROOM, N|T, N|RTT
+    ///       the overlay (Overlay.cs): bot -> WIN|&lt;its game window&gt;; server -> KEY|&lt;group name&gt; (PUT /api/cmd?c=key&amp;char=&amp;g=)
     /// Page API (a change needs the header X-PvP: 1, the Host must be 127.0.0.1 / localhost):
     ///   GET /api/state  {"active", "profiles": {id: text}, "bots": {name: state}, "equip": {char: text}}
-    ///   GET /api/status {"active", "online", "pages", "pid"}   GET /api/skillnames {id: name}
+    ///   GET /api/status {"active", "online", "pages", "pid"}   GET /api/skillnames {id: name}   GET /skillicon/&lt;id&gt;.png
     ///   GET /api/events (server-sent events: state, gone, profiles, equip)
     ///   PUT/DELETE /api/profile?id=   PUT /api/active?id=   PUT /api/cmd?c=statreset | quit (quit: this server stops)
     /// The settings stay in the files (profiles\*.pvp, pvp.ini): the script reads them itself as well.
@@ -60,6 +61,8 @@ namespace PvpPanel
             public readonly NetworkStream Stream;
             public readonly SemaphoreSlim WriteLock = new SemaphoreSlim(1, 1);
             public string? State;               // its last STATE json (as it sent it)
+            public long Hwnd;                   // its game window (WIN|): the overlay goes over it
+            public DateTime StateAt;            // its last STATE came then
             public DateTime At = DateTime.UtcNow;
         }
 
@@ -79,6 +82,9 @@ namespace PvpPanel
         int _watchSaid = -1;
         string _filesSig = "", _equipSig = "";
         string? _skillNames;
+        Dictionary<int, int>? _iconOf;          // skill ID -> its icon: the line of skillicons.txt (from 0)
+        string[]? _icons;
+        readonly object _iconLock = new object();
         RelayLink? _relay;
 
         public bool Running { get; private set; }
@@ -122,6 +128,7 @@ namespace PvpPanel
             _ = AcceptLoop(bot, c => BotConn(c, ct), ct);
             _ = WatcherLoop(ct);
             _relay = new RelayLink(ToBotNamed, Log);
+            _relay.OnTeamProfile = (from, text) => { TakeTeamProfile(from, text, false); return Task.CompletedTask; };
             _ = _relay.RunAsync(ct);
             Log("PvP server (PvpPanel): page http://127.0.0.1:" + HttpPort + "/  bots 127.0.0.1:" + BotPort + "  folder " + Paths.PvpDir);
             Changed?.Invoke();
@@ -167,6 +174,7 @@ namespace PvpPanel
             lock (_lock)
             {
                 st.Online = _bots.Keys.OrderBy(k => k, StringComparer.OrdinalIgnoreCase).ToList();
+                foreach (var b in _bots.Values) if (b.Hwnd != 0) st.Windows[b.Name] = b.Hwnd;
                 st.Pages = _pages.Count;
             }
             return st;
@@ -212,6 +220,7 @@ namespace PvpPanel
                             if (!_bots.TryGetValue(me.Name, out var b) || b != me) continue;
                             me.State = json;
                             me.At = DateTime.UtcNow;
+                            me.StateAt = me.At;
                         }
                         ToPages("state", "{\"name\":" + J(me.Name) + ",\"d\":" + json + "}");
                     }
@@ -232,6 +241,14 @@ namespace PvpPanel
                         await SendTo(nb, "WATCH|" + WatchNow());              // a page watches now or not
                         if (_relay != null) await _relay.JoinAsync(name);    // assist via the server: in the room
                         Changed?.Invoke();
+                    }
+                    else if (line.StartsWith("WIN|", StringComparison.Ordinal) && me != null)
+                    {
+                        if (long.TryParse(line.Substring(4).Trim(), out var hw))
+                        {
+                            lock (_lock) me.Hwnd = hw;
+                            Changed?.Invoke();
+                        }
                     }
                     else if (line.StartsWith("N|T|", StringComparison.Ordinal) && me != null)
                     {
@@ -308,9 +325,46 @@ namespace PvpPanel
             await Task.WhenAll(all.Select(b => SendTo(b, line)));
         }
 
+        bool _overlayWatch;
+
+        /// <summary>An overlay shows the bots: they send their state as for an open page.</summary>
+        public void SetOverlayWatch(bool on)
+        {
+            if (_overlayWatch == on) return;
+            _overlayWatch = on;
+            _ = WatchChanged();
+        }
+
+        /// <summary>The overlay: a bot's last state (json) and its age in seconds (null: none).</summary>
+        public (string? json, double age) StateOf(string ch)
+        {
+            lock (_lock)
+            {
+                var b = _bots.Values.FirstOrDefault(x => string.Equals(x.Name, ch, StringComparison.OrdinalIgnoreCase));
+                return b == null || b.State == null ? (null, 1e9) : (b.State, (DateTime.UtcNow - b.StateAt).TotalSeconds);
+            }
+        }
+
+        /// <summary>The overlay's switch: the profile written, the bots read it (RELOAD), the pages get it.</summary>
+        public async Task SaveProfileAsync(string id, string text)
+        {
+            if (!ProfileFiles.ValidId(id)) return;
+            Directory.CreateDirectory(Paths.ProfilesDir);
+            ProfileFiles.WriteText(Path.Combine(Paths.ProfilesDir, id + ".pvp"), text);
+            await ChangedFiles();
+        }
+
+        /// <summary>The overlay's switch: as that group's key pressed on that bot (res-kill / assist on / off).</summary>
+        public async Task PressAsync(string ch, string group, bool res = false)
+        {
+            Bot? b;
+            lock (_lock) b = _bots.Values.FirstOrDefault(x => string.Equals(x.Name, ch, StringComparison.OrdinalIgnoreCase));
+            if (b != null && group.IndexOfAny(new[] { '\r', '\n', '|' }) < 0) await SendTo(b, "KEY|" + group + (res ? "|res" : ""));
+        }
+
         int WatchNow()
         {
-            lock (_lock) return _pages.Count > 0 ? 1 : 0;
+            lock (_lock) return _pages.Count > 0 || _overlayWatch ? 1 : 0;
         }
 
         /// <summary>The first page opened / the last one closed: the bots start / stop building their state.</summary>
@@ -445,9 +499,24 @@ namespace PvpPanel
                             await Reply(s, 200, page, "text/html; charset=utf-8");
                             return;
                         }
+                        if (path == "/overlay.html")
+                        {
+                            byte[] ov;
+                            try { ov = File.ReadAllBytes(Paths.Overlay); }
+                            catch (IOException) { await Reply(s, 404, "no overlay.html in " + Paths.PvpDir); return; }
+                            await Reply(s, 200, ov, "text/html; charset=utf-8");
+                            return;
+                        }
                         if (path == "/api/state") { await Reply(s, 200, StateJson(), "application/json; charset=utf-8"); return; }
                         if (path == "/api/status") { await Reply(s, 200, StatusJson(), "application/json; charset=utf-8"); return; }
                         if (path == "/api/skillnames") { await Reply(s, 200, SkillNamesJson(), "application/json; charset=utf-8"); return; }
+                        if (path.StartsWith("/skillicon/", StringComparison.Ordinal))
+                        {
+                            var ic = SkillIcon(path.Substring(11).Replace(".png", ""));
+                            if (ic == null) { await Reply(s, 404, "no icon"); return; }
+                            await Reply(s, 200, ic, "image/png", true);
+                            return;
+                        }
                         if (path == "/api/events") { await Events(s, ct); return; }
                         if (path == "/api/sounds") { await Reply(s, 200, SoundsJson(), "application/json; charset=utf-8"); return; }
                         if (path.StartsWith("/sounds/", StringComparison.Ordinal))
@@ -513,6 +582,47 @@ namespace PvpPanel
                             await Reply(s, 200, "ok");
                             return;
                         }
+                        if (path == "/api/cmd" && cmd == "key")   // the overlay: as that group's key pressed on that bot
+                        {
+                            q.TryGetValue("char", out var kc);
+                            q.TryGetValue("g", out var kg);
+                            Bot? kb = null;
+                            if (kc != null) lock (_lock) kb = _bots.Values.FirstOrDefault(b => string.Equals(b.Name, kc, StringComparison.OrdinalIgnoreCase));
+                            if (kb == null || string.IsNullOrWhiteSpace(kg) || kg.IndexOfAny(new[] { '\r', '\n', '|' }) >= 0)
+                            {
+                                await Reply(s, 400, "no such bot / group");
+                                return;
+                            }
+                            q.TryGetValue("what", out var kw);       // res: the res-kill key of an auto group
+                            await SendTo(kb, "KEY|" + kg.Trim() + (kw == "res" ? "|res" : ""));
+                            await Reply(s, 200, "ok");
+                            return;
+                        }
+                        if (path == "/api/cmd" && cmd == "lead")    // the Team view: the team leader of the room
+                        {
+                            q.TryGetValue("name", out var ln);
+                            if (_relay != null) await _relay.SetLeadAsync(ln ?? "");
+                            Log("team leader: " + (ln ?? "-"));
+                            await Reply(s, 200, "ok");
+                            return;
+                        }
+                        if (path == "/api/cmd" && cmd == "teamprof")    // the Team view: the leader's profile to every PC
+                        {
+                            q.TryGetValue("id", out var tpId);
+                            q.TryGetValue("char", out var pch);
+                            pch = Regex.Replace(pch ?? "", "[^A-Za-z0-9_-]", "");
+                            var src = tpId != null && ProfileFiles.ValidId(tpId) ? ProfileFiles.ReadText(Path.Combine(Paths.ProfilesDir, tpId + ".pvp")) : null;
+                            if (src == null || pch.Length == 0)
+                            {
+                                await Reply(s, 400, "no such profile");
+                                return;
+                            }
+                            var text = TeamText(src, pch, DateTime.Now);
+                            TakeTeamProfile(pch, text, true);
+                            var sent = _relay != null && _relay.SendProfile(pch, text);
+                            await Reply(s, 200, sent ? "sent" : "here only");
+                            return;
+                        }
                         if (path == "/api/cmd" && cmd == "quit")
                         {
                             Log("quit asked");
@@ -558,11 +668,11 @@ namespace PvpPanel
         static Task Reply(Stream s, int code, string body, string ctype = "text/plain; charset=utf-8") =>
             Reply(s, code, Encoding.UTF8.GetBytes(body), ctype);
 
-        static async Task Reply(Stream s, int code, byte[] body, string ctype)
+        static async Task Reply(Stream s, int code, byte[] body, string ctype, bool cache = false)
         {
             var reason = code switch { 200 => "OK", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", _ => "Error" };
             var head = "HTTP/1.1 " + code + " " + reason + "\r\nContent-Type: " + ctype + "\r\nContent-Length: " + body.Length +
-                       "\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+                       "\r\nCache-Control: " + (cache ? "max-age=86400" : "no-store") + "\r\nConnection: close\r\n\r\n";
             await s.WriteAsync(Encoding.ASCII.GetBytes(head));
             await s.WriteAsync(body);
             await s.FlushAsync();
@@ -586,10 +696,46 @@ namespace PvpPanel
         static string J(string s) => JsonSerializer.Serialize(s, JsonOpt);
         static string JDict(Dictionary<string, string> d) => JsonSerializer.Serialize(d, JsonOpt);
 
+        const string TeamId = "team";
+
+        /// <summary>The leader's profile as the team one: its name = Team (the leader HH:mm), the same on every PC.</summary>
+        static string TeamText(string src, string from, DateTime at)
+        {
+            var lines = src.Replace("\r\n", "\n").Split('\n').ToList();
+            var nm = "name=Team (" + from + " " + at.ToString("HH:mm") + ")";
+            int g = lines.FindIndex(l => l.TrimStart().StartsWith("["));
+            int k = lines.FindIndex(l => l.TrimStart().StartsWith("name=", StringComparison.OrdinalIgnoreCase));
+            if (k >= 0 && (g < 0 || k < g)) lines[k] = nm;
+            else lines.Insert(g < 0 ? lines.Count : g, nm);
+            return string.Join("\n", lines);
+        }
+
+        /// <summary>The team profile (sent from here, or another PC's from the relay): profiles\team.pvp, and the active
+        /// one here when it is new (every character without its own profile takes it). The same again: nothing (a PC that
+        /// picked another profile keeps it till the leader sends a new one).</summary>
+        void TakeTeamProfile(string from, string text, bool mine)
+        {
+            try
+            {
+                var path = Path.Combine(Paths.ProfilesDir, TeamId + ".pvp");
+                var old = ProfileFiles.ReadText(path);
+                if (old != null && old.Replace("\r\n", "\n").TrimEnd() == text.Replace("\r\n", "\n").TrimEnd()) return;
+                Directory.CreateDirectory(Paths.ProfilesDir);
+                ProfileFiles.WriteText(path, text);
+                if (ProfileFiles.Active() != TeamId) ProfileFiles.WriteActive(TeamId);
+                Log("team profile from " + from + (mine ? " (sent from here)" : "") + ": the active one now");
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                Log("team profile from " + from + ": not written (" + e.Message + ")");
+            }
+        }
+
         string StateJson()
         {
             var sb = new StringBuilder();
             sb.Append("{\"active\":").Append(J(ProfileFiles.Active()));
+            sb.Append(",\"lead\":").Append(J(_relay?.Lead ?? ""));
             sb.Append(",\"profiles\":").Append(JDict(ProfileFiles.ReadAll()));
             sb.Append(",\"bots\":{");
             lock (_lock)
@@ -612,6 +758,37 @@ namespace PvpPanel
             var st = Snapshot();
             return "{\"active\":" + J(st.Active) + ",\"online\":" + JsonSerializer.Serialize(st.Online, JsonOpt) +
                    ",\"pages\":" + st.Pages + ",\"pid\":" + st.Pid + "}";
+        }
+
+        /// <summary>The 16 px icon of a skill (Library\Nav: skilldb.txt field 6 = the line of skillicons.txt), null: none.</summary>
+        byte[]? SkillIcon(string idText)
+        {
+            if (!int.TryParse(idText, out var id)) return null;
+            lock (_iconLock)
+            {
+                if (_iconOf == null)
+                {
+                    var of = new Dictionary<int, int>();
+                    var icons = Array.Empty<string>();
+                    try
+                    {
+                        foreach (var line in File.ReadLines(Paths.SkillDb, Encoding.UTF8))
+                        {
+                            if (line.StartsWith("#")) continue;
+                            var p = line.Split('|');
+                            if (p.Length > 6 && int.TryParse(p[0], out var sid) && int.TryParse(p[6].Trim(), out var n)) of[sid] = n;
+                        }
+                        icons = File.ReadAllLines(Paths.SkillIcons);
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                    _iconOf = of;
+                    _icons = icons;
+                }
+                if (!_iconOf.TryGetValue(id, out var k) || _icons == null || k < 0 || k >= _icons.Length) return null;
+                try { return Convert.FromBase64String(_icons[k].Trim()); }
+                catch (FormatException) { return null; }
+            }
         }
 
         string SkillNamesJson()

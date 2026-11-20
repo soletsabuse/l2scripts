@@ -8,11 +8,17 @@ other link of the room at once (TCP_NODELAY, nothing waits). Lines are UTF-8, '\
                    JOIN|<char>  LEAVE|<char>      the characters of this PC in the room
                    T|<char>|<oid>|<name>          the target of a character of this link now (oid 0 = none)
                    X|<char>|<payload>             anything else for the room (later things), passed as it is
+                   LEAD|<char>                    the team leader of the room ('' none): kept, sent to every link
+                   PROF|<char>|<i>|<n>|<base64>   part i of n of the team profile (the leader's, utf-8): passed on;
+                                                  the last whole one kept, sent to the links that come later
                    P|<token>                      ping: the same line back
   relay -> panel:  WELCOME|<ver>
                    ROOM|<char>,<char>,...         everyone in the room (all links), after every change
                    T|<char>|<oid>|<name>          a target of another link (on WELCOME / JOIN: everyone's now)
                    X|<char>|<payload>   P|<token>   BYE|<reason> (then closed)
+                   LEAD|<char>                    the team leader (on WELCOME too: '' none, '?' not known yet -
+                                                  then a panel that knows one says it)
+                   PROF|...                       the team profile (on WELCOME too: the last whole one)
 
 The key: $CREDENTIALS_DIRECTORY/key (systemd LoadCredential) or RELAY_KEY. The port: RELAY_PORT (7795).
 """
@@ -34,6 +40,7 @@ MAX_CHARS = 24           # characters per link
 RATE = 40.0              # lines per second per link (a burst of BURST)
 BURST = 120.0
 SLOW_BYTES = 256 * 1024  # a link that does not read: closed instead of piling up
+MAX_PROF_PARTS = 40      # the team profile: at most this many PROF lines
 
 
 def load_key():
@@ -57,6 +64,9 @@ class Room:
         self.links = set()
         self.chars = {}       # lower name -> (name, link)
         self.targets = {}     # lower name -> 'T|...' line (bytes)
+        self.lead = None      # the team leader: the others of the room take his picks ('' none, None not known yet)
+        self.prof = []        # the last whole team profile: its PROF lines (bytes)
+        self.prof_new = None  # ... the one coming now (its lines so far)
 
 
 class Link:
@@ -186,6 +196,9 @@ async def handle(reader, writer):
         room.links.add(link)
         link.send(('WELCOME|' + VER + '\n').encode())
         link.send(room_line(room))
+        link.send(('LEAD|' + ('?' if room.lead is None else room.lead) + '\n').encode('utf-8'))
+        for data in room.prof:
+            link.send(data)
         for low, line in room.targets.items():
             if room.chars.get(low, (None, None))[1] is not link:
                 link.send(line)
@@ -214,6 +227,36 @@ async def handle(reader, writer):
                 data = (line + '\n').encode('utf-8')
                 if kind == 'T':
                     room.targets[low] = data
+                to_room(room, data, but=link)
+            elif kind == 'LEAD':
+                who = rest.strip()[:32]
+                if '|' in who or ',' in who or who == '?':
+                    continue
+                if who != room.lead:
+                    room.lead = who
+                    log('room %s: leader %s (from %s)' % (rname, who or '-', ip))
+                to_room(room, ('LEAD|' + who + '\n').encode('utf-8'))
+            elif kind == 'PROF':
+                p = rest.split('|')
+                if len(p) != 4 or p[0].strip().lower() not in link.chars:
+                    continue
+                try:
+                    i, n = int(p[1]), int(p[2])
+                except ValueError:
+                    continue
+                if not (0 < n <= MAX_PROF_PARTS and 0 <= i < n):
+                    continue
+                data = (line + '\n').encode('utf-8')
+                if i == 0:
+                    room.prof_new = []
+                if room.prof_new is not None:
+                    if len(room.prof_new) == i:
+                        room.prof_new.append(data)
+                        if len(room.prof_new) == n:
+                            room.prof, room.prof_new = room.prof_new, None
+                            log('room %s: team profile from %s (%d parts)' % (rname, p[0].strip(), n))
+                    else:
+                        room.prof_new = None                  # a part missing: not kept
                 to_room(room, data, but=link)
             elif kind == 'JOIN':
                 who = rest.strip()[:32]

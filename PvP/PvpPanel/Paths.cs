@@ -16,9 +16,11 @@ namespace PvpPanel
         public static string Ini => Path.Combine(PvpDir, "pvp.ini");
         public static string PanelIni => Path.Combine(PvpDir, "pvp_panel.ini");
         public static string Page => Path.Combine(PvpDir, "pvp.html");
+        public static string Overlay => Path.Combine(PvpDir, "overlay.html");     // the page of the overlay over the game
         public static string ServerLog => Path.Combine(PvpDir, "pvp_server.log");
         public static string BindsDir => Path.GetFullPath(Path.Combine(PvpDir, "..", "Binds"));     // the equip binds (a key clash warning)
         public static string SkillDb => Path.GetFullPath(Path.Combine(PvpDir, "..", "Nav", "skilldb.txt"));   // id|oper|magic|range|name
+        public static string SkillIcons => Path.GetFullPath(Path.Combine(PvpDir, "..", "Nav", "skillicons.txt"));   // base64 16 px PNG per line
 
         /// <summary>WebView2 keeps its browser data here, not next to the exe (the Library folder stays clean).</summary>
         public static string WebData => Path.Combine(

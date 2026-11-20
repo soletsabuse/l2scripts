@@ -26,12 +26,14 @@ Page API (same origin; a change needs the header X-PvP: 1 - another site in the 
     PUT    /api/cmd?c=quit              the server stops (PvpPanel: restart it with a new version)
     GET    /api/events                  server-sent events: state, gone, profiles, equip
     GET    /api/skillnames              {id: name} of every skill (Library\\Nav\\skilldb.txt, made from the bot's L2DB)
+    GET    /skillicon/<id>.png          its 16 px icon (skilldb.txt field 6 = the line of Library\\Nav\\skillicons.txt)
 
 Run: pvp_server.bat (no window), or "python pvp_server.py" to see its log. One per PC: a second one finds the ports
 taken and quits. Log: pvp_server.log next to it. Python 3.8+, nothing to install.
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -45,6 +47,7 @@ INI = os.path.join(DIR, "pvp.ini")
 PAGE = os.path.join(DIR, "pvp.html")
 BINDS_DIR = os.path.normpath(os.path.join(DIR, "..", "Binds"))   # the equip binds (their keys: a clash warning)
 SKILLDB = os.path.normpath(os.path.join(DIR, "..", "Nav", "skilldb.txt"))   # every skill: id|oper|magic|range|name|...
+SKILLICONS = os.path.normpath(os.path.join(DIR, "..", "Nav", "skillicons.txt"))   # a base64 16 px PNG per line
 LOG = os.path.join(DIR, "pvp_server.log")
 HOST = "127.0.0.1"
 HTTP_PORT = 7790
@@ -278,16 +281,46 @@ async def bot_conn(reader, writer):
 
 # ---------- the page: a tiny HTTP server ----------
 
-def reply(writer, code, body=b"", ctype="text/plain; charset=utf-8", extra=""):
+def reply(writer, code, body=b"", ctype="text/plain; charset=utf-8", extra="", cache=False):
     if isinstance(body, str):
         body = body.encode("utf-8")
-    head = ("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\n"
+    head = ("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: %s\r\n"
             "Connection: close\r\n%s\r\n") % (code, {200: "OK", 400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-                                                     500: "Error"}.get(code, "OK"), ctype, len(body), extra)
+                                                     500: "Error"}.get(code, "OK"), ctype, len(body),
+                                                    "max-age=86400" if cache else "no-store", extra)
     writer.write(head.encode("ascii") + body)
 
 
 skill_names = None     # {id: name}, read once
+skill_icon_of = None   # skill ID -> its line of skillicons.txt
+skill_icons = None
+
+
+def skill_icon(id_text):
+    """the 16 px PNG of a skill, None: none"""
+    global skill_icon_of, skill_icons
+    if not id_text.isdigit():
+        return None
+    if skill_icon_of is None:
+        of, icons = {}, []
+        try:
+            with open(SKILLDB, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    p = line.split("|")
+                    if len(p) > 6 and p[0].isdigit() and p[6].strip().isdigit():
+                        of[int(p[0])] = int(p[6].strip())
+            with open(SKILLICONS, encoding="ascii", errors="replace") as f:
+                icons = f.read().splitlines()
+        except OSError:
+            pass
+        skill_icon_of, skill_icons = of, icons
+    k = skill_icon_of.get(int(id_text))
+    if k is None or not (0 <= k < len(skill_icons)):
+        return None
+    try:
+        return base64.b64decode(skill_icons[k].strip())
+    except ValueError:
+        return None
 
 
 def skill_names_json():
@@ -374,6 +407,13 @@ async def http_conn(reader, writer):
             except OSError:
                 reply(writer, 404, "no pvp.html next to the server")
             return
+        if method == "GET" and path == "/overlay.html":
+            try:
+                with open(os.path.join(DIR, "overlay.html"), "rb") as f:
+                    reply(writer, 200, f.read(), "text/html; charset=utf-8")
+            except OSError:
+                reply(writer, 404, "no overlay.html next to the server")
+            return
         if method == "GET" and path == "/api/state":
             reply(writer, 200, state_json(), "application/json; charset=utf-8")
             return
@@ -383,6 +423,13 @@ async def http_conn(reader, writer):
             return
         if method == "GET" and path == "/api/skillnames":
             reply(writer, 200, skill_names_json(), "application/json; charset=utf-8")
+            return
+        if method == "GET" and path.startswith("/skillicon/"):
+            ic = skill_icon(path[len("/skillicon/"):].replace(".png", ""))
+            if ic is None:
+                reply(writer, 404, "no icon")
+            else:
+                reply(writer, 200, ic, "image/png", cache=True)
             return
         if method == "GET" and path == "/api/sounds":
             reply(writer, 200, sounds_json(), "application/json; charset=utf-8")

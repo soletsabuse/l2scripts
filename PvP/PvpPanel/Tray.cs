@@ -27,6 +27,7 @@ namespace PvpPanel
         static readonly Color On = Color.FromArgb(94, 214, 140);
 
         readonly PvpServer _server = new PvpServer();
+        readonly OverlayManager _overlay;   // over the game windows of the bots
         readonly ServerClient _client = new ServerClient();      // only for an old pvp_server.py holding the ports
         readonly Dispatcher _ui = Dispatcher.CurrentDispatcher;
         readonly WinForms.NotifyIcon _icon;
@@ -42,6 +43,7 @@ namespace PvpPanel
 
         public Tray()
         {
+            _overlay = new OverlayManager(_server);
             _icoOff = MakeIcon(Off);
             _icoIdle = MakeIcon(Idle);
             _icoOn = MakeIcon(On);
@@ -105,6 +107,7 @@ namespace PvpPanel
             _icon.Icon = !st.Up ? _icoOff : st.Online.Count > 0 ? _icoOn : _icoIdle;
             _icon.Text = Tip(st);
             _win?.OnStatus(st);
+            _overlay.Update(st);
         }
 
         static string Tip(ServerStatus st)
@@ -171,6 +174,11 @@ namespace PvpPanel
             {
                 Enabled = st.Up && st.Online.Count > 0,
             });
+            var ov = new WinForms.ToolStripMenuItem("Overlay");
+            ov.DropDownItems.Add(Check("Show over the game", OverlayManager.Enabled, v => { OverlayManager.Enabled = v; Refresh(); }));
+            ov.DropDownItems.Add(Check("Clickable   (" + OverlayManager.HotkeyText + ")", _overlay.Clickable, v => _overlay.SetClickable(v)));
+            if (!_overlay.HotkeyOk) ov.DropDownItems.Add(Disabled(OverlayManager.HotkeyText + " is taken by another program"));
+            _menu.Items.Add(ov);
             _menu.Items.Add(new WinForms.ToolStripSeparator());
 
             if (st.Up)
@@ -289,6 +297,7 @@ namespace PvpPanel
         public void Dispose()
         {
             _timer.Stop();
+            _overlay.Dispose();
             _server.Stop();
             _icon.Visible = false;
             _icon.Dispose();

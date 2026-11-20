@@ -15,6 +15,7 @@ namespace PvpPanel
         public bool Up;
         public string Active = "";
         public List<string> Online = new List<string>();
+        public Dictionary<string, long> Windows = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);   // bot -> its game window (the overlay)
         public int Pages;          // pages with live events open (the bots build their state only while > 0)
         public int Pid;            // the server process (0: an old server that does not say it)
         public bool Old;           // an old server with no /api/status (the bots of it: only the ones that sent a state)

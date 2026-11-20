@@ -17,13 +17,15 @@ namespace PvpPanel
     /// at once to the other characters here: no round trip for them); the targets of the other PCs come from it.
     /// The bots get it all as N|... lines:
     ///   N|LINK|1|&lt;host&gt; / N|LINK|0|&lt;why&gt;   N|ROOM|a,b,c (everyone: the relay's room + the characters here)
-    ///   N|T|&lt;char&gt;|&lt;oid&gt;|&lt;name&gt;   N|RTT|&lt;ms&gt; (to the relay and back)
+    ///   N|T|&lt;char&gt;|&lt;oid&gt;|&lt;name&gt;   N|RTT|&lt;ms&gt; (to the relay and back)   N|LEAD|&lt;char&gt; (the team leader, '' none)
+    /// The team profile (the leader's, the Team view's button) goes to the relay as PROF lines (a line is at most 1 KB) and
+    /// comes from it whole to OnTeamProfile.
     /// A bot sends N|T|&lt;oid&gt;|&lt;name&gt; when its target changes. No relay.ini / no relay: the characters of this PC
     /// still get each other's targets.
     /// </summary>
     sealed class RelayLink
     {
-        const int ConnectMs = 4000, HelloMs = 5000, PingMs = 2000, MaxLine = 1024;
+        const int ConnectMs = 4000, HelloMs = 5000, PingMs = 2000, MaxLine = 1024, ProfChunk = 760, MaxProfParts = 40;
 
         readonly Func<string, string, Task> _toBot;     // (character, line)
         readonly Action<string> _log;
@@ -38,6 +40,11 @@ namespace PvpPanel
         string _host = "";
         int _rtt = -1;
         string _roomSaid = "";
+        string _lead = "";              // the team leader of the room (the Team view of the page): the others follow him
+        readonly Dictionary<string, string?[]> _profIn = new Dictionary<string, string?[]>(StringComparer.OrdinalIgnoreCase);  // char -> PROF parts so far
+
+        /// <summary>A whole team profile came from the relay: (the sender's character, the profile's text).</summary>
+        public Func<string, string, Task>? OnTeamProfile;
 
         public RelayLink(Func<string, string, Task> toBot, Action<string> log)
         {
@@ -48,6 +55,35 @@ namespace PvpPanel
         public bool Up { get { lock (_lock) return _up; } }
         public int Rtt { get { lock (_lock) return _rtt; } }
         public string Why { get { lock (_lock) return _why; } }
+        public string Lead { get { lock (_lock) return _lead; } }
+
+        /// <summary>The team leader set (the page): to the relay (every PC) and the bots here.</summary>
+        public async Task SetLeadAsync(string who)
+        {
+            who = Clean(who ?? "");
+            lock (_lock)
+            {
+                _lead = who;
+                _out?.Writer.TryWrite("LEAD|" + who);
+            }
+            await ToAll("N|LEAD|" + who);
+        }
+
+        /// <summary>The team profile (Text: a whole profile) to every other PC, in PROF lines. false: no link now / too big.</summary>
+        public bool SendProfile(string ch, string text)
+        {
+            var b64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(text));
+            var n = (b64.Length + ProfChunk - 1) / ProfChunk;
+            ch = Clean(ch);
+            if (n < 1 || n > MaxProfParts || ch.Length == 0) return false;
+            lock (_lock)
+            {
+                if (_out == null) return false;
+                for (int i = 0; i < n; i++)
+                    _out.Writer.TryWrite("PROF|" + ch + "|" + i + "|" + n + "|" + b64.Substring(i * ProfChunk, Math.Min(ProfChunk, b64.Length - i * ProfChunk)));
+            }
+            return true;
+        }
 
         // ---------- the bots of this PC ----------
 
@@ -60,7 +96,7 @@ namespace PvpPanel
                 _local[ch] = ch;
                 _out?.Writer.TryWrite("JOIN|" + ch);
                 if (_localT.TryGetValue(ch, out var t)) _out?.Writer.TryWrite("T|" + ch + "|" + t);
-                lines = new List<string> { LinkLine() };
+                lines = new List<string> { LinkLine(), "N|LEAD|" + _lead };
                 if (_rtt >= 0) lines.Add("N|RTT|" + _rtt);
                 foreach (var kv in _localT) if (!kv.Key.Equals(ch, StringComparison.OrdinalIgnoreCase)) lines.Add("N|T|" + kv.Key + "|" + kv.Value);
                 foreach (var kv in _remoteT) if (!_local.ContainsKey(kv.Key)) lines.Add("N|T|" + kv.Key + "|" + kv.Value);
@@ -334,6 +370,46 @@ namespace PvpPanel
                     _remoteT[ch] = t;
                 }
                 await ToAll("N|T|" + ch + "|" + t);
+            }
+            else if (kind == "LEAD")
+            {
+                var who = rest.Trim();
+                if (who == "?")                                     // the relay does not know one (restarted, a new room)
+                {
+                    lock (_lock) if (_lead.Length > 0) _out?.Writer.TryWrite("LEAD|" + _lead);   // ours back to it
+                    return;
+                }
+                who = Clean(who);
+                lock (_lock) _lead = who;
+                await ToAll("N|LEAD|" + who);
+            }
+            else if (kind == "PROF")
+            {
+                var p = rest.Split('|');
+                if (p.Length != 4 || !int.TryParse(p[1], out var pi) || !int.TryParse(p[2], out var pn)) return;
+                if (pn < 1 || pn > MaxProfParts || pi < 0 || pi >= pn) return;
+                var ch = p[0].Trim();
+                string? whole = null;
+                lock (_lock)
+                {
+                    if (pi == 0 || !_profIn.TryGetValue(ch, out var parts) || parts.Length != pn)
+                    {
+                        parts = new string?[pn];
+                        _profIn[ch] = parts;
+                    }
+                    parts[pi] = p[3];
+                    if (parts.All(x => x != null))
+                    {
+                        whole = string.Concat(parts);
+                        _profIn.Remove(ch);
+                    }
+                }
+                if (whole == null) return;
+                string text;
+                try { text = Encoding.UTF8.GetString(Convert.FromBase64String(whole)); }
+                catch (FormatException) { _log("relay: a broken team profile from " + ch); return; }
+                var on = OnTeamProfile;
+                if (on != null) await on(ch, text);
             }
             else if (kind == "BYE")
                 throw new IOException("the relay said bye: " + rest);
