@@ -1,0 +1,3315 @@
+unit PveNav;
+
+// PvePanel: the map runs of pve.txt. A copy of Library\Scripts\Core\nav_move.pas (2026-11-21) made for PvePanel only:
+// its maps are Library\PvePanel\Nav\*.navgrid (made / edited in the panel, page Map), its graph cache
+// Library\PvePanel\Nav\cache, its run log the PvePanel log (pve_log.pas), and NavReset() lets the script take another
+// map while it runs (the panel picks the map). Change it freely: no other script uses it.
+//
+// Runs by the map. A zone (.zmap drawn in the bot, Library\Zones) or a lidar grid (.navgrid from
+// Core\nav_explore.pas, Library\Nav) is cut into cells. A wall trace (.navtrace from
+// Core\nav_trace.pas: runs along the walls) cuts the zone like walls: of the pieces only those with a
+// seed point (NavAddSeed: farm points, where we stand) stay - behind the walls / inside pillars goes; a graph is built from them: points at the
+// corners of the walls (moved up to NAV_CLEAR off the wall where there is room; narrow passages stay), links = straight lines of sight.
+// NavMoveTo: target in sight -> the plain server path (a mouse click); behind a wall -> along the
+// graph (server path between the points, a point is skipped as soon as the next one is in sight),
+// then to the target; the plain run gets stuck -> the graph too. No map -> plain server path only.
+//
+//   uses PveNav in 'pve_nav.pas';
+//   begin
+//     NavSetZone('CRUMA_MORDEO_1.zmap');    // or NavSetGrid('CRUMA_MORDEO_1.navgrid');
+//     NavBuild();                           // once, standing in the zone
+//     NavMoveTo(23962, 118963, -12112, 50);
+//   end.
+//
+
+interface
+
+uses SysUtils, Classes, PveLog in 'pve_log.pas';
+
+procedure NavSetZone(ZoneFile: string);       // map = this .zmap ('' = the zone active in the bot)
+procedure NavSetGrid(GridFile: string);       // map = this .navgrid (wins over the zone)
+procedure NavSetCell(Cell: integer);          // cell of the zone grid (default 40)
+procedure NavSetTrace(TraceFile: string);     // + wall trace .navtrace (Library\Nav) over the zone
+procedure NavAddSeed(X, Y: integer);          // a point surely walkable (farm point): its piece stays
+function NavBuild(): boolean;                 // build the graph now (once; later calls do nothing)
+// PvePanel: forget the map and its graph - then NavSetGrid / NavSetZone + NavBuild take another one (the script runs on)
+procedure NavReset();
+function NavIsReady(): boolean;               // there is a map
+function NavIsBusy(): boolean;                // a graph run is going on right now
+procedure NavClick(X, Y, Z: integer);         // one server path run order (non-blocking)
+procedure NavSend(Hex: string);               // a packet to the server (Engine.SendToServer)
+procedure NavSetWpCache(Ms: integer);         // NavWaypoint keeps its answer this long (default 500, 0 = off)
+procedure NavSetRunSteps(Enable: boolean);    // not used (the run is the one of de3a091); kept for old settings
+procedure NavSetStepLen(StepLen: integer);    // not used; kept for old settings
+// a run straight / a short cut over route nodes only where the line keeps this far off the red cells
+// all the way (default 40, 0 = may touch them) - the same rule as the route of the viewer
+procedure NavSetRunClear(Units: integer);
+// the run moments into the debug log (Core\dbg_log.pas, when it is on): clicks, the waypoint choice, node
+// runs, "not moved", give-ups, unstick, run results - each line with where we stand
+procedure NavSetDebug(Enable: boolean);
+// human clicks: a long run is clicked a piece ahead (PieceMin..PieceMax units, up to SidePct % of it to the side,
+// on free cells), the next piece before we get there; the last click lands a little off the goal; MultiPct % of
+// the clicks are sent 2-3 times to the same point (a player double / triple clicks)
+procedure NavSetHuman(Enable: boolean; PieceMin, PieceMax, SidePct, MultiPct: integer; PieceNorm: boolean;
+  PieceMean, PieceSig: integer);
+// the rails of the loaded map (W lines, split to NAV_RAIL_STEP): their count, the first / last point index of one,
+// a point
+function NavRailCount(): integer;
+function NavRailFirst(Rail: integer): integer;
+function NavRailLast(Rail: integer): integer;
+function NavRailX(i: integer): integer;
+function NavRailY(i: integer): integer;
+function NavDebugOn(): boolean;               // the run log is on (NavSetDebug): callers add their own run lines
+function NavSee(X1, Y1, X2, Y2: integer): boolean;   // no wall of the map on the straight line
+function NavSeeFromUs(X, Y: integer): boolean;
+function NavIsFree(X, Y: integer): boolean;     // a walkable cell of the map (no map = true)
+function NavGridIs(GridFile: string): boolean;  // this .navgrid is the loaded nav map (its cells are here)
+function NavGridFree(X, Y: integer): boolean;   // a walkable cell of the loaded .navgrid (outside it: false)
+// the strict map: runs on walkable (green) cells only - a run line / a click never crosses red or unknown, never
+// ends there; standing in it we first step out onto green. Sight (NavSee, a shot) passes walkable and sight cells
+// (the viewer's blue, "," in the rows: mobs stand there, we never run there); red / unknown block it, an end in
+// them is forgiven only NAV_STRICT_LEAVE. On by itself when the map has sight cells; NavSetStrict(true) - always
+procedure NavSetStrict(Enable: boolean);
+function NavStrictOn(): boolean;
+function NavWalkLine(X1, Y1, X2, Y2: integer): boolean;   // we may run this straight line (strict: on green only)
+// the farthest point of the line X1, Y1 -> X2, Y2 we can run to on green (gaps under 8 forgiven); false = none past 8
+function NavWalkClamp(X1, Y1, X2, Y2: integer): boolean;
+function NavClampX(): integer;
+function NavClampY(): integer;
+function NavRunCell(X, Y: integer): boolean;    // a cell NavSetRunClear off the red (a run there keeps the margin)
+// a spot to shoot X, Y from (a mob off green): on green (the run margin first), within Reach of it, seeing it
+// (the sight cells pass, red / unknown not); of those the nearest to us in a straight line. false = none
+function NavShootPoint(X, Y, Reach: integer): boolean;
+function NavShootX(): integer;
+function NavShootY(): integer;
+// ---------- runs: every move of the farm goes through these. Safe from any thread: while a blocking
+// run ticks, a tick run (NavStep) of another thread does not click ----------
+// run to X, Y: along the graph when a wall is between, the server path, stuck -> the graph again ->
+// out of the stuck place. Reach >= 150: done within 150 (click repeated on a timer); smaller: stand
+// within Reach (click repeated only when we stopped short). true = got there
+function NavRun(X, Y, Z, Reach: integer): boolean;
+function NavRunPlain(X, Y, Z, Reach: integer): boolean;   // the same, the server path only (no graph / unstick)
+// a run in ticks (the caller watches mobs meanwhile): NavStepReset at its start, then NavStep every
+// tick - it clicks only when needed (target moved away / we stopped); Graph = round walls by the map
+procedure NavStepReset();
+procedure NavStep(X, Y, Z: integer; Graph: boolean);
+// a tick toward X, Y by a click there (human clicks when on): no graph, no green clamp - a rail point, a place off the map
+procedure NavStepPlain(X, Y, Z: integer);
+function NavStillMs(): cardinal;                     // ms since we really moved (stuck check)
+procedure NavMoveReset();                            // the stuck clock starts again (a new goal)
+procedure NavClickForget();                          // the next NavStep / NavClickAt clicks for sure
+procedure NavClickAt(X, Y, Z: integer);              // one click, remembered (NavNeedClick)
+function NavNeedClick(X, Y: integer): boolean;       // the goal moved away from our click / we stopped short
+function NavGraphTo(X, Y, Z: integer): boolean;      // along the graph until the target is in sight
+// stuck (a statue / a ledge the map does not know): server path (it goes round by the geodata) to the
+// nearest own node of the viewer, none near -> the nearest graph node; true = got there
+function NavUnstick(): boolean;
+// a moving target (a mob): where to click now - the farthest route node in sight; false = the target
+// itself is in sight (click it) or no way. Call again as we run
+function NavWaypoint(X, Y: integer): boolean;
+function NavWpX(): integer;
+function NavWpY(): integer;
+// what the runs do now (a live view, nav_view.html): the last click and when (0 = none yet); the goal of the
+// last NavWaypoint, when, and its route nodes "x y x y ..." from us on ('' = straight / no route)
+function NavLastClickX(): integer;
+function NavLastClickY(): integer;
+function NavLastClickAt(): cardinal;
+function NavLastGoalX(): integer;
+function NavLastGoalY(): integer;
+function NavLastGoalAt(): cardinal;
+function NavLastRoute(): string;
+function NavMoveTo(X, Y, Z, Radius: integer): boolean;   // the whole run; true = within Radius
+// a spot round a corner: walkable, the mobs at MX, MY do not see it, it sees the corner - they run
+// round the corner and bunch up there. Nearest to FromX, FromY, corners within MaxDist; false = none
+function NavFindCornerSpot(FromX, FromY, MX, MY, MaxDist: integer): boolean;
+function NavSpotX(): integer;                 // the spot found by NavFindCornerSpot
+function NavSpotY(): integer;
+procedure NavSpotClear();                     // the pack for the corner choice: forget the mobs
+procedure NavSpotAddMob(X, Y: integer);       // ... and add every mob of the pack (up to 64)
+// how good a given spot (a farm spot #f) is against the pack at MX, MY: -1 = no good (the pack
+// sees it / no sharp turn round a corner / through the pack), else the higher the better
+function NavSpotScore(PX, PY, FromX, FromY, MX, MY: integer): double;
+function NavPathLen(X, Y: integer): double;   // run length to X, Y along the map; -1 = no way
+// run length from X1, Y1 to X2, Y2 along the map (any two points; -1 = no way). No map / the tables busy in
+// another thread: the straight length. Calls to the same X2, Y2 reuse its way table (12 kept)
+function NavWayLen(X1, Y1, X2, Y2: integer): double;
+function NavFarPoint(MinDist: integer): boolean;   // a walkable map point at least MinDist away (patrol)
+function NavFarX(): integer;
+function NavFarY(): integer;
+
+implementation
+
+const
+  NAV_CELL          = 40;       // cell of the zone grid
+  NAV_NONE          = -999999999;
+  NAV_CLEAR         = 40;       // graph lines keep this far off the walls (units, any cell size)
+  NAV_NODE_GAP      = 64;
+  NAV_BAN_R         = 40;
+  NAV_REACH_WAIT    = 150;      // NavRun: a Reach this big = "at the point" (timer clicks), smaller = stand there
+  NAV_RUN_MS        = 15000;    // ... a run gives up after this
+  NAV_RUN_STALL_MS  = 2500;     // ... timer clicks: not moved this long = stuck
+  NAV_TICK_MS       = 50;       // ... stand-there runs: the tick
+  NAV_STOP_MS       = 300;      // ... not moving this long = stopped -> click again
+  NAV_RECLICK       = 80;       // ... the goal moved this far from our click -> click again
+  HM_END            = 45;       // human clicks: the last click up to this far off the goal
+  HM_LEFT_MIN       = 80;       // ... the next piece when this close to the clicked one (+ up to HM_LEFT_RANGE)
+  HM_LEFT_RANGE     = 220;
+  HM_AGAIN_MIN      = 900;      // ... or after this long anyway (+ up to HM_AGAIN_RANGE ms): a player clicks on and on
+  HM_AGAIN_RANGE    = 1600;
+  NAV_POINT_STUCK   = 3000;     // ... not moved this long = a wall -> give up
+  NAV_NEAR_OK       = 60;       // ... stopped this close 3 times = as close as the server lets us
+  NAV_RUN_CLEAR     = 40;       // a run line keeps this far off the red cells (default, NavSetRunClear)
+  NAV_WP_CACHE_MS   = 500;      // NavWaypoint: the same answer this long while target / we moved < 64       // "X x y" of the grid file: no corner node this close       // graph nodes closer than this to each other: one is enough
+  NAV_LINK_MAX      = 2500;     // longest graph link
+  NAV_SEE_MAX       = 3000;     // first / last graph node only this close to us / the target
+  NAV_NODE_ON       = 40;       // this close to a graph node = on it (clicking it would not move us)
+  NAV_STRICT_LEAVE  = 40;       // strict map: an end standing in red / unknown may leave it within this (no more)
+  NAV_STRICT_NEAR   = 12;       // ... no green this close round us = we stand in red: out onto green first
+  NAV_STRICT_OUT    = 160;      // ... the green to step out onto is looked for this far
+  NAV_END_SKIP      = 60;       // a wall cell this close to us / the target does not block the sight
+  NAV_RING          = 200;      // no zone file: the active zone's box is felt with InZone this often
+  NAV_RING_MAX      = 20000;    // ... at most this far from us
+  NAV_MAX_NODES     = 600;
+  NAV_POINT_REACH   = 150;      // this close to a graph node -> run to the next one (no stop)
+  NAV_POINT_MS      = 20000;    // one node not reached in this -> the graph run is given up
+  NAV_STILL_MS      = 2000;     // not moved this long -> click again
+  NAV_STUCK_MAX     = 3;        // so many re-clicks without moving -> given up
+  NAV_RESEND_MS     = 1500;     // plain run: the click is repeated this often
+  NAV_STALL_MS      = 2500;     // plain run: not moved this long = stuck
+  NAV_BAD_MS        = 60000;    // a node we could not get to is left out of routes this long
+  NAV_SPOT_R        = 110;      // corner spot: this far from the corner node, round the corner
+  NAV_STITCH        = 64;       // trace: a stroke end this close to another trace point is joined to it
+  NAV_CACHE_FMT     = 2;        // the graph cache (Library\Nav\cache): +1 when the build changes (old ones are not taken)
+  NAV_RAIL_STEP     = 500;      // rail: its points at most this far apart (the server path is found only up to ~600)
+  NAV_RAIL_COST     = 0.5;      // ... a step along it costs this part of its length in routes (routes take the rail)
+  NAV_RAIL_REACH    = 80;       // ... at a rail point this close -> the next one
+  NAV_RAIL_PASS_MS  = 8000;     // ... a rail point reached is not gone back to for this long
+
+var
+  NmUserX, NmUserY: array of integer;   // "N x y" lines of the grid file: own graph nodes
+  NmUserN: integer;
+  NmBanX, NmBanY: array of integer;     // "X x y": a corner node is never put this close (removed in the viewer)
+  NmBanN: integer;
+  NmUnstickPX, NmUnstickPY: array[0..3] of integer;   // NavUnstick: the last nodes taken ...
+  NmUnstickAt: array[0..3] of cardinal;               // ... and when: none of them again for 20 s
+  NmUnstickHead: integer;
+  NmWcTX, NmWcTY, NmWcUX, NmWcUY: integer;   // NavWaypoint cache: the target / we at the last count ...
+  NmWcAt: cardinal;                     // ... when ...
+  NmWcRes: boolean;                     // ... and its result (NmWpX / NmWpY kept)
+  NmLcX, NmLcY: integer;                // the last click (NavLastClick*) ...
+  NmLcAt: cardinal;                     // ... and when
+  NmLgX, NmLgY: integer;                // the goal of the last NavWaypoint (NavLastGoal*) ...
+  NmLgAt: cardinal;                     // ... when ...
+  NmLgRoute: string;                    // ... and its route nodes "x y x y ..." ('' = straight / none)
+  NmWcMs: integer;                      // NavSetWpCache: how long (NmWcMsSet false -> NAV_WP_CACHE_MS)
+  NmWcMsSet: boolean;
+  NmRunClear: integer;                  // NavSetRunClear: the margin of a run line (units)
+  NmRunClearSet: boolean;
+  NgRun: array of boolean;              // cells at least NmRunClear off the red / the map edge
+  NmZoneFile, NmGridFile, NmTraceFile: string;
+  NmSpotX, NmSpotY: integer;               // NavFindCornerSpot result
+  NmWpX, NmWpY: integer;                   // NavWaypoint result
+  NmBadUntil: array of cardinal;           // a node we could not get to: left out of routes till then
+  NmMobX, NmMobY: array[0..63] of integer;  // NavSpotAddMob: the pack for the corner choice
+  NmMobN: integer;
+  NmFarXv, NmFarYv, NmFarNext: integer;     // NavFarPoint
+  NmSeedX, NmSeedY: array of integer;
+  NmSeedN: integer;
+  TrcX, TrcY, TrStart: array of integer;   // trace: all points in a row; stroke k = TrStart[k]..TrStart[k+1]-1
+  TrPN, TrSN: integer;
+  NmWall: array of boolean;              // trace: cells under the strokes
+  NmCellSet: integer;
+  NgX0, NgY0, NgCell, NgW, NgH, NgZ: integer;
+  NgFree, NgSafe: array of boolean;
+  NgView: array of boolean;               // sight passes: walkable or sight cells ("," - the viewer's blue)
+  NmHasView: boolean;                     // the grid has sight cells: the strict map by itself
+  NmStrictSet: boolean;                   // NavSetStrict
+  NmCpX, NmCpY: integer;                  // NavWalkClamp / the step out of red: the point
+  NmShX, NmShY: integer;                  // NavShootPoint: the spot
+  NgBX0, NgBY0, NgBX1, NgBY1: integer;
+  ZOX, ZOY: array of integer;             // zone outer contour
+  ZOn: integer;
+  ZIX, ZIY, ZIStart: array of integer;    // zone holes, all points in a row; ZIStart[k] = first point of hole k
+  ZIn, ZIPts: integer;
+  NavX, NavY: array of integer;
+  NavN: integer;
+  NavHead, NavTo, NavNext: array of integer;
+  NavLinkN: integer;
+  NavBuilt, NavOn, NavBusyFlag: boolean;
+  NmReady: boolean;                     // NavBuild finished: the graph may be used (not while it is built)
+  // the .navgrid: its version (the "V" line of the viewer: a hash of the rows / own nodes / removed
+  // nodes) and size; the graph built from it is kept in Library\Nav\cache and taken from there next time
+  NmGridVer, NmGridSig: string;
+  NmGridOn: boolean;                    // the map is this .navgrid
+  // rails ("W x1 y1 x2 y2 ..." of the grid file): all their points in a row (split to NAV_RAIL_STEP) and
+  // the rail of each; as graph nodes: the rail / the point of every node (-1 = not a rail point)
+  NmRailX, NmRailY, NmRailOf: array of integer;
+  NmRailPN, NmRailN: integer;
+  NmNodeRail, NmNodePt: array of integer;
+  NmRailPassAt: array of cardinal;      // a rail node reached then (not gone back to for NAV_RAIL_PASS_MS)
+  NmDbg: boolean;                       // NavSetDebug: the run moments into the debug log
+  NmCached: boolean;                    // NavBuild took the graph from the cache
+  // runs: the click we sent and when we really moved last (the thread that drives now owns them)
+  NmClX, NmClY, NmLX, NmLY: integer;
+  NmClAt, NmMovedAt: cardinal;
+  // human clicks (NavSetHuman): on, the piece length, the side share; the goal of the pieces, the piece clicked,
+  // the next piece when this close to it / at that time
+  NmHmOn: boolean;
+  NmHmMin, NmHmMax, NmHmSide: integer;
+  NmHmGX, NmHmGY, NmHmPX, NmHmPY, NmHmLeft: integer;
+  NmHmNext: cardinal;
+  NmHmMulti, NmHmRep: integer;          // ... the share of 2-3 clicks; clicks still to send to the same point
+  NmHmNorm: boolean;                    // ... the piece length: normal (mean, sigma) cut to min..max, else uniform
+  NmHmMean, NmHmSig: integer;
+  NmHmRepAt: cardinal;                  // ... the next of them then
+  NmDriveAt: cardinal;                  // a blocking run ticked then (its pulse; a dead thread holds nothing)
+  // way tables (NmFieldOf), up to 12 targets: for every node the way along the graph to the target and
+  // the next node toward it - counted once per target, then a route from us is a few line checks
+  NmFD: array of double;                // slot * NavN + node: the way (>= 1E17 = none)
+  NmFN: array of integer;               // ... the next node toward the target (-1 = sees it / no way)
+  NmFTX, NmFTY, NmFVer: array[0..11] of integer;   // the slot's target / the bans it was counted with
+  NmFUntil, NmFUsed: array[0..11] of cardinal;     // valid until (a left-out node comes back) / last used
+  NmFOn: array[0..11] of boolean;
+  NmFSize: integer;                     // NavN the tables are made for
+  NmFBusy: boolean;                     // a table is in use (a second thread at once counts the full way)
+  NmBadVer: integer;                    // +1 on every node left out (the tables are counted again)
+  NmMissX, NmMissY: array[0..15] of integer;   // targets asked once (no table yet) ...
+  NmMissAt: array[0..15] of cardinal;          // ... and when: asked again soon -> it gets a table
+  NmMissHead: integer;
+
+// a square in double (an integer square overflows past 46340: far coordinates, a point not set yet)
+function NmSq(V: double): double;
+begin
+  result := V * V;
+end;
+
+procedure NavSetZone(ZoneFile: string);
+begin
+  NmZoneFile := ZoneFile;
+end;
+
+procedure NavSetGrid(GridFile: string);
+begin
+  NmGridFile := GridFile;
+end;
+
+procedure NavSetTrace(TraceFile: string);
+begin
+  NmTraceFile := TraceFile;
+end;
+
+procedure NavAddSeed(X, Y: integer);
+begin
+  SetLength(NmSeedX, NmSeedN + 1);
+  SetLength(NmSeedY, NmSeedN + 1);
+  NmSeedX[NmSeedN] := X;
+  NmSeedY[NmSeedN] := Y;
+  Inc(NmSeedN);
+end;
+
+procedure NavSetCell(Cell: integer);
+begin
+  NmCellSet := Cell;
+end;
+
+procedure NavSetWpCache(Ms: integer);
+begin
+  if Ms < 0 then Ms := 0;
+  NmWcMs := Ms;
+  NmWcMsSet := true;
+  NmWcAt := 0;
+end;
+
+procedure NavSetRunSteps(Enable: boolean);
+begin
+end;
+
+procedure NavSetRunClear(Units: integer);
+begin
+  if Units < 0 then Units := 0;
+  NmRunClear := Units;
+  NmRunClearSet := true;
+end;
+
+procedure NavSetStepLen(StepLen: integer);
+begin
+end;
+
+procedure NavSetDebug(Enable: boolean);
+begin
+  NmDbg := Enable;
+end;
+
+procedure NavSetHuman(Enable: boolean; PieceMin, PieceMax, SidePct, MultiPct: integer; PieceNorm: boolean;
+  PieceMean, PieceSig: integer);
+begin
+  NmHmOn := Enable;
+  if MultiPct < 0 then MultiPct := 0;
+  if MultiPct > 100 then MultiPct := 100;
+  NmHmMulti := MultiPct;
+  if PieceMin < 100 then PieceMin := 100;
+  if PieceMax < PieceMin then PieceMax := PieceMin;
+  if SidePct < 0 then SidePct := 0;
+  if SidePct > 45 then SidePct := 45;
+  NmHmMin := PieceMin;
+  NmHmMax := PieceMax;
+  NmHmSide := SidePct;
+  NmHmNorm := PieceNorm;
+  NmHmMean := PieceMean;
+  if PieceSig < 1 then PieceSig := 1;
+  NmHmSig := PieceSig;
+end;
+
+function NavRailCount(): integer;
+begin
+  result := NmRailN;
+end;
+
+function NavRailFirst(Rail: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to NmRailPN - 1 do
+    if NmRailOf[i] = Rail then begin
+      result := i;
+      exit;
+    end;
+end;
+
+function NavRailLast(Rail: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  for i := 0 to NmRailPN - 1 do
+    if NmRailOf[i] = Rail then result := i;
+end;
+
+function NavRailX(i: integer): integer;
+begin
+  result := 0;
+  if (i >= 0) and (i < NmRailPN) then result := NmRailX[i];
+end;
+
+function NavRailY(i: integer): integer;
+begin
+  result := 0;
+  if (i >= 0) and (i < NmRailPN) then result := NmRailY[i];
+end;
+
+function NavDebugOn(): boolean;
+begin
+  result := NmDbg and LogOn();
+end;
+
+// one line of the run log: where we stand | what happens (callers check NmDbg first: no strings made
+// when it is off)
+procedure NmLog(Text: string);
+begin
+  if not LogOn() then exit;
+  LogLine('[Run]', IntToStr(User.X) + ',' + IntToStr(User.Y) + ' | ' + Text);
+end;
+
+function NmXY(X, Y: integer): string;
+begin
+  result := IntToStr(X) + ',' + IntToStr(Y);
+end;
+
+function NavIsReady(): boolean;
+begin
+  result := NavOn and NmReady;
+end;
+
+function NavIsBusy(): boolean;
+begin
+  result := NavBusyFlag;
+end;
+
+function NmIfStr(C: boolean; A, B: string): string;
+begin
+  if C then result := A else result := B;
+end;
+
+function NmHex(Value: integer): string;
+begin
+  result := IntToHex(Value and $FF, 2) + IntToHex((Value shr 8) and $FF, 2) +
+            IntToHex((Value shr 16) and $FF, 2) + IntToHex((Value shr 24) and $FF, 2);
+end;
+
+// the packet of a mouse click (MoveBackwardToLocation: target, our place, 1 = by mouse):
+// the server builds the way itself
+procedure NavClick(X, Y, Z: integer);
+var UX, UY, UZ: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  if NmDbg then NmLog('click ' + NmXY(X, Y) + ' d=' + IntToStr(Round(Sqrt(NmSq(X - UX) + NmSq(Y - UY)))));
+  Engine.SendToServer('0F' + NmHex(X) + NmHex(Y) + NmHex(Z) + NmHex(UX) + NmHex(UY) + NmHex(UZ) + NmHex(1));
+  NmLcX := X;
+  NmLcY := Y;
+  NmLcAt := GetTickCount;
+end;
+
+procedure NavSend(Hex: string);
+begin
+  Engine.SendToServer(Hex);
+end;
+
+function NmField(S: string; k: integer): string;
+var p, n: integer;
+  T: string;
+begin
+  T := Trim(S);
+  n := k;
+  while n > 0 do begin
+    p := Pos(' ', T);
+    if p = 0 then begin
+      result := '';
+      exit;
+    end;
+    T := Trim(Copy(T, p + 1, Length(T)));
+    Dec(n);
+  end;
+  p := Pos(' ', T);
+  if p > 0 then result := Copy(T, 1, p - 1) else result := T;
+end;
+
+// number of the attribute Key="123" (Key with a space before: ' x'); none -> NAV_NONE
+function NmAttr(S, Key: string): integer;
+var p, q: integer;
+  T: string;
+begin
+  result := NAV_NONE;
+  p := Pos(Key + '="', S);
+  if p = 0 then exit;
+  T := Copy(S, p + Length(Key) + 2, 20);
+  q := Pos('"', T);
+  if q > 0 then T := Copy(T, 1, q - 1);
+  result := StrToIntDef(T, NAV_NONE);
+end;
+
+// the .zmap: outer contour + holes; false = no file / no contour
+function NmLoadZone(F: string): boolean;
+var L: TStringList;
+  i, X, Y, Mode: integer;
+  S: string;
+begin
+  result := false;
+  ZOn := 0;
+  ZIn := 0;
+  ZIPts := 0;
+  if not FileExists(F) then exit;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  SetLength(ZOX, L.Count);
+  SetLength(ZOY, L.Count);
+  SetLength(ZIX, L.Count);
+  SetLength(ZIY, L.Count);
+  SetLength(ZIStart, L.Count + 1);
+  Mode := 0;                           // 1 = outer contour, 2 = a hole
+  for i := 0 to L.Count - 1 do begin
+    S := L[i];
+    if Pos('<ExternalPoly', S) > 0 then Mode := 1
+    else if Pos('<InternalPolies', S) > 0 then Mode := 0
+    else if Pos('<poly>', S) > 0 then begin
+      Mode := 2;
+      ZIStart[ZIn] := ZIPts;
+      Inc(ZIn);
+    end else if Pos('<point', S) > 0 then begin
+      X := NmAttr(S, ' x');
+      Y := NmAttr(S, ' y');
+      if (X = NAV_NONE) or (Y = NAV_NONE) then continue;
+      if Mode = 1 then begin
+        ZOX[ZOn] := X;
+        ZOY[ZOn] := Y;
+        Inc(ZOn);
+      end else if Mode = 2 then begin
+        ZIX[ZIPts] := X;
+        ZIY[ZIPts] := Y;
+        Inc(ZIPts);
+      end;
+    end;
+  end;
+  ZIStart[ZIn] := ZIPts;
+  L.Free;
+  result := ZOn >= 3;
+end;
+
+// point in the polygon made of points From..To-1 of the arrays (outer: Hole = false)
+function NmInPoly(X, Y, From, Upto: integer; Hole: boolean): boolean;
+var i, j, AX, AY, BX, BY: integer;
+begin
+  result := false;
+  j := Upto - 1;
+  for i := From to Upto - 1 do begin
+    if Hole then begin
+      AX := ZIX[i]; AY := ZIY[i]; BX := ZIX[j]; BY := ZIY[j];
+    end else begin
+      AX := ZOX[i]; AY := ZOY[i]; BX := ZOX[j]; BY := ZOY[j];
+    end;
+    if ((AY > Y) <> (BY > Y)) and (X < 1.0 * (BX - AX) * (Y - AY) / (BY - AY) + AX) then result := not result;
+    j := i;
+  end;
+end;
+
+procedure NmAlloc(X0, Y0, X1, Y1, Cell: integer);
+var i: integer;
+begin
+  NgCell := Cell;
+  NgX0 := X0 - Cell * 2;
+  NgY0 := Y0 - Cell * 2;
+  NgW := (X1 - X0) div Cell + 5;
+  NgH := (Y1 - Y0) div Cell + 5;
+  SetLength(NgFree, NgW * NgH);
+  SetLength(NgSafe, NgW * NgH);
+  for i := 0 to NgW * NgH - 1 do begin
+    NgFree[i] := false;
+    NgSafe[i] := false;
+  end;
+end;
+
+// no zone file: the box of the zone active in the bot, found by asking InZone on rings every
+// NAV_RING round us until two rings in a row have no zone point; false = we do not stand in a zone
+function NmActiveBox(UX, UY, UZ: integer): boolean;
+var R, Far, k, n, X, Y, Side: integer;
+  Any: boolean;
+begin
+  result := Engine.InZone(UX, UY, UZ);
+  if not result then exit;
+  NgBX0 := UX; NgBX1 := UX; NgBY0 := UY; NgBY1 := UY;
+  Far := 0;
+  R := NAV_RING;
+  while R <= NAV_RING_MAX do begin
+    Any := false;
+    n := (2 * R) div NAV_RING;
+    for Side := 0 to 3 do
+      for k := 0 to n - 1 do begin
+        if Side = 0 then begin X := UX - R + k * NAV_RING; Y := UY - R; end
+        else if Side = 1 then begin X := UX + R; Y := UY - R + k * NAV_RING; end
+        else if Side = 2 then begin X := UX + R - k * NAV_RING; Y := UY + R; end
+        else begin X := UX - R; Y := UY + R - k * NAV_RING; end;
+        if Engine.InZone(X, Y, UZ) then begin
+          Any := true;
+          if X < NgBX0 then NgBX0 := X;
+          if X > NgBX1 then NgBX1 := X;
+          if Y < NgBY0 then NgBY0 := Y;
+          if Y > NgBY1 then NgBY1 := Y;
+        end;
+      end;
+    if Any then Far := R
+    else if R > Far + NAV_RING * 2 then break;
+    R := R + NAV_RING;
+  end;
+  NgBX0 := NgBX0 - NAV_RING;
+  NgBY0 := NgBY0 - NAV_RING;
+  NgBX1 := NgBX1 + NAV_RING;
+  NgBY1 := NgBY1 + NAV_RING;
+end;
+
+// grid from the zone: a cell is free when its centre is inside the contour and not in a hole.
+// No zone file -> the zone active in the bot (Engine.InZone, its box found by NmActiveBox)
+function NmFromZone(): boolean;
+var cx, cy, X, Y, UX, UY, UZ, Cell, k, i: integer;
+  Free: boolean;
+begin
+  result := false;
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  NgZ := UZ;
+  Cell := NmCellSet;
+  if Cell <= 0 then Cell := NAV_CELL;
+  if (NmZoneFile <> '') and NmLoadZone(Script.Path + '..\Zones\' + NmZoneFile) then begin
+    NgBX0 := ZOX[0]; NgBX1 := ZOX[0]; NgBY0 := ZOY[0]; NgBY1 := ZOY[0];
+    for i := 1 to ZOn - 1 do begin
+      if ZOX[i] < NgBX0 then NgBX0 := ZOX[i];
+      if ZOX[i] > NgBX1 then NgBX1 := ZOX[i];
+      if ZOY[i] < NgBY0 then NgBY0 := ZOY[i];
+      if ZOY[i] > NgBY1 then NgBY1 := ZOY[i];
+    end;
+    NmAlloc(NgBX0, NgBY0, NgBX1, NgBY1, Cell);
+    for cy := 0 to NgH - 1 do
+      for cx := 0 to NgW - 1 do begin
+        X := NgX0 + cx * NgCell + NgCell div 2;
+        Y := NgY0 + cy * NgCell + NgCell div 2;
+        Free := NmInPoly(X, Y, 0, ZOn, false);
+        if Free then
+          for k := 0 to ZIn - 1 do
+            if NmInPoly(X, Y, ZIStart[k], ZIStart[k + 1], true) then begin
+              Free := false;
+              break;
+            end;
+        NgFree[cy * NgW + cx] := Free;
+      end;
+    result := true;
+    exit;
+  end;
+  if NmZoneFile <> '' then Engine.Msg('[Nav]', 'No zone file ' + NmZoneFile + ', trying the zone active in the bot', 128);
+  if not NmActiveBox(UX, UY, UZ) then exit;
+  NmAlloc(NgBX0, NgBY0, NgBX1, NgBY1, Cell);
+  for cy := 0 to NgH - 1 do
+    for cx := 0 to NgW - 1 do begin
+      X := NgX0 + cx * NgCell + NgCell div 2;
+      Y := NgY0 + cy * NgCell + NgCell div 2;
+      NgFree[cy * NgW + cx] := Engine.InZone(X, Y, UZ);
+    end;
+  result := true;
+end;
+
+procedure NmRailPt(X, Y, Rail: integer);
+begin
+  if NmRailPN >= Length(NmRailX) then begin
+    SetLength(NmRailX, NmRailPN + 64);
+    SetLength(NmRailY, NmRailPN + 64);
+    SetLength(NmRailOf, NmRailPN + 64);
+  end;
+  NmRailX[NmRailPN] := X;
+  NmRailY[NmRailPN] := Y;
+  NmRailOf[NmRailPN] := Rail;
+  Inc(NmRailPN);
+end;
+
+// "W x1 y1 x2 y2 ..." of the grid file: a rail, its points in order; a stretch longer than NAV_RAIL_STEP
+// gets points in between (the server path is found only up to ~600)
+procedure NmAddRail(S: string);
+var k, n, j, m, X, Y, PX, PY, First: integer;
+  D: double;
+begin
+  First := NmRailPN;
+  n := 0;
+  PX := 0;
+  PY := 0;
+  k := 1;
+  while true do begin
+    X := StrToIntDef(NmField(S, k), NAV_NONE);
+    Y := StrToIntDef(NmField(S, k + 1), NAV_NONE);
+    if (X = NAV_NONE) or (Y = NAV_NONE) then break;
+    if n > 0 then begin
+      D := Sqrt(NmSq(X - PX) + NmSq(Y - PY));
+      m := Trunc((D - 1) / NAV_RAIL_STEP);
+      for j := 1 to m do
+        NmRailPt(PX + Round((X - PX) * j / (m + 1)), PY + Round((Y - PY) * j / (m + 1)), NmRailN);
+    end;
+    NmRailPt(X, Y, NmRailN);
+    PX := X;
+    PY := Y;
+    Inc(n);
+    k := k + 2;
+  end;
+  if n >= 2 then Inc(NmRailN) else NmRailPN := First;
+end;
+
+// lidar grid: "G x0 y0 cell cols rows z", then one "R ...." line per row ('.' = free). Here everything
+// but the rows: the size, the version (V), own nodes (N), removed nodes (X); the rows only when the graph
+// is not in the cache (NmGridRows) - the rows are the slow part of reading the file
+function NmFromFile(F: string): boolean;
+var L: TStringList;
+  i, Total, Cnt: integer;
+  S, K: string;
+begin
+  result := false;
+  NmUserN := 0;
+  NmBanN := 0;
+  NmRailPN := 0;
+  NmRailN := 0;
+  NmGridVer := '';
+  NmGridSig := '';
+  NmGridOn := false;
+  NmHasView := false;
+  if not FileExists(F) then begin
+    Engine.Msg('[Nav]', 'No grid file ' + F, 128);
+    exit;
+  end;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  Total := 0;                          // the size of the lines the graph is made of (G R N X; not the settings)
+  Cnt := 0;
+  for i := 0 to L.Count - 1 do begin
+    S := L[i];
+    K := Copy(S, 1, 2);
+    if (K = 'R ') or (K = 'G ') or (K = 'N ') or (K = 'X ') or (K = 'W ') then begin
+      Total := Total + Length(S);
+      Inc(Cnt);
+    end;
+    if K = 'R ' then begin             // the rows: NmGridRows (here only: are there sight cells)
+      if (not NmHasView) and (Pos(',', S) > 0) then NmHasView := true;
+      continue;
+    end;
+    K := NmField(S, 0);
+    if K = 'G' then begin
+      NgX0 := StrToIntDef(NmField(S, 1), 0);
+      NgY0 := StrToIntDef(NmField(S, 2), 0);
+      NgCell := StrToIntDef(NmField(S, 3), NAV_CELL);
+      NgW := StrToIntDef(NmField(S, 4), 0);
+      NgH := StrToIntDef(NmField(S, 5), 0);
+      NgZ := StrToIntDef(NmField(S, 6), 0);
+      SetLength(NgFree, NgW * NgH);
+      SetLength(NgSafe, NgW * NgH);
+      SetLength(NgView, NgW * NgH);
+    end else if K = 'V' then NmGridVer := NmField(S, 1)
+    else if K = 'W' then NmAddRail(S)  // a rail drawn in the viewer
+    else if (K = 'N') and (NmUserN < NAV_MAX_NODES) then begin   // a node drawn in the viewer
+      SetLength(NmUserX, NmUserN + 1);
+      SetLength(NmUserY, NmUserN + 1);
+      NmUserX[NmUserN] := StrToIntDef(NmField(S, 1), 0);
+      NmUserY[NmUserN] := StrToIntDef(NmField(S, 2), 0);
+      Inc(NmUserN);
+    end else if K = 'X' then begin       // a graph node removed in the viewer
+      SetLength(NmBanX, NmBanN + 1);
+      SetLength(NmBanY, NmBanN + 1);
+      NmBanX[NmBanN] := StrToIntDef(NmField(S, 1), 0);
+      NmBanY[NmBanN] := StrToIntDef(NmField(S, 2), 0);
+      Inc(NmBanN);
+    end;
+  end;
+  NmGridSig := IntToStr(Cnt) + '.' + IntToStr(Total);   // a grid changed by hand (no new V) is not taken for the old one
+  L.Free;
+  result := (NgW > 0) and (NgH > 0);
+  NmGridOn := result;
+end;
+
+// the rows of the grid file into NgFree (".") and NgView ("." and ",")
+procedure NmGridRows(F: string);
+var L: TStringList;
+  i, cx, cy: integer;
+  S, Row: string;
+  V: boolean;
+begin
+  V := Length(NgView) = NgW * NgH;
+  for cx := 0 to NgW * NgH - 1 do begin
+    NgFree[cx] := false;
+    if V then NgView[cx] := false;
+  end;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  cy := 0;
+  for i := 0 to L.Count - 1 do begin
+    S := L[i];
+    if (Copy(S, 1, 2) = 'R ') and (cy < NgH) then begin
+      Row := Copy(S, 3, NgW);
+      for cx := 0 to Length(Row) - 1 do
+        if cx < NgW then begin
+          if Row[cx + 1] = '.' then begin
+            NgFree[cy * NgW + cx] := true;
+            if V then NgView[cy * NgW + cx] := true;
+          end else if (Row[cx + 1] = ',') and V then NgView[cy * NgW + cx] := true;
+        end;
+      Inc(cy);
+    end;
+  end;
+  L.Free;
+end;
+
+// graph cells: free and NAV_CLEAR units off the walls, whatever the cell size
+function NmErodeCells(): integer;
+begin
+  result := (NAV_CLEAR + NgCell div 2) div NgCell;
+  if result < 1 then result := 1;
+end;
+
+procedure NmErode();
+var cx, cy, dx, dy, ax, ay, R: integer;
+  Ok: boolean;
+begin
+  R := NmErodeCells();
+  for cy := 0 to NgH - 1 do
+    for cx := 0 to NgW - 1 do begin
+      Ok := NgFree[cy * NgW + cx];
+      if Ok then
+        for dy := -R to R do
+          for dx := -R to R do begin
+            if not Ok then break;
+            ax := cx + dx;
+            ay := cy + dy;
+            if (ax < 0) or (ay < 0) or (ax >= NgW) or (ay >= NgH) then Ok := false
+            else if not NgFree[ay * NgW + ax] then Ok := false;
+          end;
+      NgSafe[cy * NgW + cx] := Ok;
+    end;
+end;
+
+// outside the grid = free (the server knows better there)
+function NmFreeAt(X, Y: integer; Safe: boolean): boolean;
+var cx, cy: integer;
+begin
+  result := true;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  if Safe then result := NgSafe[cy * NgW + cx] else result := NgFree[cy * NgW + cx];
+end;
+
+// sight passes this cell: walkable or a sight cell (outside the grid / no sight cells: as NmFreeAt)
+function NmViewAt(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := true;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  if Length(NgView) = NgW * NgH then result := NgView[cy * NgW + cx] else result := NgFree[cy * NgW + cx];
+end;
+
+function NmStrict(): boolean;
+begin
+  result := NmStrictSet or NmHasView;
+end;
+
+// strict: a wall this close to a free end is forgiven (we / the mob stand right at it)
+function NmStrictSkip(): integer;
+begin
+  if NgCell >= 16 then result := NgCell
+  else begin
+    result := NgCell * 2;
+    if result < 8 then result := 8;
+  end;
+end;
+
+function NmPassAt(X, Y: integer; Sight: boolean): boolean;
+begin
+  if Sight then result := NmViewAt(X, Y) else result := NmFreeAt(X, Y, false);
+end;
+
+// the strict line: Sight - through walkable and sight cells (a shot), else through walkable only and it must END
+// on green (a run). Red / unknown never pass: an end standing in it may only leave it within NAV_STRICT_LEAVE (a run:
+// our end only), a wall closer than NmStrictSkip() to a free end is forgiven. Sampled as NmLineFree
+function NmLineStrict(X1, Y1, X2, Y2: integer; Sight: boolean): boolean;
+var k, n, PX, PY, K0, K1: integer;
+  L, T, DX, DY, Skip: double;
+begin
+  result := false;
+  if (not Sight) and (not NmFreeAt(X2, Y2, false)) then exit;   // a run never ends in red / unknown / sight cells
+  result := true;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  if NgCell >= 16 then n := Trunc(L / (NgCell * 0.5)) + 1
+  else n := Trunc(L / 8) + 1;
+  Skip := NmStrictSkip();
+  K0 := 0;
+  K1 := n;
+  while (K0 <= n) and (K0 * L / n <= NAV_STRICT_LEAVE) and
+        (not NmPassAt(Round(X1 + DX * K0 / n), Round(Y1 + DY * K0 / n), Sight)) do Inc(K0);
+  if Sight then
+    while (K1 >= K0) and ((n - K1) * L / n <= NAV_STRICT_LEAVE) and
+          (not NmPassAt(Round(X1 + DX * K1 / n), Round(Y1 + DY * K1 / n), true)) do Dec(K1);
+  for k := K0 to K1 do begin
+    T := k / n;
+    if (K0 = 0) and (T * L < Skip) then continue;
+    if (K1 = n) and ((1 - T) * L < Skip) then continue;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if not NmPassAt(PX, PY, Sight) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
+// straight line through free cells (every half cell). Not Safe: an end standing in a wall / a hole
+// of the zone (a corner point in a cut-out, the safe point out of the zone) - the cells from it up
+// to the first free one do not count, and walls within NAV_END_SKIP of the ends do not count either
+// (we / the target may stand at the very wall). Only a wall BETWEEN free cells blocks the sight
+function NmLineFree(X1, Y1, X2, Y2: integer; Safe: boolean): boolean;
+var k, n, PX, PY, K0, K1: integer;
+  L, T, DX, DY: double;
+begin
+  if (not Safe) and NmStrict() then begin   // the strict map: a run line on green only
+    result := NmLineStrict(X1, Y1, X2, Y2, false);
+    exit;
+  end;
+  result := true;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  if NgCell >= 16 then n := Trunc(L / (NgCell * 0.5)) + 1
+  else n := Trunc(L / 8) + 1;             // tiny cells: not finer than every 8 units, else the start takes ages
+  K0 := 0;
+  K1 := n;
+  if not Safe then begin
+    while (K0 <= n) and (not NmFreeAt(Round(X1 + DX * K0 / n), Round(Y1 + DY * K0 / n), false)) do Inc(K0);
+    while (K1 >= K0) and (not NmFreeAt(Round(X1 + DX * K1 / n), Round(Y1 + DY * K1 / n), false)) do Dec(K1);
+  end;
+  for k := K0 to K1 do begin
+    T := k / n;
+    if (not Safe) and ((T * L < NAV_END_SKIP) or ((1 - T) * L < NAV_END_SKIP)) then continue;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if not NmFreeAt(PX, PY, Safe) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
+function NmRunAt(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := true;
+  if Length(NgRun) <> NgW * NgH then exit;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  result := NgRun[cy * NgW + cx];
+end;
+
+// a line we may RUN straight: free (NmLineFree) and NmRunClear off the red all the way - the body of
+// the character does not catch a corner. Where we stand at a wall (a corner, pushed there) / the target
+// is at one (a corner spot), the first / last 2 x NmRunClear may be closer. The viewer's route: the same
+function NmRunFree(X1, Y1, X2, Y2: integer): boolean;
+var k, n, PX, PY: integer;
+  L, T, DX, DY, D0, D1, Relax0, Relax1: double;
+begin
+  result := NmLineFree(X1, Y1, X2, Y2, false);
+  if (not result) or (NmRunClear <= 0) then exit;
+  Relax0 := 0;
+  Relax1 := 0;
+  if not NmRunAt(X1, Y1) then Relax0 := NmRunClear * 2;
+  if not NmRunAt(X2, Y2) then Relax1 := NmRunClear * 2;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  if NgCell >= 16 then n := Trunc(L / (NgCell * 0.5)) + 1
+  else n := Trunc(L / 8) + 1;
+  for k := 0 to n do begin
+    T := k / n;
+    D0 := T * L;
+    D1 := (1 - T) * L;
+    if (D0 <= Relax0) or (D1 <= Relax1) then continue;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if not NmRunAt(PX, PY) then begin
+      result := false;
+      exit;
+    end;
+  end;
+end;
+
+// the sight: as NmLineFree, on the strict map through the sight cells too (red / unknown block it)
+function NmSeeLine(X1, Y1, X2, Y2: integer): boolean;
+begin
+  if NmStrict() then result := NmLineStrict(X1, Y1, X2, Y2, true)
+  else result := NmLineFree(X1, Y1, X2, Y2, false);
+end;
+
+// the last route node -> the target: a run when the target stands on green, else (a mob in the sight cells / at
+// the wall) the sight - the route ends where it is in sight
+function NmTargetLine(PX, PY, X, Y: integer): boolean;
+begin
+  if NmStrict() and (not NmFreeAt(X, Y, false)) then result := NmLineStrict(PX, PY, X, Y, true)
+  else result := NmLineFree(PX, PY, X, Y, false);
+end;
+
+function NavSee(X1, Y1, X2, Y2: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmSeeLine(X1, Y1, X2, Y2);
+end;
+
+function NavIsFree(X, Y: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmFreeAt(X, Y, false);
+end;
+
+// a straight run from us (MoveWait / the graph run: go straight or along the graph) - with the margin
+function NavSeeFromUs(X, Y: integer): boolean;
+var UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  result := true;
+  if NmReady then result := NmRunFree(UX, UY, X, Y);
+end;
+
+function NmDist(i, j: integer): double;
+var DX, DY: double;
+begin
+  DX := NavX[i] - NavX[j];
+  DY := NavY[i] - NavY[j];
+  result := Sqrt(DX * DX + DY * DY);
+end;
+
+function NmLinked(A, B: integer): boolean;
+var e: integer;
+begin
+  result := false;
+  e := NavHead[A];
+  while e >= 0 do begin
+    if NavTo[e] = B then begin
+      result := true;
+      exit;
+    end;
+    e := NavNext[e];
+  end;
+end;
+
+// the link u-v in routes: a step along a rail (its points one after another) costs NAV_RAIL_COST of its
+// length - a route through that place takes the rail
+function NmCost(u, v: integer): double;
+begin
+  result := NmDist(u, v);
+  if (NmNodeRail[u] >= 0) and (NmNodeRail[u] = NmNodeRail[v]) and (Abs(NmNodePt[u] - NmNodePt[v]) = 1) then
+    result := result * NAV_RAIL_COST;
+end;
+
+procedure NmLink(A, B: integer);
+begin
+  if NavLinkN + 2 > Length(NavTo) then begin
+    SetLength(NavTo, NavLinkN * 2 + 256);
+    SetLength(NavNext, NavLinkN * 2 + 256);
+  end;
+  NavTo[NavLinkN] := B;
+  NavNext[NavLinkN] := NavHead[A];
+  NavHead[A] := NavLinkN;
+  Inc(NavLinkN);
+  NavTo[NavLinkN] := A;
+  NavNext[NavLinkN] := NavHead[B];
+  NavHead[B] := NavLinkN;
+  Inc(NavLinkN);
+end;
+
+function NmSafeCell(cx, cy: integer): boolean;
+begin
+  result := false;
+  if (cx < 0) or (cy < 0) or (cx >= NgW) or (cy >= NgH) then exit;
+  result := NgSafe[cy * NgW + cx];
+end;
+
+// the trace file: "S z" = a new stroke, "P x y" = point
+function NmLoadTrace(F: string): boolean;
+var L: TStringList;
+  i: integer;
+  S, K: string;
+begin
+  result := false;
+  TrPN := 0;
+  TrSN := 0;
+  if not FileExists(F) then begin
+    Engine.Msg('[Nav]', 'No trace file ' + F, 128);
+    exit;
+  end;
+  L := TStringList.Create;
+  L.LoadFromFile(F);
+  SetLength(TrcX, L.Count);
+  SetLength(TrcY, L.Count);
+  SetLength(TrStart, L.Count + 1);
+  for i := 0 to L.Count - 1 do begin
+    S := L[i];
+    K := NmField(S, 0);
+    if K = 'S' then begin
+      TrStart[TrSN] := TrPN;
+      Inc(TrSN);
+    end else if (K = 'P') and (TrSN > 0) then begin
+      TrcX[TrPN] := StrToIntDef(NmField(S, 1), 0);
+      TrcY[TrPN] := StrToIntDef(NmField(S, 2), 0);
+      Inc(TrPN);
+    end;
+  end;
+  TrStart[TrSN] := TrPN;
+  L.Free;
+  result := TrPN > 1;
+end;
+
+function NmCellOf(X, Y: integer): integer;
+var cx, cy: integer;
+begin
+  result := -1;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  result := cy * NgW + cx;
+end;
+
+// cells on the line A -> B become trace walls
+procedure NmMarkLine(X1, Y1, X2, Y2: integer);
+var k, n, c: integer;
+  DX, DY, L: double;
+begin
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  n := Trunc(L / (NgCell / 3)) + 1;
+  for k := 0 to n do begin
+    c := NmCellOf(Round(X1 + DX * k / n), Round(Y1 + DY * k / n));
+    if c >= 0 then NmWall[c] := true;
+  end;
+end;
+
+// the trace cuts the free cells: stroke cells are walls (stroke ends closer than NAV_STITCH to any
+// other trace point are joined), the pieces with a seed stay (none - the biggest piece), the stroke
+// cells next to what stays are free again (our centre ran there)
+procedure NmApplyTrace();
+var Lab, Queue, Keep: array of integer;
+  k, i, j, e, c, n, Head, Tail, Labels, Best, BestN, Cnt, X, Y, X2, Y2, Kept, Open: integer;
+  D, BD: double;
+  Any: boolean;
+begin
+  n := NgW * NgH;
+  SetLength(NmWall, n);
+  for c := 0 to n - 1 do NmWall[c] := false;
+  Open := 0;
+  for k := 0 to TrSN - 1 do begin
+    for i := TrStart[k] to TrStart[k + 1] - 2 do begin
+      X := TrcX[i]; Y := TrcY[i]; X2 := TrcX[i + 1]; Y2 := TrcY[i + 1];
+      NmMarkLine(X, Y, X2, Y2);
+    end;
+    if TrStart[k + 1] - TrStart[k] < 2 then continue;
+    for e := 0 to 1 do begin
+      if e = 0 then i := TrStart[k] else i := TrStart[k + 1] - 1;
+      BD := NAV_STITCH;
+      Best := -1;
+      for j := 0 to TrPN - 1 do begin
+        if (j >= TrStart[k]) and (j < TrStart[k + 1]) and (Abs(j - i) < 15) then continue;
+        D := Sqrt(NmSq(TrcX[j] - TrcX[i]) + NmSq(TrcY[j] - TrcY[i]));
+        if D < BD then begin
+          BD := D;
+          Best := j;
+        end;
+      end;
+      if Best >= 0 then begin
+        X := TrcX[i]; Y := TrcY[i]; X2 := TrcX[Best]; Y2 := TrcY[Best];
+        NmMarkLine(X, Y, X2, Y2);
+      end else Inc(Open);
+    end;
+  end;
+  for c := 0 to n - 1 do if NmWall[c] then NgFree[c] := false;
+  // pieces of the free cells
+  SetLength(Lab, n);
+  SetLength(Queue, n);
+  for c := 0 to n - 1 do Lab[c] := -1;
+  Labels := 0;
+  SetLength(Keep, 0);
+  Best := -1;
+  BestN := 0;
+  for c := 0 to n - 1 do begin
+    if (not NgFree[c]) or (Lab[c] >= 0) then continue;
+    Head := 0;
+    Tail := 1;
+    Queue[0] := c;
+    Lab[c] := Labels;
+    Cnt := 0;
+    while Head < Tail do begin
+      i := Queue[Head];
+      Inc(Head);
+      Inc(Cnt);
+      for e := 0 to 3 do begin
+        if e = 0 then begin if (i mod NgW) = NgW - 1 then continue; j := i + 1; end
+        else if e = 1 then begin if (i mod NgW) = 0 then continue; j := i - 1; end
+        else if e = 2 then j := i + NgW
+        else j := i - NgW;
+        if (j < 0) or (j >= n) then continue;
+        if NgFree[j] and (Lab[j] < 0) then begin
+          Lab[j] := Labels;
+          Queue[Tail] := j;
+          Inc(Tail);
+        end;
+      end;
+    end;
+    if Cnt > BestN then begin
+      BestN := Cnt;
+      Best := Labels;
+    end;
+    Inc(Labels);
+  end;
+  SetLength(Keep, Labels + 1);
+  for i := 0 to Labels - 1 do Keep[i] := 0;
+  Any := false;
+  NavAddSeed(User.X, User.Y);            // where we stand is walkable for sure
+  for k := 0 to NmSeedN - 1 do begin
+    c := NmCellOf(NmSeedX[k], NmSeedY[k]);
+    if c < 0 then continue;
+    // a seed right on a stroke: take the free cells round it
+    for j := -1 to 1 do
+      for i := -1 to 1 do begin
+        e := c + j * NgW + i;
+        if (e >= 0) and (e < n) and (Lab[e] >= 0) then begin
+          Keep[Lab[e]] := 1;
+          Any := true;
+        end;
+      end;
+  end;
+  if (not Any) and (Best >= 0) then Keep[Best] := 1;
+  Kept := 0;
+  for c := 0 to n - 1 do begin
+    NgFree[c] := (Lab[c] >= 0) and (Keep[Lab[c]] = 1);
+    if NgFree[c] then Inc(Kept);
+  end;
+  // the strokes themselves are walkable where they touch what stays
+  for c := 0 to n - 1 do
+    if NmWall[c] then begin
+      i := c mod NgW;
+      if ((i < NgW - 1) and (c + 1 < n) and NgFree[c + 1] and (not NmWall[c + 1])) or
+         ((i > 0) and NgFree[c - 1] and (not NmWall[c - 1])) or
+         ((c + NgW < n) and NgFree[c + NgW] and (not NmWall[c + NgW])) or
+         ((c - NgW >= 0) and NgFree[c - NgW] and (not NmWall[c - NgW])) then Lab[c] := -2;
+    end;
+  for c := 0 to n - 1 do if Lab[c] = -2 then NgFree[c] := true;
+  Engine.Msg('[Nav]', 'Trace: ' + IntToStr(TrSN) + ' strokes cut the map into ' + IntToStr(Labels) +
+    ' pieces, kept ' + IntToStr(Kept) + ' cells' + '; open stroke ends: ' + IntToStr(Open), 128);
+end;
+
+// no zone, only the trace: every cell of the trace box is free before the cut
+function NmFromTraceBox(): boolean;
+var i, c, Cell, X0, Y0, X1, Y1: integer;
+begin
+  X0 := TrcX[0]; X1 := TrcX[0]; Y0 := TrcY[0]; Y1 := TrcY[0];
+  for i := 1 to TrPN - 1 do begin
+    if TrcX[i] < X0 then X0 := TrcX[i];
+    if TrcX[i] > X1 then X1 := TrcX[i];
+    if TrcY[i] < Y0 then Y0 := TrcY[i];
+    if TrcY[i] > Y1 then Y1 := TrcY[i];
+  end;
+  Cell := NmCellSet;
+  if Cell <= 0 then Cell := NAV_CELL;
+  NmAlloc(X0 - Cell * 2, Y0 - Cell * 2, X1 + Cell * 2, Y1 + Cell * 2, Cell);
+  for c := 0 to NgW * NgH - 1 do NgFree[c] := true;
+  NgZ := User.Z;
+  result := true;
+end;
+
+// a node at every convex corner of the walls (a safe cell whose diagonal neighbour is a wall while
+// both side neighbours are safe), links between nodes that see each other
+// the run margin: a cell is fine to run over when every cell within NmRunClear (a square) is walkable
+procedure NmBuildRun();
+var cx, cy, dx, dy, ax, ay, R: integer;
+  Ok: boolean;
+begin
+  if not NmRunClearSet then begin
+    NmRunClear := NAV_RUN_CLEAR;
+    NmRunClearSet := true;
+  end;
+  SetLength(NgRun, NgW * NgH);
+  R := 0;
+  if (NmRunClear > 0) and (NgCell > 0) then R := (NmRunClear + NgCell - 1) div NgCell;
+  for cy := 0 to NgH - 1 do
+    for cx := 0 to NgW - 1 do begin
+      Ok := NgFree[cy * NgW + cx];
+      if Ok then
+        for dy := -R to R do
+          for dx := -R to R do begin
+            if not Ok then break;
+            ax := cx + dx;
+            ay := cy + dy;
+            if (ax < 0) or (ay < 0) or (ax >= NgW) or (ay >= NgH) then Ok := false
+            else if not NgFree[ay * NgW + ax] then Ok := false;
+          end;
+      NgRun[cy * NgW + cx] := Ok;
+    end;
+end;
+
+// ---------- the graph cache: Library\Nav\cache\<grid>.navcache ----------
+// line 1 = the key (cache format, the grid's V and size, the run margin, the grid box, own / removed
+// nodes); "N x y" = a node; "L" + node + its links to later nodes; "F" + row + walkable runs (from, to);
+// "R" + row + the run-margin runs; "END". Numbers in the L / F / R lines: 5 digits each, no separators
+
+function NmPad5(V: integer): string;
+begin
+  result := IntToStr(V);
+  while Length(result) < 5 do result := '0' + result;
+end;
+
+function NmCachePath(): string;
+begin
+  result := Script.Path + 'Nav\cache\' + NmGridFile + '.navcache';
+end;
+
+function NmCacheKey(): string;
+begin
+  result := 'NAVCACHE ' + IntToStr(NAV_CACHE_FMT) + ' ' + NmGridVer + ' ' + NmGridSig + ' ' + IntToStr(NmRunClear) +
+    ' ' + IntToStr(NgX0) + ' ' + IntToStr(NgY0) + ' ' + IntToStr(NgCell) + ' ' + IntToStr(NgW) + ' ' +
+    IntToStr(NgH) + ' ' + IntToStr(NmUserN) + ' ' + IntToStr(NmBanN);
+end;
+
+// the graph of this very grid from its cache: the cells, the run-margin cells, the nodes, the links -
+// the whole slow part of NavBuild skipped. false = no cache / the grid has another version / another
+// run margin / a broken file (no END: written by another window at this moment) -> NavBuild builds it
+function NmLoadCache(): boolean;
+var C: TStringList;
+  i, k, n, p, cy, A, B, Base, Len: integer;
+  S: string;
+  Ok, VOk, SawV: boolean;
+begin
+  result := false;
+  if (NmGridVer = '') or (not FileExists(NmCachePath())) then exit;
+  C := TStringList.Create;
+  Ok := true;
+  try
+    C.LoadFromFile(NmCachePath());
+  except
+    Ok := false;
+  end;
+  if Ok then Ok := (C.Count >= 2) and (C[0] = NmCacheKey()) and (C[C.Count - 1] = 'END');
+  if not Ok then begin
+    C.Free;
+    exit;
+  end;
+  n := NgW * NgH;
+  SetLength(NgRun, n);
+  VOk := Length(NgView) = n;
+  SawV := false;
+  for i := 0 to n - 1 do begin
+    NgFree[i] := false;
+    NgSafe[i] := false;
+    NgRun[i] := false;
+    if VOk then NgView[i] := false;
+  end;
+  NavN := 0;
+  SetLength(NavX, NAV_MAX_NODES);
+  SetLength(NavY, NAV_MAX_NODES);
+  SetLength(NmNodeRail, NAV_MAX_NODES);
+  SetLength(NmNodePt, NAV_MAX_NODES);
+  for i := 1 to C.Count - 2 do begin   // the nodes first (the links need them)
+    S := C[i];
+    if (Copy(S, 1, 2) = 'N ') and (NavN < NAV_MAX_NODES) then begin
+      NavX[NavN] := StrToIntDef(NmField(S, 1), 0);
+      NavY[NavN] := StrToIntDef(NmField(S, 2), 0);
+      NmNodeRail[NavN] := StrToIntDef(NmField(S, 3), -1);
+      NmNodePt[NavN] := StrToIntDef(NmField(S, 4), 0);
+      Inc(NavN);
+    end;
+  end;
+  SetLength(NavHead, NavN);
+  SetLength(NmBadUntil, NavN);
+  SetLength(NmRailPassAt, NavN);
+  for i := 0 to NavN - 1 do begin
+    NavHead[i] := -1;
+    NmBadUntil[i] := 0;
+    NmRailPassAt[i] := 0;
+  end;
+  NavLinkN := 0;
+  for i := 1 to C.Count - 2 do begin
+    S := C[i];
+    Len := Length(S);
+    if Len < 11 then continue;
+    if S[1] = 'L' then begin
+      A := StrToIntDef(Copy(S, 2, 5), -1);
+      if (A < 0) or (A >= NavN) then continue;
+      p := 7;
+      while p + 4 <= Len do begin
+        B := StrToIntDef(Copy(S, p, 5), -1);
+        if (B >= 0) and (B < NavN) then NmLink(A, B);
+        p := p + 5;
+      end;
+    end else if (S[1] = 'F') or (S[1] = 'R') or (S[1] = 'V') then begin
+      cy := StrToIntDef(Copy(S, 2, 5), -1);
+      if (cy < 0) or (cy >= NgH) then continue;
+      if S[1] = 'V' then SawV := true;
+      Base := cy * NgW;
+      p := 7;
+      while p + 9 <= Len do begin
+        A := StrToIntDef(Copy(S, p, 5), -1);
+        B := StrToIntDef(Copy(S, p + 5, 5), -1);
+        p := p + 10;
+        if (A < 0) or (B < A) or (B >= NgW) then continue;
+        if S[1] = 'F' then begin
+          for k := Base + A to Base + B do begin
+            NgFree[k] := true;
+            NgSafe[k] := true;
+            if VOk then NgView[k] := true;
+          end;
+        end else if S[1] = 'V' then begin
+          if VOk then for k := Base + A to Base + B do NgView[k] := true;
+        end else
+          for k := Base + A to Base + B do NgRun[k] := true;
+      end;
+    end;
+  end;
+  C.Free;
+  if NmHasView and (not SawV) then exit;   // the grid has sight cells, this cache not (an older build): build again
+  result := true;
+end;
+
+// the sight-only cells ("," - not walkable) of one grid row as a "V" line ('' = none in this row)
+function NmViewLine(cy: integer): string;
+var cx, A, Base: integer;
+  Fr: boolean;
+begin
+  result := '';
+  Base := cy * NgW;
+  A := -1;
+  for cx := 0 to NgW do begin
+    Fr := false;
+    if cx < NgW then Fr := NgView[Base + cx] and (not NgFree[Base + cx]);
+    if Fr and (A < 0) then A := cx
+    else if (not Fr) and (A >= 0) then begin
+      result := result + NmPad5(A) + NmPad5(cx - 1);
+      A := -1;
+    end;
+  end;
+  if result <> '' then result := 'V' + NmPad5(cy) + result;
+end;
+
+// the runs of one grid row as "F" / "R" line ('' = nothing in this row)
+function NmRunsLine(Kind: string; Run: boolean; cy: integer): string;
+var cx, A, Base: integer;
+  Fr: boolean;
+begin
+  result := '';
+  Base := cy * NgW;
+  A := -1;
+  for cx := 0 to NgW do begin
+    Fr := false;
+    if cx < NgW then begin
+      if Run then Fr := NgRun[Base + cx] else Fr := NgFree[Base + cx];
+    end;
+    if Fr and (A < 0) then A := cx
+    else if (not Fr) and (A >= 0) then begin
+      result := result + NmPad5(A) + NmPad5(cx - 1);
+      A := -1;
+    end;
+  end;
+  if result <> '' then result := Kind + NmPad5(cy) + result;
+end;
+
+// the graph just built -> its cache (a grid without V: none; the folder is not there / the file is busy
+// in another window: not saved, the next start builds again)
+procedure NmSaveCache();
+var C: TStringList;
+  i, e, cy: integer;
+  S: string;
+begin
+  if NmGridVer = '' then exit;
+  C := TStringList.Create;
+  C.Add(NmCacheKey());
+  for i := 0 to NavN - 1 do
+    C.Add('N ' + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]) + ' ' + IntToStr(NmNodeRail[i]) + ' ' + IntToStr(NmNodePt[i]));
+  for i := 0 to NavN - 1 do begin
+    S := '';
+    e := NavHead[i];
+    while e >= 0 do begin
+      if NavTo[e] > i then S := S + NmPad5(NavTo[e]);
+      e := NavNext[e];
+    end;
+    if S <> '' then C.Add('L' + NmPad5(i) + S);
+  end;
+  for cy := 0 to NgH - 1 do begin
+    S := NmRunsLine('F', false, cy);
+    if S <> '' then C.Add(S);
+  end;
+  for cy := 0 to NgH - 1 do begin
+    S := NmRunsLine('R', true, cy);
+    if S <> '' then C.Add(S);
+  end;
+  if NmHasView and (Length(NgView) = NgW * NgH) then
+    for cy := 0 to NgH - 1 do begin
+      S := NmViewLine(cy);
+      if S <> '' then C.Add(S);
+    end;
+  C.Add('END');
+  try
+    C.SaveToFile(NmCachePath());
+  except
+    Engine.Msg('[Nav]', 'Cannot write the graph cache ' + NmCachePath(), 128);
+  end;
+  C.Free;
+end;
+
+function NavGridIs(GridFile: string): boolean;
+begin
+  result := NmReady and NmGridOn and (LowerCase(GridFile) = LowerCase(NmGridFile));
+end;
+
+function NavGridFree(X, Y: integer): boolean;
+var cx, cy: integer;
+begin
+  result := false;
+  if not NmGridOn then exit;
+  if (X < NgX0) or (Y < NgY0) then exit;
+  cx := (X - NgX0) div NgCell;
+  cy := (Y - NgY0) div NgCell;
+  if (cx >= NgW) or (cy >= NgH) then exit;
+  result := NgFree[cy * NgW + cx];
+  if (not result) and (Length(NgView) = NgW * NgH) then result := NgView[cy * NgW + cx];   // mobs stand in the sight cells too
+end;
+
+// PvePanel: the map off - another NavSetGrid / NavSetZone + NavBuild load a new one while the script runs. The counters
+// the loaders add to start from 0, the way tables / the waypoint cache / the run memory of the old graph go
+procedure NavReset();
+var i: integer;
+begin
+  NavBuilt := false;
+  NavOn := false;
+  NmReady := false;
+  NmGridOn := false;
+  NmCached := false;
+  NmHasView := false;
+  NavN := 0;
+  NavLinkN := 0;
+  NmUserN := 0;
+  NmBanN := 0;
+  NmRailPN := 0;
+  NmRailN := 0;
+  NmSeedN := 0;
+  TrPN := 0;
+  TrSN := 0;
+  ZOn := 0;
+  ZIn := 0;
+  ZIPts := 0;
+  NgW := 0;
+  NgH := 0;
+  NmGridVer := '';
+  NmGridSig := '';
+  NmFSize := 0;
+  NmFBusy := false;
+  for i := 0 to 11 do NmFOn[i] := false;
+  for i := 0 to 15 do NmMissAt[i] := 0;
+  for i := 0 to 3 do NmUnstickAt[i] := 0;
+  Inc(NmBadVer);
+  NmWcAt := 0;
+  NmLgAt := 0;
+  NmLgRoute := '';
+  NmLcAt := 0;
+  NmClAt := 0;
+  NmFarNext := 0;
+  NmMobN := 0;
+  NmGridFile := '';
+  NmZoneFile := '';
+  NmTraceFile := '';
+end;
+
+function NavBuild(): boolean;
+var cx, cy, dx, dy, i, j, k, X, Y, X2, Y2, R, PX, PY: integer;
+  Started: cardinal;
+  Near: boolean;
+begin
+  result := NavOn;
+  if NavBuilt then exit;
+  NavBuilt := true;
+  Started := GetTickCount;
+  NavOn := false;
+  NmCached := false;
+  if NmGridFile <> '' then NavOn := NmFromFile(Script.Path + 'Nav\' + NmGridFile);
+  if NavOn then begin
+    if not NmRunClearSet then begin    // the run margin is a part of the cache key
+      NmRunClear := NAV_RUN_CLEAR;
+      NmRunClearSet := true;
+    end;
+    NmCached := NmLoadCache();         // the same grid as at an earlier start: its graph from the cache
+    if not NmCached then NmGridRows(Script.Path + 'Nav\' + NmGridFile);
+  end;
+  if (not NavOn) and (NmTraceFile <> '') and NmLoadTrace(Script.Path + 'Nav\' + NmTraceFile) then begin
+    NavOn := NmFromZone();
+    if not NavOn then NavOn := NmFromTraceBox();
+    if NavOn then NmApplyTrace();
+  end;
+  if not NavOn then NavOn := NmFromZone();
+  result := NavOn;
+  if not NavOn then begin
+    Engine.Msg('[Nav]', 'No map (zone / grid): runs go by the plain server path only', 128);
+    exit;
+  end;
+  if NmCached then begin
+    NmReady := true;
+    Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) + ': ' +
+      IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) +
+      ' links - from the cache (' + IntToStr(GetTickCount - Started) + ' ms)', 128);
+    if NmStrict() then Engine.Msg('[Nav]', 'Strict map: runs on green only, red is never crossed' +
+      NmIfStr(NmHasView, ', the blue sight cells: shots only', ''), 128);
+    exit;
+  end;
+  // corners and lines by the real map: a narrow passage must never vanish. A corner node is moved
+  // off the wall (away from the corner) by up to NAV_CLEAR where there is room
+  for i := 0 to NgW * NgH - 1 do NgSafe[i] := NgFree[i];
+  R := NmErodeCells();
+  NavN := 0;
+  SetLength(NavX, NAV_MAX_NODES);
+  SetLength(NavY, NAV_MAX_NODES);
+  SetLength(NmNodeRail, NAV_MAX_NODES);
+  SetLength(NmNodePt, NAV_MAX_NODES);
+  for i := 0 to NAV_MAX_NODES - 1 do begin
+    NmNodeRail[i] := -1;
+    NmNodePt[i] := 0;
+  end;
+  // own nodes drawn in the viewer first: always kept, the corner nodes next to them are not added
+  for i := 0 to NmUserN - 1 do
+    if NavN < NAV_MAX_NODES then begin
+      NavX[NavN] := NmUserX[i];
+      NavY[NavN] := NmUserY[i];
+      Inc(NavN);
+    end;
+  // then the rail points, in order (the corner nodes next to them are not added either)
+  for i := 0 to NmRailPN - 1 do
+    if NavN < NAV_MAX_NODES then begin
+      NavX[NavN] := NmRailX[i];
+      NavY[NavN] := NmRailY[i];
+      NmNodeRail[NavN] := NmRailOf[i];
+      NmNodePt[NavN] := i;
+      Inc(NavN);
+    end;
+  for cy := 0 to NgH - 1 do
+    for cx := 0 to NgW - 1 do begin
+      if not NgSafe[cy * NgW + cx] then continue;
+      for k := 0 to 3 do begin
+        if k mod 2 = 0 then dx := 1 else dx := -1;
+        if k < 2 then dy := 1 else dy := -1;
+        if NmSafeCell(cx + dx, cy + dy) or (not NmSafeCell(cx + dx, cy)) or
+           (not NmSafeCell(cx, cy + dy)) then continue;
+        PX := cx;
+        PY := cy;
+        for j := 1 to R do
+          if NmSafeCell(cx - dx * j, cy - dy * j) and NmSafeCell(cx - dx * j + dx, cy - dy * j) and
+             NmSafeCell(cx - dx * j, cy - dy * j + dy) then begin
+            PX := cx - dx * j;
+            PY := cy - dy * j;
+          end else break;
+        X := NgX0 + PX * NgCell + NgCell div 2;
+        Y := NgY0 + PY * NgCell + NgCell div 2;
+        Near := false;
+        for i := 0 to NavN - 1 do
+          if (Abs(NavX[i] - X) <= NAV_NODE_GAP) and (Abs(NavY[i] - Y) <= NAV_NODE_GAP) then begin
+            Near := true;
+            break;
+          end;
+        for i := 0 to NmBanN - 1 do      // removed in the viewer: no node here
+          if (Abs(NmBanX[i] - X) <= NAV_BAN_R) and (Abs(NmBanY[i] - Y) <= NAV_BAN_R) then begin
+            Near := true;
+            break;
+          end;
+        if (not Near) and (NavN < NAV_MAX_NODES) then begin
+          NavX[NavN] := X;
+          NavY[NavN] := Y;
+          Inc(NavN);
+        end;
+        break;
+      end;
+    end;
+  SetLength(NavHead, NavN);
+  SetLength(NmBadUntil, NavN);
+  SetLength(NmRailPassAt, NavN);
+  for i := 0 to NavN - 1 do begin
+    NavHead[i] := -1;
+    NmBadUntil[i] := 0;
+    NmRailPassAt[i] := 0;
+  end;
+  NavLinkN := 0;
+  for i := 0 to NavN - 1 do
+    for j := i + 1 to NavN - 1 do begin
+      if NmDist(i, j) > NAV_LINK_MAX then continue;
+      X := NavX[i];
+      Y := NavY[i];
+      X2 := NavX[j];
+      Y2 := NavY[j];
+      if NmLineFree(X, Y, X2, Y2, true) then NmLink(i, j);
+    end;
+  // a rail: its points one after another are always linked (drawn by hand: the map may not see it)
+  for i := 0 to NavN - 2 do
+    if (NmNodeRail[i] >= 0) and (NmNodeRail[i + 1] = NmNodeRail[i]) and (NmNodePt[i + 1] = NmNodePt[i] + 1) and
+       (not NmLinked(i, i + 1)) then NmLink(i, i + 1);
+  NmBuildRun();
+  NmReady := true;                     // the other threads may use the graph from now on
+  Engine.Msg('[Nav]', 'Map ' + IntToStr(NgW) + 'x' + IntToStr(NgH) + ' cells of ' + IntToStr(NgCell) +
+    ': ' + IntToStr(NavN) + ' nodes (' + IntToStr(NmUserN) + ' own), ' + IntToStr(NavLinkN div 2) + ' links - built (' +
+    IntToStr(GetTickCount - Started) + ' ms)', 128);
+  if NmGridOn then NmSaveCache();      // the next start with this very grid takes it from the cache
+  if NmStrict() then Engine.Msg('[Nav]', 'Strict map: runs on green only, red is never crossed' +
+    NmIfStr(NmHasView, ', the blue sight cells: shots only', ''), 128);
+end;
+
+// server path to one node without stopping at it: true as soon as we are within Reach of it
+function NmGoR(PX, PY, PZ, Reach: integer): boolean;
+var UX, UY, LX, LY, Stuck: integer;
+  Started, StillSince: cardinal;
+begin
+  result := false;
+  Started := GetTickCount;
+  StillSince := GetTickCount;
+  Stuck := 0;
+  LX := User.X;
+  LY := User.Y;
+  if NmDbg then NmLog('to node ' + NmXY(PX, PY) + ' d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
+  NavClick(PX, PY, PZ);
+  // on the plane: a node has no height of its own (PZ is the run target's), another floor never got "near"
+  while Sqrt(NmSq(User.X - PX) + NmSq(User.Y - PY)) > Reach do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
+    if User.Dead then exit;
+    if GetTickCount - Started > NAV_POINT_MS then begin
+      if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not there in ' + IntToStr(NAV_POINT_MS div 1000) + ' s - given up');
+      exit;
+    end;
+    UX := User.X;
+    UY := User.Y;
+    if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
+      LX := UX;
+      LY := UY;
+      StillSince := GetTickCount;
+    end else if GetTickCount - StillSince > NAV_STILL_MS then begin
+      Inc(Stuck);
+      if Stuck >= NAV_STUCK_MAX then begin
+        if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not moved ' + IntToStr(NAV_STILL_MS) + ' ms ' + IntToStr(Stuck) +
+          ' times - given up, d=' + IntToStr(Round(User.DistTo(PX, PY, PZ))));
+        exit;
+      end;
+      if NmDbg then NmLog('node ' + NmXY(PX, PY) + ': not moved ' + IntToStr(NAV_STILL_MS) + ' ms - click again (' +
+        IntToStr(Stuck) + '/' + IntToStr(NAV_STUCK_MAX) + ')');
+      NavClick(PX, PY, PZ);
+      StillSince := GetTickCount;
+    end;
+    Delay(100);
+  end;
+  if NmDbg then NmLog('node ' + NmXY(PX, PY) + ' reached in ' + IntToStr(GetTickCount - Started) + ' ms');
+  result := true;
+end;
+
+function NmGo(PX, PY, PZ: integer): boolean;
+begin
+  result := NmGoR(PX, PY, PZ, NAV_POINT_REACH);
+end;
+
+// THE route count: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way); first node = in sight
+// of us, last = in sight of the target, the shortest total way. Only its own local arrays, the graph is
+// only read (fixed after NavBuild): any thread may call it at the same time - no lock, nothing shared
+function NmRouteFull(X, Y: integer): string;
+var i, u, v, e, k, Best, UX, UY, PX, PY: integer;
+  Alt, BestD, DX, DY: double;
+  NavD: array of double;
+  NavPrev: array of integer;
+  NavDone: array of boolean;
+begin
+  result := '';
+  if (not NmReady) or (NavN = 0) then exit;
+  SetLength(NavD, NavN);
+  SetLength(NavPrev, NavN);
+  SetLength(NavDone, NavN);
+  UX := User.X;
+  UY := User.Y;
+  for i := 0 to NavN - 1 do begin
+    NavD[i] := 1E18;
+    NavPrev[i] := -1;
+    NavDone[i] := false;
+    DX := NavX[i] - UX;
+    DY := NavY[i] - UY;
+    Alt := Sqrt(DX * DX + DY * DY);
+    if Alt <= NAV_SEE_MAX then begin
+      PX := NavX[i];
+      PY := NavY[i];
+      if (GetTickCount >= NmBadUntil[i]) and NmLineFree(UX, UY, PX, PY, false) then NavD[i] := Alt;
+    end;
+  end;
+  for k := 0 to NavN - 1 do begin
+    u := -1;
+    BestD := 1E17;
+    for i := 0 to NavN - 1 do
+      if (not NavDone[i]) and (NavD[i] < BestD) then begin
+        BestD := NavD[i];
+        u := i;
+      end;
+    if u < 0 then break;
+    NavDone[u] := true;
+    e := NavHead[u];
+    while e >= 0 do begin
+      v := NavTo[e];
+      if (not NavDone[v]) and (GetTickCount >= NmBadUntil[v]) then begin
+        Alt := NavD[u] + NmCost(u, v);
+        if Alt < NavD[v] then begin
+          NavD[v] := Alt;
+          NavPrev[v] := u;
+        end;
+      end;
+      e := NavNext[e];
+    end;
+  end;
+  Best := -1;
+  BestD := 1E17;
+  for i := 0 to NavN - 1 do begin
+    if NavD[i] >= 1E17 then continue;
+    DX := NavX[i] - X;
+    DY := NavY[i] - Y;
+    Alt := Sqrt(DX * DX + DY * DY);
+    if (Alt > NAV_SEE_MAX) or (NavD[i] + Alt >= BestD) then continue;
+    PX := NavX[i];
+    PY := NavY[i];
+    if NmTargetLine(PX, PY, X, Y) then begin
+      BestD := NavD[i] + Alt;
+      Best := i;
+    end;
+  end;
+  if Best < 0 then exit;
+  v := Best;
+  while v >= 0 do begin
+    if result = '' then result := IntToStr(v) else result := IntToStr(v) + ',' + result;
+    v := NavPrev[v];
+  end;
+end;
+
+// the way table of the target X, Y (a slot of NmFD / NmFN). Kept for the very same target while no node
+// was left out since and no left-out node came back; else counted: the nodes in sight of the target
+// (up to NAV_SEE_MAX, not left out) start with the straight way, then Dijkstra back over the graph -
+// the same end rule as NmRouteFull, so the route is the same
+function NmFieldOf(X, Y: integer): integer;
+var f, Best, Base, i, u, v, e, k, PX, PY: integer;
+  T, ValidTo: cardinal;
+  Alt, BestD, DX, DY: double;
+  Done: array of boolean;
+begin
+  if NmFSize <> NavN then begin
+    SetLength(NmFD, 12 * NavN);
+    SetLength(NmFN, 12 * NavN);
+    for f := 0 to 11 do NmFOn[f] := false;
+    NmFSize := NavN;
+  end;
+  T := GetTickCount;
+  for f := 0 to 11 do
+    if NmFOn[f] and (NmFTX[f] = X) and (NmFTY[f] = Y) and (NmFVer[f] = NmBadVer) and (T < NmFUntil[f]) then begin
+      NmFUsed[f] := T;
+      result := f;
+      exit;
+    end;
+  Best := 0;                           // a free slot, else the one not used longest
+  for f := 0 to 11 do begin
+    if not NmFOn[f] then begin
+      Best := f;
+      break;
+    end;
+    if NmFUsed[f] < NmFUsed[Best] then Best := f;
+  end;
+  f := Best;
+  Base := f * NavN;
+  ValidTo := T + 3600000;                 // no left-out node: good for an hour
+  SetLength(Done, NavN);
+  for i := 0 to NavN - 1 do begin
+    NmFD[Base + i] := 1E18;
+    NmFN[Base + i] := -1;
+    Done[i] := false;
+    if T < NmBadUntil[i] then begin
+      if NmBadUntil[i] < ValidTo then ValidTo := NmBadUntil[i];   // it comes back then: count again
+      continue;
+    end;
+    PX := NavX[i];
+    PY := NavY[i];
+    DX := PX - X;
+    DY := PY - Y;
+    Alt := Sqrt(DX * DX + DY * DY);
+    if Alt > NAV_SEE_MAX then continue;
+    if NmTargetLine(PX, PY, X, Y) then NmFD[Base + i] := Alt;
+  end;
+  for k := 0 to NavN - 1 do begin
+    u := -1;
+    BestD := 1E17;
+    for i := 0 to NavN - 1 do
+      if (not Done[i]) and (NmFD[Base + i] < BestD) then begin
+        BestD := NmFD[Base + i];
+        u := i;
+      end;
+    if u < 0 then break;
+    Done[u] := true;
+    e := NavHead[u];
+    while e >= 0 do begin
+      v := NavTo[e];
+      if (not Done[v]) and (T >= NmBadUntil[v]) then begin
+        Alt := BestD + NmCost(u, v);
+        if Alt < NmFD[Base + v] then begin
+          NmFD[Base + v] := Alt;
+          NmFN[Base + v] := u;
+        end;
+      end;
+      e := NavNext[e];
+    end;
+  end;
+  NmFTX[f] := X;
+  NmFTY[f] := Y;
+  NmFVer[f] := NmBadVer;
+  NmFUntil[f] := ValidTo;
+  NmFUsed[f] := T;
+  NmFOn[f] := true;
+  result := f;
+end;
+
+// the table of X, Y if one is kept and valid; -1 = none
+function NmFieldFind(X, Y: integer): integer;
+var f: integer;
+  T: cardinal;
+begin
+  result := -1;
+  if NmFSize <> NavN then exit;
+  T := GetTickCount;
+  for f := 0 to 11 do
+    if NmFOn[f] and (NmFTX[f] = X) and (NmFTY[f] = Y) and (NmFVer[f] = NmBadVer) and (T < NmFUntil[f]) then begin
+      result := f;
+      exit;
+    end;
+end;
+
+// X, Y was asked within 10 s already (a room / spot / safe point is asked again and again, a running
+// mob never at the same place); remembers this ask
+function NmAskedAgain(X, Y: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to 15 do
+    if (NmMissX[k] = X) and (NmMissY[k] = Y) and (NmMissAt[k] <> 0) and (GetTickCount - NmMissAt[k] < 10000) then begin
+      result := true;
+      exit;
+    end;
+  NmMissX[NmMissHead] := X;
+  NmMissY[NmMissHead] := Y;
+  NmMissAt[NmMissHead] := GetTickCount;
+  NmMissHead := (NmMissHead + 1) mod 16;
+end;
+
+// THE route: the graph nodes from us to X, Y as text 'i,j,k' ('' = no way). The first node = the one in
+// sight of us with the shortest total way (straight to it + its way in the table) - the line checks go
+// from the cheapest node on and stop at the first one in sight (usually 1-3 instead of every node).
+// The same route as the full count. Only a target asked again gets a table (a running mob would push the
+// rooms / spots out of the 12 tables); a table in use by another thread at this moment -> the full count
+function NmRoute(X, Y: integer): string;
+var f, Base, i, n, v, First, UX, UY, PX, PY: integer;
+  T: cardinal;
+  D, DX, DY, BestC: double;
+  Cost: array of double;
+begin
+  result := '';
+  if (not NmReady) or (NavN = 0) then exit;
+  if NmFBusy then begin
+    result := NmRouteFull(X, Y);
+    exit;
+  end;
+  if (NmFieldFind(X, Y) < 0) and (not NmAskedAgain(X, Y)) then begin
+    result := NmRouteFull(X, Y);       // asked once: no table for it
+    exit;
+  end;
+  NmFBusy := true;
+  f := NmFieldOf(X, Y);
+  Base := f * NavN;
+  UX := User.X;
+  UY := User.Y;
+  T := GetTickCount;
+  SetLength(Cost, NavN);
+  for i := 0 to NavN - 1 do begin
+    Cost[i] := 1E18;
+    if NmFD[Base + i] >= 1E17 then continue;
+    if T < NmBadUntil[i] then continue;
+    DX := NavX[i] - UX;
+    DY := NavY[i] - UY;
+    D := Sqrt(DX * DX + DY * DY);
+    if D > NAV_SEE_MAX then continue;
+    Cost[i] := D + NmFD[Base + i];
+  end;
+  First := -1;
+  while true do begin
+    n := -1;
+    BestC := 1E17;
+    for i := 0 to NavN - 1 do
+      if Cost[i] < BestC then begin
+        BestC := Cost[i];
+        n := i;
+      end;
+    if n < 0 then break;
+    PX := NavX[n];
+    PY := NavY[n];
+    if NmLineFree(UX, UY, PX, PY, false) then begin
+      First := n;
+      break;
+    end;
+    Cost[n] := 1E18;                   // hidden from us: the next cheapest
+  end;
+  if First >= 0 then begin
+    v := First;
+    i := 0;
+    while (v >= 0) and (i <= NavN) do begin
+      if result = '' then result := IntToStr(v) else result := result + ',' + IntToStr(v);
+      v := NmFN[Base + v];
+      Inc(i);
+    end;
+  end;
+  NmFBusy := false;
+  // another thread (the other farm modes) rewrote this table meanwhile -> the full count
+  if (NmFTX[f] <> X) or (NmFTY[f] <> Y) or (NmFVer[f] <> NmBadVer) then result := NmRouteFull(X, Y);
+end;
+
+// distance from X, Y to graph node i
+function NmDist2(X, Y, i: integer): double;
+var DX, DY: double;
+begin
+  result := 1E18;
+  if (i < 0) or (i >= NavN) then exit;
+  DX := NavX[i] - X;
+  DY := NavY[i] - Y;
+  result := Sqrt(DX * DX + DY * DY);
+end;
+
+// nodes in a route of NmRoute
+function NmRouteCount(R: string): integer;
+var p: integer;
+begin
+  result := 0;
+  if R = '' then exit;
+  result := 1;
+  for p := 1 to Length(R) do
+    if R[p] = ',' then Inc(result);
+end;
+
+// node k (0 = first) of a route of NmRoute; -1 = none
+function NmRouteAt(R: string; k: integer): integer;
+var p, n, St: integer;
+begin
+  result := -1;
+  n := 0;
+  St := 1;
+  for p := 1 to Length(R) do
+    if R[p] = ',' then begin
+      if n = k then begin
+        result := StrToIntDef(Copy(R, St, p - St), -1);
+        exit;
+      end;
+      Inc(n);
+      St := p + 1;
+    end;
+  if n = k then result := StrToIntDef(Copy(R, St, Length(R) - St + 1), -1);
+end;
+
+// a rail point still to go to: a rail node not reached lately; at it now (within NAV_RAIL_REACH) = reached
+function NmRailTodo(i: integer): boolean;
+begin
+  result := false;
+  if (i < 0) or (i >= NavN) or (NmNodeRail[i] < 0) then exit;
+  if (NmRailPassAt[i] <> 0) and (GetTickCount - NmRailPassAt[i] < NAV_RAIL_PASS_MS) then exit;
+  if NmDist2(User.X, User.Y, i) <= NAV_RAIL_REACH then begin
+    NmRailPassAt[i] := GetTickCount;
+    exit;
+  end;
+  result := true;
+end;
+
+// a rail point to go to among the route nodes k.. (a route of NmRoute)
+function NmRailAhead(R: string; k: integer): boolean;
+var j, n: integer;
+begin
+  result := false;
+  n := NmRouteCount(R);
+  for j := k to n - 1 do
+    if NmRailTodo(NmRouteAt(R, j)) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// a rail point within 300 of the straight line X1, Y1 - X2, Y2
+function NmRailNear(X1, Y1, X2, Y2: integer): boolean;
+var p: integer;
+  DX, DY, L2, T, QX, QY: double;
+begin
+  result := false;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L2 := DX * DX + DY * DY;
+  for p := 0 to NmRailPN - 1 do begin
+    T := 0;
+    if L2 > 0 then T := ((NmRailX[p] - X1) * DX + (NmRailY[p] - Y1) * DY) / L2;
+    if T < 0 then T := 0;
+    if T > 1 then T := 1;
+    QX := X1 + DX * T - NmRailX[p];
+    QY := Y1 + DY * T - NmRailY[p];
+    if QX * QX + QY * QY <= 90000 then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// the way to X, Y goes along a rail (it is run point by point, even when X, Y is in sight)
+function NmRouteHasRail(X, Y: integer): boolean;
+begin
+  result := false;
+  if (NmRailPN = 0) or (not NmReady) then exit;
+  result := NmRailAhead(NmRoute(X, Y), 0);
+end;
+
+// a green cell at X, Y or within R round it (8 directions)
+function NmNearFree(X, Y, R: integer): boolean;
+var a: integer;
+  Ang: double;
+begin
+  result := true;
+  if NmFreeAt(X, Y, false) then exit;
+  for a := 0 to 7 do begin
+    Ang := a * 3.14159265 / 4;
+    if NmFreeAt(X + Round(Cos(Ang) * R), Y + Round(Sin(Ang) * R), false) then exit;
+  end;
+  result := false;
+end;
+
+// the nearest green round X, Y (rings of 8 up to NAV_STRICT_OUT, 16 directions), a little deeper into it when
+// there is room -> NmCpX, NmCpY; false = none
+function NmOutPoint(X, Y: integer): boolean;
+var r, a, PX, PY, QX, QY: integer;
+  Ang: double;
+begin
+  result := false;
+  r := 8;
+  while r <= NAV_STRICT_OUT do begin
+    for a := 0 to 15 do begin
+      Ang := a * 3.14159265 / 8;
+      PX := X + Round(Cos(Ang) * r);
+      PY := Y + Round(Sin(Ang) * r);
+      if not NmFreeAt(PX, PY, false) then continue;
+      QX := X + Round(Cos(Ang) * (r + 24));
+      QY := Y + Round(Sin(Ang) * (r + 24));
+      if NmFreeAt(QX, QY, false) then begin
+        PX := QX;
+        PY := QY;
+      end;
+      NmCpX := PX;
+      NmCpY := PY;
+      result := true;
+      exit;
+    end;
+    r := r + 8;
+  end;
+end;
+
+// the farthest point of the line X1, Y1 -> X2, Y2 we can run to on green: the red we stand in is left first (up to
+// NAV_STRICT_LEAVE), then a gap of 8+ off green (a real wall / the sight cells) ends it -> NmCpX, NmCpY;
+// false = not even 8 units of it
+function NmClampWalk(X1, Y1, X2, Y2: integer): boolean;
+var k, n, PX, PY, LX, LY: integer;
+  L, DX, DY, T, Gap: double;
+  Was: boolean;
+begin
+  result := false;
+  NmCpX := X2;
+  NmCpY := Y2;
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  L := Sqrt(DX * DX + DY * DY);
+  n := Trunc(L / 4) + 1;
+  Was := false;
+  LX := X1;
+  LY := Y1;
+  Gap := 0;
+  for k := 1 to n do begin
+    T := k / n;
+    PX := Round(X1 + DX * T);
+    PY := Round(Y1 + DY * T);
+    if NmFreeAt(PX, PY, false) then begin
+      Was := true;
+      Gap := 0;
+      LX := PX;
+      LY := PY;
+    end else if Was then begin
+      Gap := Gap + L / n;
+      if Gap >= 8 then break;          // a real wall (a speck of the brush under 8 is forgiven)
+    end else if T * L > NAV_STRICT_LEAVE then break;
+  end;
+  if Sqrt(NmSq(LX - X1) + NmSq(LY - Y1)) < 8 then exit;
+  NmCpX := LX;
+  NmCpY := LY;
+  result := true;
+end;
+
+// a route of NmRoute as its node coordinates "x y x y ..."
+function NmRouteXY(R: string): string;
+var k, i, n: integer;
+begin
+  result := '';
+  n := NmRouteCount(R);
+  for k := 0 to n - 1 do begin
+    i := NmRouteAt(R, k);
+    if (i < 0) or (i >= NavN) then continue;
+    if result <> '' then result := result + ' ';
+    result := result + IntToStr(NavX[i]) + ' ' + IntToStr(NavY[i]);
+  end;
+end;
+
+// where to click now on the way to X, Y: the farthest node of the route that is in sight of us
+// (a short cut over the nodes before it); false = the target is in sight itself, or no way
+function NavWaypoint(X, Y: integer): boolean;
+var k, i, n, Best, Lim, UX, UY, PX, PY: integer;
+  R: string;
+begin
+  result := false;
+  if not NmReady then exit;
+  UX := User.X;
+  UY := User.Y;
+  NmLgX := X;                          // the live view: where the run goes
+  NmLgY := Y;
+  NmLgAt := GetTickCount;
+  // the strict map: we stand in red / unknown (no green within NAV_STRICT_NEAR) -> out onto the nearest green first
+  if NmStrict() and (not NmNearFree(UX, UY, NAV_STRICT_NEAR)) and NmOutPoint(UX, UY) then begin
+    NmWpX := NmCpX;
+    NmWpY := NmCpY;
+    result := true;
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': we stand in red / unknown - out onto green at ' + NmXY(NmWpX, NmWpY));
+    exit;
+  end;
+  // the same answer as a moment ago when neither the target nor we moved much (it is called every
+  // tick; a route count is the heaviest thing of the farm)
+  if not NmWcMsSet then begin
+    NmWcMs := NAV_WP_CACHE_MS;
+    NmWcMsSet := true;
+  end;
+  if (NmWcMs > 0) and (NmWcAt <> 0) and (GetTickCount - NmWcAt < NmWcMs) and (Abs(X - NmWcTX) < 64) and
+     (Abs(Y - NmWcTY) < 64) and (Abs(UX - NmWcUX) < 64) and (Abs(UY - NmWcUY) < 64) and
+     ((not NmWcRes) or (NmSq(UX - NmWpX) + NmSq(UY - NmWpY) > NAV_RAIL_REACH * NAV_RAIL_REACH)) then begin
+    result := NmWcRes;
+    exit;
+  end;
+  NmWcAt := GetTickCount;
+  NmWcTX := X;
+  NmWcTY := Y;
+  NmWcUX := UX;
+  NmWcUY := UY;
+  NmWcRes := false;
+  NmLgRoute := '';
+  // a rail on the way: its next point not reached is the limit - nothing past it is clicked. Near it
+  // (a rail step): that point itself, the server path finds it; still far: the farthest route node
+  // before it in sight (with the margin, else at all, else the first)
+  // (a target in sight within 600 with no rail point near the straight line: no route needed - the pull)
+  if (NmRailPN > 0) and (not ((NmSq(X - UX) + NmSq(Y - UY) <= 360000) and NmRunFree(UX, UY, X, Y) and
+     (not NmRailNear(UX, UY, X, Y)))) then begin
+    R := NmRoute(X, Y);
+    NmLgRoute := NmRouteXY(R);
+    n := NmRouteCount(R);
+    Lim := -1;
+    for k := 0 to n - 1 do
+      if NmRailTodo(NmRouteAt(R, k)) then begin
+        Lim := k;
+        break;
+      end;
+    if Lim >= 0 then begin
+      i := NmRouteAt(R, Lim);
+      if NmDist2(UX, UY, i) > NAV_RAIL_STEP + 100 then begin
+        Best := -1;
+        for k := Lim downto 0 do begin
+          PX := NavX[NmRouteAt(R, k)];
+          PY := NavY[NmRouteAt(R, k)];
+          if NmRunFree(UX, UY, PX, PY) then begin
+            Best := k;
+            break;
+          end;
+        end;
+        if Best < 0 then
+          for k := Lim downto 0 do begin
+            PX := NavX[NmRouteAt(R, k)];
+            PY := NavY[NmRouteAt(R, k)];
+            if NmLineFree(UX, UY, PX, PY, false) then begin
+              Best := k;
+              break;
+            end;
+          end;
+        if Best < 0 then Best := 0;
+        i := NmRouteAt(R, Best);
+      end;
+      NmWpX := NavX[i];
+      NmWpY := NavY[i];
+      result := true;
+      NmWcRes := true;
+      if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': rail on the way - ' + NmXY(NmWpX, NmWpY) + ' (rail point at route ' +
+        IntToStr(Lim + 1) + '/' + IntToStr(n) + ')');
+      exit;
+    end;
+  end;
+  if NmRunFree(UX, UY, X, Y) then begin   // straight to it
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': in sight with the margin - straight');
+    exit;
+  end;
+  R := NmRoute(X, Y);
+  NmLgRoute := NmRouteXY(R);
+  n := NmRouteCount(R);
+  if n = 0 then begin
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no way on the map - the target itself');
+    exit;
+  end;
+  // the farthest route node in sight with the run margin
+  Best := -1;
+  for k := n - 1 downto 0 do begin
+    i := NmRouteAt(R, k);
+    PX := NavX[i];
+    PY := NavY[i];
+    if NmRunFree(UX, UY, PX, PY) then begin
+      Best := k;
+      break;
+    end;
+  end;
+  // only the node under our feet with the margin: clicking it never moves us
+  if (Best >= 0) and (NmDist2(UX, UY, NmRouteAt(R, Best)) < NAV_POINT_REACH) then Best := -1;
+  // none (a narrow place / we stand close to the red): the target itself when it is in sight at all; else the
+  // farthest route node in sight at all, else the next node after the one under us, else that one when we are
+  // off it. Never the target through a wall: the server finds a way only up to ~600, farther we run into the wall
+  if Best < 0 then begin
+    if NmLineFree(UX, UY, X, Y, false) then begin
+      if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node in sight with the margin, the target in sight - the target itself');
+      exit;
+    end;
+    for k := n - 1 downto 0 do begin
+      i := NmRouteAt(R, k);
+      if NmDist2(UX, UY, i) < NAV_POINT_REACH then continue;
+      PX := NavX[i];
+      PY := NavY[i];
+      if NmLineFree(UX, UY, PX, PY, false) then begin
+        Best := k;
+        break;
+      end;
+    end;
+    if (Best < 0) and (n > 1) then begin
+      i := NmRouteAt(R, 1);
+      PX := NavX[i];
+      PY := NavY[i];
+      if NmLineFree(UX, UY, PX, PY, false) then Best := 1;
+    end;
+    if (Best < 0) and (NmDist2(UX, UY, NmRouteAt(R, 0)) > NAV_NODE_ON) then Best := 0;
+    // the strict map, we stand on the first node: the next one (linked to it); none (the goal off green, in sight
+    // from here) -> false: the caller runs straight at it on green as far as the green goes (never into red)
+    if (Best < 0) and NmStrict() and (n > 1) then Best := 1;
+    if Best < 0 then begin
+      if NmDbg then begin
+        if NmStrict() then NmLog('waypoint to ' + NmXY(X, Y) + ': on the node under us, the goal off green - straight at it on green')
+        else NmLog('waypoint to ' + NmXY(X, Y) + ': on the node under us, nothing else of the route (' + IntToStr(n) +
+          ' nodes) in sight - the target itself (server path)');
+      end;
+      exit;
+    end;
+    if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': no route node in sight with the margin - node ' + IntToStr(Best + 1) +
+      '/' + IntToStr(n) + ' in sight without it');
+  end;
+  i := NmRouteAt(R, Best);
+  NmWpX := NavX[i];
+  NmWpY := NavY[i];
+  result := true;
+  NmWcRes := true;
+  if NmDbg then NmLog('waypoint to ' + NmXY(X, Y) + ': route node ' + IntToStr(Best + 1) + '/' + IntToStr(n) + ' at ' +
+    NmXY(NmWpX, NmWpY));
+end;
+
+function NavWpX(): integer;
+begin
+  result := NmWpX;
+end;
+
+function NavWpY(): integer;
+begin
+  result := NmWpY;
+end;
+
+function NavLastClickX(): integer;
+begin
+  result := NmLcX;
+end;
+
+function NavLastClickY(): integer;
+begin
+  result := NmLcY;
+end;
+
+function NavLastClickAt(): cardinal;
+begin
+  result := NmLcAt;
+end;
+
+function NavLastGoalX(): integer;
+begin
+  result := NmLgX;
+end;
+
+function NavLastGoalY(): integer;
+begin
+  result := NmLgY;
+end;
+
+function NavLastGoalAt(): cardinal;
+begin
+  result := NmLgAt;
+end;
+
+function NavLastRoute(): string;
+begin
+  result := NmLgRoute;
+end;
+
+procedure NavSetStrict(Enable: boolean);
+begin
+  NmStrictSet := Enable;
+end;
+
+function NavStrictOn(): boolean;
+begin
+  result := NmStrict();
+end;
+
+function NavWalkLine(X1, Y1, X2, Y2: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmLineFree(X1, Y1, X2, Y2, false);
+end;
+
+function NavWalkClamp(X1, Y1, X2, Y2: integer): boolean;
+begin
+  if not NmReady then begin
+    NmCpX := X2;
+    NmCpY := Y2;
+    result := true;
+    exit;
+  end;
+  result := NmClampWalk(X1, Y1, X2, Y2);
+end;
+
+function NavClampX(): integer;
+begin
+  result := NmCpX;
+end;
+
+function NavShootPoint(X, Y, Reach: integer): boolean;
+var r, a, k, n, Pass, Best, PX, PY, UX, UY, cx, cy: integer;
+  Ang, Rad, BestD: double;
+  CandX, CandY: array of integer;
+  CandD: array of double;
+begin
+  result := false;
+  if not NmReady then exit;
+  UX := User.X;
+  UY := User.Y;
+  SetLength(CandX, 160);
+  SetLength(CandY, 160);
+  SetLength(CandD, 160);
+  for Pass := 0 to 1 do begin          // 0: with the run margin off the red, 1: any green
+    n := 0;
+    for r := 0 to 4 do begin           // rings 0.9 / 0.7 / 0.5 / 0.3 of Reach and 120
+      if r = 4 then Rad := 120 else Rad := Reach * (0.9 - r * 0.2);
+      if Rad < 60 then continue;
+      for a := 0 to 31 do begin
+        Ang := a * 3.14159265 / 16;
+        PX := X + Round(Cos(Ang) * Rad);
+        PY := Y + Round(Sin(Ang) * Rad);
+        if (PX < NgX0) or (PY < NgY0) then continue;
+        cx := (PX - NgX0) div NgCell;
+        cy := (PY - NgY0) div NgCell;
+        if (cx >= NgW) or (cy >= NgH) then continue;
+        if not NgFree[cy * NgW + cx] then continue;
+        if (Pass = 0) and (not NmRunAt(PX, PY)) then continue;
+        if n >= 160 then continue;
+        CandX[n] := PX;
+        CandY[n] := PY;
+        CandD[n] := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
+        Inc(n);
+      end;
+    end;
+    for k := 0 to n - 1 do begin       // the nearest to us first: the first one that sees it wins
+      Best := -1;
+      BestD := 1E17;
+      for a := 0 to n - 1 do
+        if CandD[a] < BestD then begin
+          BestD := CandD[a];
+          Best := a;
+        end;
+      if Best < 0 then break;
+      CandD[Best] := 1E18;
+      PX := CandX[Best];
+      PY := CandY[Best];
+      if NmSeeLine(PX, PY, X, Y) then begin
+        NmShX := PX;
+        NmShY := PY;
+        result := true;
+        if NmDbg then NmLog('shoot spot for ' + NmXY(X, Y) + ' (reach ' + IntToStr(Reach) + '): ' + NmXY(PX, PY) +
+          NmIfStr(Pass = 0, '', ' (closer than the run margin to the red)'));
+        exit;
+      end;
+    end;
+  end;
+  if NmDbg then NmLog('shoot spot for ' + NmXY(X, Y) + ' (reach ' + IntToStr(Reach) + '): none - no green spot sees it');
+end;
+
+function NavShootX(): integer;
+begin
+  result := NmShX;
+end;
+
+function NavShootY(): integer;
+begin
+  result := NmShY;
+end;
+
+function NavClampY(): integer;
+begin
+  result := NmCpY;
+end;
+
+function NavRunCell(X, Y: integer): boolean;
+begin
+  result := true;
+  if NmReady then result := NmRunAt(X, Y);
+end;
+
+// along the graph to the target; a node is skipped as soon as the next one is in sight.
+// true = the target is in sight now (the caller runs the rest)
+function NavGraphTo(X, Y, Z: integer): boolean;
+var i, k, PX, PY, NX2, NY2, RN: integer;
+  Ok, Got, Rail: boolean;
+  S: string;
+  R: string;                             // the route (own: other threads count theirs meanwhile)
+begin
+  result := false;
+  if NavBusyFlag or (not NmReady) or (NavN = 0) then exit;
+  R := NmRoute(X, Y);
+  RN := NmRouteCount(R);
+  if RN = 0 then begin
+    Engine.Msg('[Nav]', 'No way on the map to ' + IntToStr(X) + ', ' + IntToStr(Y) + ' - plain server path', 128);
+    if NmDbg then NmLog('graph to ' + NmXY(X, Y) + ': no way on the map');
+    exit;
+  end;
+  Engine.Msg('[Nav]', 'Wall on the way, along the map (' + IntToStr(RN) + ' nodes)', 0);
+  if NmDbg then begin
+    S := '';
+    for k := 0 to RN - 1 do begin
+      i := NmRouteAt(R, k);
+      S := S + ' ' + NmXY(NavX[i], NavY[i]);
+    end;
+    NmLog('graph to ' + NmXY(X, Y) + ': ' + IntToStr(RN) + ' nodes:' + S);
+  end;
+  NavBusyFlag := true;
+  Ok := true;
+  k := 0;
+  while k < RN do begin
+    // the target is in sight: the rest goes straight - but a rail point ahead is gone to first
+    if NavSeeFromUs(X, Y) and (not NmRailAhead(R, k)) then begin
+      if NmDbg then NmLog('graph: the target is in sight - the rest straight');
+      break;
+    end;
+    Rail := NmRailTodo(NmRouteAt(R, k));
+    if (k + 1 < RN) and (not Rail) then begin
+      i := NmRouteAt(R, k + 1);
+      NX2 := NavX[i];
+      NY2 := NavY[i];
+      if NavSeeFromUs(NX2, NY2) then begin
+        Inc(k);                        // the next node is in sight: this one is not needed
+        continue;
+      end;
+    end;
+    i := NmRouteAt(R, k);
+    PX := NavX[i];
+    PY := NavY[i];
+    if Rail then begin                 // a rail point: right to it (a rail step: the server path finds it)
+      if NmDbg then NmLog('graph: rail point ' + NmXY(PX, PY));
+      Got := NmGoR(PX, PY, Z, NAV_RAIL_REACH);
+      if Got then NmRailPassAt[i] := GetTickCount;
+    end else Got := NmGo(PX, PY, Z);
+    if not Got then begin
+      if not User.Dead then begin
+        // the map is wrong there (painted walkable, but it is not): routes go round it for a while
+        NmBadUntil[i] := GetTickCount + NAV_BAD_MS;   // first the ban, then the version (keep this order)
+        Inc(NmBadVer);
+        Engine.Msg('[Nav]', 'Cannot get to map node ' + IntToStr(i + 1) + ' at ' + IntToStr(PX) + ', ' +
+          IntToStr(PY) + ' - left out of routes for ' + IntToStr(NAV_BAD_MS div 1000) +
+          ' s (fix the nav map there?)', 128);
+        if NmDbg then NmLog('graph: cannot get to node ' + NmXY(PX, PY) + ' - left out of routes for ' +
+          IntToStr(NAV_BAD_MS div 1000) + ' s');
+      end;
+      Ok := false;
+      break;
+    end;
+    Inc(k);
+  end;
+  NavBusyFlag := false;
+  result := Ok;
+end;
+
+// ---------- farm spot round a corner ----------
+
+function NavSpotX(): integer;
+begin
+  result := NmSpotX;
+end;
+
+function NavSpotY(): integer;
+begin
+  result := NmSpotY;
+end;
+
+procedure NavSpotClear();
+begin
+  NmMobN := 0;
+end;
+
+procedure NavSpotAddMob(X, Y: integer);
+begin
+  if NmMobN >= 64 then exit;
+  NmMobX[NmMobN] := X;
+  NmMobY[NmMobN] := Y;
+  Inc(NmMobN);
+end;
+
+// no mob of the pack sees P (at most 8 of them checked, spread over the list); none added - the centre
+function NmHiddenAll(PX, PY, CX, CY: integer): boolean;
+var k, Step, MX, MY: integer;
+begin
+  result := false;
+  if NmSeeLine(CX, CY, PX, PY) then exit;
+  Step := NmMobN div 8 + 1;
+  k := 0;
+  while k < NmMobN do begin
+    MX := NmMobX[k];
+    MY := NmMobY[k];
+    if NmSeeLine(MX, MY, PX, PY) then exit;
+    k := k + Step;
+  end;
+  result := true;
+end;
+
+// a corner that really shields: P moved 50 / 90 to both sides (across the way from the pack) is
+// still hidden from the pack centre and walkable -> 0..4 (a long wall, not a small bump)
+function NmShield(PX, PY, CX, CY: integer): integer;
+var k, QX, QY: integer;
+  UX, UY, L, Off: double;
+begin
+  result := 0;
+  UX := PX - CX;
+  UY := PY - CY;
+  L := Sqrt(UX * UX + UY * UY);
+  if L < 1 then exit;
+  UX := UX / L;
+  UY := UY / L;
+  for k := 0 to 3 do begin
+    if k = 0 then Off := -90 else if k = 1 then Off := -50 else if k = 2 then Off := 50 else Off := 90;
+    QX := PX + Round(-UY * Off);
+    QY := PY + Round(UX * Off);
+    if NmFreeAt(QX, QY, false) and (not NmSeeLine(CX, CY, QX, QY)) then Inc(result);
+  end;
+end;
+
+// the score of P round the corner node N against the pack centre C (we stand at F): -1 = no good.
+// The pack sees N, N sees P, no mob of the pack sees P, the way pack -> N -> P turns by 80+ degrees,
+// P is not much closer to the pack than we are. Higher = sharper turn, longer shielding wall, nearer
+function NmSpotScore(NX, NY, PX, PY, CX, CY, FX, FY: integer; Given: boolean): double;
+var AX, AY, BX, BY, LA, LB, CosT, DUC, DPC, DUP: double;
+begin
+  result := -1;
+  // a found point must be walkable on the map; a given one (recorded in the game) is reachable for
+  // sure even off the painted cells - the run ends there by the plain server path
+  if (not Given) and (not NmFreeAt(PX, PY, false)) then exit;
+  AX := NX - CX;
+  AY := NY - CY;
+  BX := PX - NX;
+  BY := PY - NY;
+  LA := Sqrt(AX * AX + AY * AY);
+  LB := Sqrt(BX * BX + BY * BY);
+  if (LA < 1) or (LB < 1) then exit;
+  CosT := (AX * BX + AY * BY) / (LA * LB);
+  if CosT > 0.17 then exit;                  // less than ~80 degrees of turn: they just run on to us
+  DUC := Sqrt(NmSq(FX - CX) + NmSq(FY - CY));
+  DPC := Sqrt(NmSq(PX - CX) + NmSq(PY - CY));
+  if DPC < DUC * 0.8 then exit;              // through the pack
+  if not NmLineFree(NX, NY, PX, PY, not Given) then exit;
+  if not NmSeeLine(CX, CY, NX, NY) then exit;   // the pack must see the corner itself
+  if not NmHiddenAll(PX, PY, CX, CY) then exit;
+  DUP := Sqrt(NmSq(FX - PX) + NmSq(FY - PY));
+  result := (1 - CosT) * 90 + NmShield(PX, PY, CX, CY) * 25 - DUP / 20;
+  if result < 0 then result := 0;
+end;
+
+// the graph nodes stand at the convex corners of the walls. Round every node within MaxDist of us
+// try points 65 / 95 away (12 directions) and keep the best scored one (NmSpotScore)
+function NavFindCornerSpot(FromX, FromY, MX, MY, MaxDist: integer): boolean;
+var i, a, r, NX, NY, PX, PY: integer;
+  D, Best, Sc, Ang, Rad: double;
+begin
+  result := false;
+  if (not NmReady) or (NavN = 0) then exit;
+  Best := -1;
+  for i := 0 to NavN - 1 do begin
+    NX := NavX[i];
+    NY := NavY[i];
+    D := Sqrt(NmSq(NX - FromX) + NmSq(NY - FromY));
+    if D > MaxDist then continue;
+    if not NmSeeLine(MX, MY, NX, NY) then continue;   // the pack must see the corner itself
+    for r := 0 to 1 do begin
+      if r = 0 then Rad := 65 else Rad := 95;
+      for a := 0 to 11 do begin
+        Ang := a * 3.14159265 / 6;
+        PX := NX + Round(Cos(Ang) * Rad);
+        PY := NY + Round(Sin(Ang) * Rad);
+        Sc := NmSpotScore(NX, NY, PX, PY, MX, MY, FromX, FromY, false);
+        if Sc > Best then begin
+          Best := Sc;
+          NmSpotX := PX;
+          NmSpotY := PY;
+          result := true;
+        end;
+      end;
+    end;
+  end;
+end;
+
+// a given spot: scored round the best corner node near it (within 220)
+function NavSpotScore(PX, PY, FromX, FromY, MX, MY: integer): double;
+var i, NX, NY: integer;
+  D, Sc: double;
+begin
+  result := -1;
+  if (not NmReady) or (NavN = 0) then exit;
+  for i := 0 to NavN - 1 do begin
+    NX := NavX[i];
+    NY := NavY[i];
+    D := Sqrt(NmSq(NX - PX) + NmSq(NY - PY));
+    if D > 220 then continue;
+    Sc := NmSpotScore(NX, NY, PX, PY, MX, MY, FromX, FromY, true);
+    if Sc > result then result := Sc;
+  end;
+end;
+
+// run length to X, Y: straight if in sight, else along the planned route
+function NavPathLen(X, Y: integer): double;
+var k, i, j, n, UX, UY: integer;
+  DX, DY: double;
+  R: string;
+begin
+  UX := User.X;
+  UY := User.Y;
+  DX := X - UX;
+  DY := Y - UY;
+  result := Sqrt(DX * DX + DY * DY);
+  if (not NmReady) or NmLineFree(UX, UY, X, Y, false) then exit;
+  R := NmRoute(X, Y);
+  n := NmRouteCount(R);
+  if n = 0 then begin
+    result := -1;
+    exit;
+  end;
+  i := NmRouteAt(R, 0);
+  result := Sqrt(NmSq(NavX[i] - UX) + NmSq(NavY[i] - UY));
+  for k := 1 to n - 1 do begin
+    j := NmRouteAt(R, k);
+    result := result + NmDist(i, j);
+    i := j;
+  end;
+  result := result + Sqrt(NmSq(NavX[i] - X) + NmSq(NavY[i] - Y));
+end;
+
+// run length from X1, Y1 to X2, Y2: straight when nothing is between, else the way table of X2, Y2 (NmFieldOf) and
+// the cheapest graph node X1, Y1 sees (as NmRoute: the cheapest first, its sight checked, the next if hidden).
+// -1 = no way. No map / another thread on the tables (NmFBusy) / the table rewritten meanwhile: the straight one
+function NavWayLen(X1, Y1, X2, Y2: integer): double;
+var f, Base, i, n, PX, PY: integer;
+  T: cardinal;
+  D, DX, DY, BestC: double;
+  Cost: array of double;
+begin
+  DX := X2 - X1;
+  DY := Y2 - Y1;
+  result := Sqrt(DX * DX + DY * DY);
+  if (not NmReady) or (NavN = 0) then exit;
+  if NmLineFree(X1, Y1, X2, Y2, false) then exit;
+  if NmFBusy then exit;
+  NmFBusy := true;
+  f := NmFieldOf(X2, Y2);
+  Base := f * NavN;
+  T := GetTickCount;
+  SetLength(Cost, NavN);
+  for i := 0 to NavN - 1 do begin
+    Cost[i] := 1E18;
+    if NmFD[Base + i] >= 1E17 then continue;
+    if T < NmBadUntil[i] then continue;
+    DX := NavX[i] - X1;
+    DY := NavY[i] - Y1;
+    D := Sqrt(DX * DX + DY * DY);
+    if D > NAV_SEE_MAX then continue;
+    Cost[i] := D + NmFD[Base + i];
+  end;
+  D := -1;
+  while true do begin
+    n := -1;
+    BestC := 1E17;
+    for i := 0 to NavN - 1 do
+      if Cost[i] < BestC then begin
+        BestC := Cost[i];
+        n := i;
+      end;
+    if n < 0 then break;
+    PX := NavX[n];
+    PY := NavY[n];
+    if NmLineFree(X1, Y1, PX, PY, false) then begin
+      D := BestC;
+      break;
+    end;
+    Cost[n] := 1E18;                   // hidden from X1, Y1: the next cheapest
+  end;
+  NmFBusy := false;
+  if (NmFTX[f] <> X2) or (NmFTY[f] <> Y2) or (NmFVer[f] <> NmBadVer) then exit;   // rewritten meanwhile
+  result := D;
+end;
+
+// patrol: the next graph node at least MinDist away, going round the node list (spread over the map)
+function NavFarPoint(MinDist: integer): boolean;
+var k, i, UX, UY: integer;
+  D: double;
+begin
+  result := false;
+  if (not NmReady) or (NavN = 0) then exit;
+  UX := User.X;
+  UY := User.Y;
+  for k := 0 to NavN - 1 do begin
+    i := (NmFarNext + k * 7 + 3) mod NavN;   // a big step through the list: far apart one after another
+    D := Sqrt(NmSq(NavX[i] - UX) + NmSq(NavY[i] - UY));
+    if D < MinDist then continue;
+    if GetTickCount < NmBadUntil[i] then continue;
+    NmFarXv := NavX[i];
+    NmFarYv := NavY[i];
+    NmFarNext := i;
+    result := true;
+    exit;
+  end;
+end;
+
+function NavFarX(): integer;
+begin
+  result := NmFarXv;
+end;
+
+function NavFarY(): integer;
+begin
+  result := NmFarYv;
+end;
+
+// plain server path run to within Radius; not moving for NAV_STALL_MS = stuck -> false
+function NmPlain(X, Y, Z, Radius: integer): boolean;
+var Started, LastSend, StillSince, MaxMs: cardinal;
+  UX, UY, LX, LY: integer;
+  DX, DY: double;
+begin
+  result := false;
+  LX := User.X;
+  LY := User.Y;
+  DX := X - LX;
+  DY := Y - LY;
+  MaxMs := Round(Sqrt(DX * DX + DY * DY) * 10) + 5000;
+  Started := GetTickCount;
+  StillSince := GetTickCount;
+  LastSend := 0;
+  while not User.Dead do begin
+    UX := User.X;
+    UY := User.Y;
+    DX := X - UX;
+    DY := Y - UY;
+    if Sqrt(DX * DX + DY * DY) <= Radius then begin
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > MaxMs then exit;
+    if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
+      LX := UX;
+      LY := UY;
+      StillSince := GetTickCount;
+    end else if GetTickCount - StillSince > NAV_STALL_MS then exit;
+    if (LastSend = 0) or (GetTickCount - LastSend >= NAV_RESEND_MS) then begin
+      NavClick(X, Y, Z);
+      LastSend := GetTickCount;
+    end;
+    Delay(100);
+  end;
+end;
+
+// the whole run: behind a wall -> along the graph first; then the plain server path; stuck -> the
+// graph and the plain path once more
+// this node was an unstick target within 20 s (two nodes side by side were taken in turn for ever)
+function NmUnstickRecent(PX, PY: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to 3 do
+    if (NmUnstickPX[k] = PX) and (NmUnstickPY[k] = PY) and (NmUnstickAt[k] <> 0) and
+       (GetTickCount - NmUnstickAt[k] < 20000) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+function NmUnstick(): boolean;
+var i, UX, UY, UZ, PX, PY, BX, BY, Pass: integer;
+  D, Best: double;
+  Own: boolean;
+begin
+  result := false;
+  if not NmReady then exit;
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  Own := false;
+  BX := 0;
+  BY := 0;
+  // pass 0: own nodes (placed in the viewer for this) within 2000; pass 1: any graph node
+  for Pass := 0 to 1 do begin
+    Best := 1E18;
+    if Pass = 0 then begin
+      for i := 0 to NmUserN - 1 do begin
+        PX := NmUserX[i];
+        PY := NmUserY[i];
+        D := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
+        if (D < 150) or (D > 2000) or (D >= Best) then continue;
+        if NmUnstickRecent(PX, PY) then continue;
+        Best := D;
+        BX := PX;
+        BY := PY;
+      end;
+    end else begin
+      for i := 0 to NavN - 1 do begin
+        if GetTickCount < NmBadUntil[i] then continue;
+        PX := NavX[i];
+        PY := NavY[i];
+        D := Sqrt(NmSq(PX - UX) + NmSq(PY - UY));
+        if (D < 150) or (D >= Best) then continue;
+        if NmUnstickRecent(PX, PY) then continue;
+        Best := D;
+        BX := PX;
+        BY := PY;
+      end;
+    end;
+    if Best < 1E17 then begin
+      Own := Pass = 0;
+      break;
+    end;
+  end;
+  if Best >= 1E17 then begin
+    if NmDbg then NmLog('unstick: no node 150+ away');
+    exit;
+  end;
+  if NmDbg then begin
+    if Own then NmLog('unstick: to own node ' + NmXY(BX, BY) + ' d=' + IntToStr(Round(Best)))
+    else NmLog('unstick: no own node within 150..2000 - to map node ' + NmXY(BX, BY) + ' d=' + IntToStr(Round(Best)));
+  end;
+  NmUnstickPX[NmUnstickHead] := BX;
+  NmUnstickPY[NmUnstickHead] := BY;
+  NmUnstickAt[NmUnstickHead] := GetTickCount;
+  NmUnstickHead := (NmUnstickHead + 1) mod 4;
+  if Own then Engine.Msg('[Nav]', 'Stuck - server path to the nearest own node ' + IntToStr(BX) + ', ' + IntToStr(BY), 0)
+  else Engine.Msg('[Nav]', 'Stuck - server path to the nearest map node ' + IntToStr(BX) + ', ' + IntToStr(BY) +
+    ' (put an own node near here in the viewer)', 0);
+  result := NmGo(BX, BY, UZ);
+end;
+
+// ---------- runs ----------
+
+// the pulse of a blocking run: set on every tick of it. No waiting, no flag to release: a thread that
+// died in the middle of a run (a script error) stops the pulse, and after 1 s nobody "drives" any more
+procedure NmDriveBegin();
+begin
+  NmDriveAt := GetTickCount;
+end;
+
+procedure NmDriveEnd();
+begin
+  NmDriveAt := 0;
+end;
+
+function NmDriving(): boolean;
+begin
+  result := (NmDriveAt <> 0) and (GetTickCount - NmDriveAt < 1000);
+end;
+
+function NmDistTo(X, Y: integer): double;
+var UX, UY: integer;
+  DX, DY: double;
+begin
+  UX := User.X;
+  UY := User.Y;
+  DX := X - UX;
+  DY := Y - UY;
+  result := Sqrt(DX * DX + DY * DY);
+end;
+
+procedure NavMoveReset();
+begin
+  NmLX := User.X;
+  NmLY := User.Y;
+  NmMovedAt := GetTickCount;
+end;
+
+procedure NavClickForget();
+begin
+  NmClAt := 0;
+end;
+
+procedure NavStepReset();
+begin
+  NavMoveReset();
+  NavClickForget();
+end;
+
+// ms since we really moved (10+ on the ground)
+function NavStillMs(): cardinal;
+var UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  if NmSq(UX - NmLX) + NmSq(UY - NmLY) >= 100 then begin
+    NmLX := UX;
+    NmLY := UY;
+    NmMovedAt := GetTickCount;
+  end;
+  result := GetTickCount - NmMovedAt;
+end;
+
+// one server-path click, remembered. Not repeated on a timer: every new click makes the server build
+// the path again from where we are, and its first node may lie behind us (the run forth and back)
+procedure NavClickAt(X, Y, Z: integer);
+begin
+  NavClick(X, Y, Z);
+  NmClX := X;
+  NmClY := Y;
+  NmClAt := GetTickCount;
+end;
+
+// click again only when the goal moved away from our click point, or we stopped short
+function NavNeedClick(X, Y: integer): boolean;
+var DX, DY: double;
+begin
+  result := true;
+  if NmClAt = 0 then exit;
+  DX := X - NmClX;
+  DY := Y - NmClY;
+  if Sqrt(DX * DX + DY * DY) > NAV_RECLICK then exit;
+  result := (NavStillMs() >= NAV_STOP_MS) and (GetTickCount - NmClAt >= NAV_STOP_MS);
+end;
+
+// the length of a click ahead: uniform on min..max, or normal (mean, sigma) cut to it (12 uniforms - no Ln needed)
+function NmHmPiece(): integer;
+var i, Tries: integer;
+  Z, X: double;
+begin
+  result := NmHmMin + Random(NmHmMax - NmHmMin + 1);
+  if (not NmHmNorm) or (NmHmMax <= NmHmMin) then exit;
+  for Tries := 1 to 20 do begin
+    Z := -6.0;
+    for i := 1 to 12 do Z := Z + Random(1000000) / 1000000.0;
+    X := NmHmMean + Z * NmHmSig;
+    if (X >= NmHmMin) and (X <= NmHmMax) then begin
+      result := Round(X);
+      exit;
+    end;
+  end;
+end;
+
+// a human click (NavSetHuman) toward TX, TY: a piece ahead, a bit to the side (on the map's free cells and in a
+// straight run from here, else straight, else the goal itself); the next one when we stopped, got near the piece or
+// a second or two went by. The last piece lands a little off the goal. The same goal and still running: no click
+procedure NmHumanClick(TX, TY, Z: integer);
+var UX, UY, L, PX, PY, Sd, k: integer;
+  D, DX, DY: double;
+  Stopped, Ok: boolean;
+begin
+  // a double / triple click going on: the same point again (one a tick)
+  if (NmHmRep > 0) and (Sqrt(NmSq(TX - NmHmGX) + NmSq(TY - NmHmGY)) <= NAV_RECLICK) then begin
+    if GetTickCount >= NmHmRepAt then begin
+      NavClick(NmHmPX, NmHmPY, Z);
+      Dec(NmHmRep);
+      NmHmRepAt := GetTickCount + cardinal(70 + Random(180));
+    end;
+    exit;
+  end;
+  NmHmRep := 0;
+  UX := User.X;
+  UY := User.Y;
+  if (NmClAt <> 0) and (Sqrt(NmSq(TX - NmHmGX) + NmSq(TY - NmHmGY)) <= NAV_RECLICK) then begin
+    Stopped := (NavStillMs() >= NAV_STOP_MS) and (GetTickCount - NmClAt >= NAV_STOP_MS);
+    if (not Stopped) and (Sqrt(NmSq(NmHmPX - UX) + NmSq(NmHmPY - UY)) > NmHmLeft) and (GetTickCount < NmHmNext) then exit;
+  end;
+  DX := TX - UX;
+  DY := TY - UY;
+  D := Sqrt(DX * DX + DY * DY);
+  L := NmHmPiece();
+  Ok := false;
+  PX := TX;
+  PY := TY;
+  for k := 0 to 1 do begin
+    if Ok then break;
+    if D <= L + 150 then begin                   // the last piece: a little off the goal (k = 1: the goal itself)
+      if k = 1 then break;
+      PX := TX + Random(2 * HM_END + 1) - HM_END;
+      PY := TY + Random(2 * HM_END + 1) - HM_END;
+    end else begin                               // a piece ahead, to the side (k = 1: straight)
+      Sd := 0;
+      if k = 0 then Sd := Round(L * (Random(2 * NmHmSide + 1) - NmHmSide) / 100.0);
+      PX := UX + Round((DX * L - DY * Sd) / D);
+      PY := UY + Round((DY * L + DX * Sd) / D);
+    end;
+    Ok := (not NmReady) or (NavIsFree(PX, PY) and NavWalkLine(UX, UY, PX, PY));
+  end;
+  if not Ok then begin
+    PX := TX;
+    PY := TY;
+  end;
+  NavClick(PX, PY, Z);
+  NmClX := PX;
+  NmClY := PY;
+  NmClAt := GetTickCount;
+  NmHmGX := TX;
+  NmHmGY := TY;
+  NmHmPX := PX;
+  NmHmPY := PY;
+  NmHmLeft := HM_LEFT_MIN + Random(HM_LEFT_RANGE + 1);
+  NmHmNext := GetTickCount + cardinal(HM_AGAIN_MIN + Random(HM_AGAIN_RANGE + 1));
+  if (NmHmMulti > 0) and (Random(100) < NmHmMulti) then begin   // 2-3 clicks on the same point
+    NmHmRep := 1 + Random(2);
+    NmHmRepAt := GetTickCount + cardinal(70 + Random(180));
+  end;
+end;
+
+// one tick of a tick run; a blocking run of another thread drives now -> nothing
+procedure NavStep(X, Y, Z: integer; Graph: boolean);
+var TX, TY, UX, UY: integer;
+begin
+  if NmDriving() then exit;
+  TX := X;
+  TY := Y;
+  if Graph and NmReady and NavWaypoint(X, Y) then begin
+    TX := NmWpX;
+    TY := NmWpY;
+  end else if NmReady and NmStrict() then begin   // the strict map: straight only as far as the green goes
+    UX := User.X;
+    UY := User.Y;
+    if not NmClampWalk(UX, UY, TX, TY) then exit;
+    TX := NmCpX;
+    TY := NmCpY;
+  end;
+  if NmHmOn then NmHumanClick(TX, TY, Z)
+  else if NavNeedClick(TX, TY) then NavClickAt(TX, TY, Z);
+end;
+
+procedure NavStepPlain(X, Y, Z: integer);
+begin
+  if NmDriving() then exit;
+  if NmHmOn then NmHumanClick(X, Y, Z)
+  else if NavNeedClick(X, Y) then NavClickAt(X, Y, Z);
+end;
+
+// "at the point" (within Reach, 150+): the click again every NAV_RESEND_MS; not moved NAV_RUN_STALL_MS = stuck
+function NmRunWait(X, Y, Z, Reach: integer): boolean;
+var Started, LastSend, StillSince: cardinal;
+  UX, UY, LX, LY: integer;
+begin
+  result := false;
+  Started := GetTickCount;
+  StillSince := GetTickCount;
+  LX := User.X;
+  LY := User.Y;
+  LastSend := 0;
+  if NmDbg then NmLog('plain run (a click every ' + IntToStr(NAV_RESEND_MS) + ' ms) to ' + NmXY(X, Y) + ' reach ' +
+    IntToStr(Reach) + ' d=' + IntToStr(Round(User.DistTo(X, Y, Z))));
+  while not User.Dead do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
+    if User.DistTo(X, Y, Z) < Reach then begin
+      if NmDbg then NmLog('plain run: there in ' + IntToStr(GetTickCount - Started) + ' ms');
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > NAV_RUN_MS then begin
+      if NmDbg then NmLog('plain run: ' + IntToStr(NAV_RUN_MS div 1000) + ' s over, d=' + IntToStr(Round(User.DistTo(X, Y, Z))));
+      exit;
+    end;
+    UX := User.X;
+    UY := User.Y;
+    if (Abs(UX - LX) > 20) or (Abs(UY - LY) > 20) then begin
+      LX := UX;
+      LY := UY;
+      StillSince := GetTickCount;
+    end else if GetTickCount - StillSince > NAV_RUN_STALL_MS then begin
+      if NmDbg then NmLog('plain run: not moved ' + IntToStr(NAV_RUN_STALL_MS) + ' ms - stuck, d=' +
+        IntToStr(Round(User.DistTo(X, Y, Z))));
+      exit;
+    end;
+    if (LastSend = 0) or (GetTickCount - LastSend >= NAV_RESEND_MS) then begin
+      NavClick(X, Y, Z);
+      LastSend := GetTickCount;
+    end;
+    Delay(100);
+  end;
+end;
+
+// stand within Radius (on the ground): the click again only when we stopped short
+function NmRunExact(X, Y, Z, Radius: integer): boolean;
+var Started: cardinal;
+  Stops: integer;
+  D: double;
+begin
+  result := false;
+  Started := GetTickCount;
+  Stops := 0;
+  NavMoveReset();
+  if NmDbg then NmLog('exact run to ' + NmXY(X, Y) + ' radius ' + IntToStr(Radius) + ' d=' + IntToStr(Round(NmDistTo(X, Y))));
+  NavClickAt(X, Y, Z);
+  while not User.Dead do begin
+    if NmDriveAt <> 0 then NmDriveAt := GetTickCount;
+    D := NmDistTo(X, Y);
+    if D <= Radius then begin
+      if NmDbg then NmLog('exact run: there in ' + IntToStr(GetTickCount - Started) + ' ms');
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > NAV_RUN_MS then begin
+      if NmDbg then NmLog('exact run: ' + IntToStr(NAV_RUN_MS div 1000) + ' s over, d=' + IntToStr(Round(D)));
+      exit;
+    end;
+    if NavStillMs() > NAV_POINT_STUCK then begin     // wall: the server finds no way there
+      if NmDbg then NmLog('exact run: not moved ' + IntToStr(NAV_POINT_STUCK) + ' ms - wall, d=' + IntToStr(Round(D)));
+      exit;
+    end;
+    if NavNeedClick(X, Y) then begin
+      // stopped short: a few times close to the point = the server cannot put us nearer
+      Inc(Stops);
+      if (Stops >= 3) and (D <= NAV_NEAR_OK) then begin
+        if NmDbg then NmLog('exact run: stopped ' + IntToStr(Stops) + ' times at d=' + IntToStr(Round(D)) + ' - as near as it lets us');
+        result := true;
+        exit;
+      end;
+      if NmDbg then NmLog('exact run: stopped short d=' + IntToStr(Round(D)) + ' - click again (stop ' + IntToStr(Stops) + ')');
+      NavClickAt(X, Y, Z);
+    end;
+    Delay(NAV_TICK_MS);
+  end;
+end;
+
+function NmRunPlain(X, Y, Z, Reach: integer): boolean;
+begin
+  if Reach >= NAV_REACH_WAIT then result := NmRunWait(X, Y, Z, Reach)
+  else result := NmRunExact(X, Y, Z, Reach);
+end;
+
+function NavRunPlain(X, Y, Z, Reach: integer): boolean;
+begin
+  NmDriveBegin();
+  result := NmRunPlain(X, Y, Z, Reach);
+  NmDriveEnd();
+end;
+
+// behind a wall on the map -> along the graph first; then the server path; stuck -> the graph again;
+// still stuck -> out of the stuck place (to the nearest own node) for the caller's next try
+function NavRun(X, Y, Z, Reach: integer): boolean;
+var Started: cardinal;
+begin
+  NmDriveBegin();
+  Started := GetTickCount;
+  if NmDbg then NmLog('RUN to ' + NmXY(X, Y) + ' reach ' + IntToStr(Reach) + ' d=' + IntToStr(Round(NmDistTo(X, Y))) +
+    ' in sight with the margin ' + IntToStr(Ord(NavSeeFromUs(X, Y))));
+  if NmReady and (not NavBusyFlag) and ((not NavSeeFromUs(X, Y)) or NmRouteHasRail(X, Y)) then NavGraphTo(X, Y, Z);
+  result := NmRunPlain(X, Y, Z, Reach);
+  if (not result) and (not User.Dead) and (not NavBusyFlag) and NmReady then begin
+    if NmDbg then NmLog('RUN: the plain run failed - along the map again');
+    if NavGraphTo(X, Y, Z) then result := NmRunPlain(X, Y, Z, Reach);
+    if (not result) and (not User.Dead) then
+      if NmUnstick() then begin end;
+  end;
+  if NmDbg then begin
+    if result then NmLog('RUN end: there in ' + IntToStr(GetTickCount - Started) + ' ms')
+    else NmLog('RUN end: NOT there after ' + IntToStr(GetTickCount - Started) + ' ms, d=' + IntToStr(Round(NmDistTo(X, Y))));
+  end;
+  NmDriveEnd();
+end;
+
+// out of a stuck place, as a run of its own
+function NavUnstick(): boolean;
+begin
+  NmDriveBegin();
+  result := NmUnstick();
+  NmDriveEnd();
+end;
+
+function NavMoveTo(X, Y, Z, Radius: integer): boolean;
+begin
+  if NmReady and (not NavBusyFlag) and (not NavSeeFromUs(X, Y)) then NavGraphTo(X, Y, Z);
+  result := NmPlain(X, Y, Z, Radius);
+  if result or User.Dead or NavBusyFlag or (not NmReady) then exit;
+  if NavGraphTo(X, Y, Z) then result := NmPlain(X, Y, Z, Radius);
+end;
+
+end.

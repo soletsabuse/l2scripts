@@ -1,0 +1,3692 @@
+uses SysUtils, Classes, PveLog in 'pve_log.pas', PveNav in 'pve_nav.pas';
+
+// =====================================================================================================================
+// PvePanel farm (Library\PvePanel\pve.txt): an sh_solo-like farm on a navgrid, driven by PvePanel.exe.
+// Start it once in the bot and leave it running - the panel page starts and pauses it, picks the map, the fight
+// rules (skills / items / actions, as the bot's Fight settings) and which mobs go first. Nothing is restarted in the bot.
+//   <char>.pve          the settings: written by the page (pve.html) through the panel, read here every CFG_MS
+//   <char>.pve.json     our state for the page, every STATE_MS: run / pause, what we do, the target, our skills,
+//                       items, buffs, the mob kinds round us, the map, the log
+//   Nav\<map>.navgrid   the maps (made and edited on the page Map); Nav\<char>.navlive: where we are and run, for it
+// At the script start the farm is paused: it starts only when the page asks (a new run_id with run=1).
+// All of it is PvePanel's own code (pve.txt, pve_nav.pas, pve_log.pas): no other script uses it.
+// =====================================================================================================================
+
+const
+  PVE_VER           = 1;
+  CFG_MS            = 700;       // the settings file looked at this often
+  STATE_MS          = 1000;      // our state for the page written this often
+  LIVE_MS           = 300;       // the live file of the map page
+  LIVE_RANGE        = 2500;      // ... the mobs / players this close
+  MOBS_RANGE        = 2500;      // the mob kinds round us for the page (the priority list)
+  LOG_KEEP          = 40;        // the last lines of our log for the page
+  MAX_RULES         = 64;
+  MAX_MOBP          = 128;
+  MAX_SUP           = 16;
+  MAX_SPOTS         = 64;
+  MAX_KINDS         = 48;
+
+  TG_MOB            = 0;         // a rule is cast at: the mob we fight ...
+  TG_SELF           = 1;         // ... us
+  TG_PET            = 2;         // ... our summon
+  TG_PLAYER         = 3;         // ... the player who hits us (the PvP answer)
+  RT_SKILL          = 0;
+  RT_ITEM           = 1;
+  RT_ACTION         = 2;
+  MODE_NONE         = 0;         // no target: rules at us / the summon only
+  MODE_MOB          = 1;
+  // human distributions (page Human): their slots
+  DS_PIECE          = 0;         // a click ahead (units)
+  DS_STOP           = 1;         // melee stop distance (units)
+  DS_RANGE          = 2;         // ranged: how far in (%): 100 = just into the reach, more = closer, less = clicked early
+  DS_PRESS          = 3;         // + ms between the presses
+  DS_PICK           = 4;         // a new target wait (ms)
+  DS_SPAWN          = 5;         // a new mob wait (ms)
+  DS_REBUFF         = 6;         // the rebuff moment: % later
+  DS_SELFBUF        = 7;         // a self buff again after (ms)
+  DS_FORGET         = 8;         // a self buff forgotten for (s)
+  DS_AFKEVERY       = 9;         // AFK every (min)
+  DS_AFKFOR         = 10;        // AFK for (min)
+  MODE_PVP          = 2;
+
+  // the conditions of a rule (the page writes them as kind:value)
+  CD_MHP_LT         = 1;         // mhp<   our HP % below
+  CD_MHP_GT         = 2;         // mhp>
+  CD_MMP_LT         = 3;         // mmp<   our MP %
+  CD_MMP_GT         = 4;         // mmp>
+  CD_MCP_LT         = 5;         // mcp<   our CP %
+  CD_THP_LT         = 6;         // thp<   the target's HP %
+  CD_THP_GT         = 7;         // thp>
+  CD_TMAX_GT        = 8;         // tmax>  the target's MaxHP above (a fat mob)
+  CD_TEFF_NO        = 9;         // teff-  the effect ID is not on the target (a debuff not landed yet)
+  CD_TEFF_ON        = 10;        // teff+
+  CD_MBUF_NO        = 11;        // mbuf-  the buff ID is not on us (ID/s: or ends within s)
+  CD_MBUF_ON        = 12;        // mbuf+
+  CD_PHP_LT         = 13;        // php<   our summon's HP %
+  CD_PET_NO         = 14;        // pet-   no summon (no corpse either)
+  CD_PET_ON         = 15;        // pet+
+  CD_TON_YES        = 16;        // ton+   the target hits us / the summon
+  CD_TON_NO         = 17;        // ton-
+  CD_CMB_YES        = 18;        // cmb+   we are in combat
+  CD_CMB_NO         = 19;        // cmb-
+
+  RETARGET_MS       = 1000;      // the same target set again this often (a mob can knock it off)
+  CONFIRM_MS        = 1500;      // a sent skill (not a repeat one) has its reuse start within this, else it did not go
+  RESEND_MS         = 300;       // ... sent again this often while it has not started
+  LOCK_MS           = 1000;      // ... nothing else is cast this long (a new skill packet would replace its cast)
+  CAST_SEEN_MS      = 3000;      // a reuse that starts within this of our send is our cast of that rule
+  UNREACH_MS        = 15000;     // a mob we could not get to is not taken this long
+  WAY_MS            = 4000;      // the run length along the map to a far mob is counted again this often
+  FAR_MS_PER_UNIT   = 15;        // getting to a far mob: APPROACH_MAX_MS + this many ms a unit beyond the near range
+  APPROACH_MAX_MS   = 15000;     // ... getting to it this long = we cannot
+  APPROACH_STEP     = 150;       // "Can't see target." -> this much closer than we stood
+  CANT_SEE_MS       = 6000;
+  CANT_SEE_MSG_ID   = 181;
+  SHOOT_CACHE_MS    = 500;       // the spot to cast from (a mob behind a wall of the map) counted again this often
+  ROAM_REACH        = 150;       // at the roam point
+  HUMAN_MELEE       = 300;       // human: a rule reaching this far or less is melee (fired from the stop distance)
+  SEEN_SCAN_MS      = 500;       // human: the new mobs looked for this often
+  STAND_MS          = 2500;      // standing up takes this long (no action meanwhile)
+  REBUFF_HERE_MS    = 20000;     // rebuff: out of combat within this (fighting what hits us) = the buffer right here
+  IDLE_MS           = 20000;     // a target / a run and no step, no cast this long = stuck: start over ([Stuck])
+  VIS_MS            = 400;       // a mob seen / not seen by the map from us: kept this long
+  // the way back to the spot (death = return): as the old farm scripts of this server
+  TRAVEL_FAR        = 6000;      // off the map and farther than this from the spot = the way back
+  RAIL_NEAR         = 800;       // after the teleport: a rail of the map with an end this close = the way from the landing
+  RAIL_REACH        = 120;       // ... at a rail point this close -> the next one
+  RAIL_POINT_MS     = 20000;     // ... one rail point: given up after this
+  VILLAGE_WAIT_MS   = 5000;      // dead this long -> "To Village"
+  RESPAWN_WAIT_MS   = 4000;      // up in town: this long before the way back
+  ADEN_SKILL_ID     = 27501;     // the teleport skill to Aden
+  ADEN_X            = 147448;    // where it drops us
+  ADEN_Y            = 25817;
+  ADEN_Z            = -2008;
+  ADEN_RADIUS       = 3000;      // "in Aden"
+  GK_ID             = 30848;     // the Aden gatekeeper (his dialog, then the teleport bypass)
+  GK_X              = 147684;
+  GK_Y              = 25918;
+  GK_Z              = -2008;
+  ROAM_STUCK_MS     = 4000;      // not moved this long on the way -> the next point
+  ROAM_MAX_MS       = 40000;
+  OFF_MAP_MS        = 20000;     // standing off the map this long with no target -> paused (died and went to town...)
+  PATH_REACHED      = 150;
+  REBUFF_TRIES      = 20;
+  PVP_FORGET_MS     = 8000;
+  PVP_SCAN_MS       = 200;
+  WEAPON_POLL_MS    = 2000;
+  WEAPON_SLOT_RHAND = $0080;
+  WEAPON_SLOT_LRHAND = $4000;
+  EQUIP_TRIES       = 5;
+
+  INVENTORY_PACKET  = '14';      // RequestItemList: the server sends the bag again
+  ADENA_ID          = 57;
+  BUY_WAIT          = 1200;
+  BUY_GAP           = 300;
+  INVENTORY_WAIT    = 700;
+  SHOP_WAIT         = 500;
+  SHOP_OPEN         = 'PremShopList';
+  MULTISELL_ID      = 7300;
+  MULTISELL_OPEN    = '_bbs_multisell?id=7300';
+
+  SOUND_DIR         = '..\Sounds\';            // Library\Sounds (read only)
+  CONFIG_DIR        = '..\Configurations\';    // the bot profiles (read only)
+  DEATH_SOUND       = 'caracter died.wav';
+  CHAMPION_SOUND    = 'champion.wav';
+  // never taken as targets: other players' summons, chests (lower case, between commas)
+  IGNORE_NAMES      = ',cursed man,corrupted man,big boom,kat the cat,merrow the unicorn,boxer the unicorn,mirage the unicorn,shadow,magnus the unicorn,spectral lord,soulless,nightshade,reanimated man,silhouette,servitor,cougar,toy knight,feline queen,feline king,soulgazer,treasure chest,dark panther,';
+
+var
+  // ---------- files ----------
+  Tag, CfgPath, StatePath, LivePath: string;
+  CfgText, CfgReadAt, CfgErr: string;
+  CfgMissTold, FirstCfg, StateTold: boolean;
+  CfgAt, StateAt, LiveAt: cardinal;
+
+  // ---------- the settings (<char>.pve) ----------
+  CfRun: boolean;
+  CfRunId, CfGrid, CfGridVer, CfProfile, CfDeath, CfPick: string;
+  CfSpamMs, CfTargetRange, CfAggroRange, CfHeight, CfRadius, CfChampHP, CfWeapon: integer;
+  CfOnUsFirst, CfSwitch, CfSkipChamp, CfRoam, CfAutoAttack, CfChampAlert, CfPvp, CfDebug: boolean;
+  CfMapHunt: boolean;                      // new targets anywhere on the map (not only within CfTargetRange)
+  CfSeeFirst: boolean;                     // a new target only once the map sees it from us (no wall of the map between)
+  // human (page Human): on; clicks in pieces (length, side %); the stop distance before a melee target, the share of
+  // a ranged rule's reach; the extra random ms of a loop; the wait before a new target / a new mob; AFK breaks (minutes)
+  CfHuman, CfHClicks, CfAfk, CfAfkSit: boolean;
+  CfHPieceMin, CfHPieceMax, CfHSide, CfHStopMin, CfHStopMax, CfHRange, CfHPress: integer;
+  CfHPickMin, CfHPickMax, CfHSpawnMin, CfHSpawnMax: integer;
+  CfAfkEveryMin, CfAfkEveryMax, CfAfkForMin, CfAfkForMax: integer;
+  // human: 2-3 clicks share; the rebuff moment spread %; a self buff late (ms), forgotten (% of the times, s)
+  CfHMulti, CfHRebuff, CfHBufMin, CfHBufMax, CfHForget, CfHForgetMin, CfHForgetMax: integer;
+  CfTeleport: string;                       // the teleport bypass to the spot ('' = the map's K teleport)
+  // human distributions: min, max; normal (mean, sigma) cut to min..max, else uniform
+  DsMin, DsMax, DsMean, DsSig: array[0..15] of integer;
+  DsNorm: array[0..15] of boolean;
+  CfRoamWaitMin, CfRoamWaitMax, CfPlayerAlert, CfPvpMin, CfPvpMax: integer;
+  CfRebuffID, CfRebuffLeft, CfRebuffHold: integer;
+  CfRebuffBp: array[0..15] of string;
+  CfRebuffBpN: integer;
+  CfNoAlert: string;                       // ",nick,nick," lower case
+
+  // the fight rules, in the file order; RuOrd: by priority
+  RuN, RuMobRules: integer;
+  RuOn, RuMove, RuIfFail, RuToggle, RuRepeat, RuArAggro: array[0..63] of boolean;
+  RuType, RuID, RuTgt, RuDMin, RuDMax, RuReuse, RuPrio: array[0..63] of integer;
+  RuArMode, RuArR, RuArCmp, RuArN, RuMobReuse, RuMobMode: array[0..63] of integer;
+  RuMobs, RuName: array[0..63] of string;
+  RuLast, RuSent, RuPrevL: array[0..63] of cardinal;   // last use (its reuse started) / last send / reuse a tick ago
+  RuSentOID, RuOrd, RuCasts: array[0..63] of integer;
+  RcK, RcV1, RcV2: array[0..255] of integer;           // rule r, condition c: r * 4 + c
+  OldN: integer;                                       // the rules before a reload: their last use is kept
+  OldType, OldID: array[0..63] of integer;
+  OldLast: array[0..63] of cardinal;
+  OldCasts: array[0..63] of integer;
+
+  // which mobs go first: NPC ID -> 1 first, 2 high, 3 normal (not listed), 4 low, 9 never
+  MpN: integer;
+  MpID, MpPrio: array[0..127] of integer;
+
+  // supplies: below the minimum -> bought up to the maximum (on every rebuff)
+  SuN: integer;
+  SuID, SuMin, SuMax: array[0..15] of integer;
+
+  // ---------- the run ----------
+  RunOn: boolean;                          // farming (false = paused)
+  SeenRunId: string;
+  RunStartAt: cardinal;
+  RunStartTxt: string;
+  Kills: integer;
+  Phase, What: string;                     // for the page: paused / farm / rebuff / dead / map; what we do now
+  HomeX, HomeY, HomeZ: integer;            // where the run started (no map: the farm circle round it)
+  WasDead: boolean;
+  OffMapSince: cardinal;
+  ProfileLoaded: string;
+
+  // ---------- the map ----------
+  MapOk, MapWanted, MapTried: boolean;
+  MapFile, MapVer, MapMsg: string;
+  SpotN, SpotIdx: integer;
+  SpotX, SpotY, SpotZ: array[0..63] of integer;
+  HasSafe: boolean;
+  SafeX, SafeY, SafeZ: integer;
+
+  // ---------- the fight ----------
+  CurTarget, FightOID: integer;
+  FightHit: boolean;                       // we cast at FightOID: its death is a kill
+  LastSetTarget: cardinal;
+  Pend, PendOID: integer;                  // a sent skill (not a repeat one) we wait to start
+  PendAt, PendResent: cardinal;
+  WantRange: integer;                      // PickRule: a rule wants us this close (0 = none)
+  LastRule: integer;
+  LastRuleAt: cardinal;
+  DebR, DebOID: array[0..127] of integer;  // rule r went at the mob OID then (Same mob again after)
+  DebAt: array[0..127] of cardinal;
+  DebHead: integer;
+  UnrOID: array[0..15] of integer;
+  UnrAt: array[0..15] of cardinal;
+  UnrHead: integer;
+  ApprOID: integer;
+  ApprStart, ApprLimit: cardinal;
+  WayOID: array[0..15] of integer;          // the run length along the map to a far mob (NavPathLen), kept a while
+  WayLen: array[0..15] of double;
+  WayAt: array[0..15] of cardinal;
+  WayHead: integer;
+  FcI: array[0..2] of integer;              // ChooseTarget: the 3 best far mobs (by class, then straight distance)
+  FcS: array[0..2] of double;
+  FcN: integer;
+  // human: the stop distance / the reach share drawn for the target; a new target is taken from PickAt on
+  HumStop, HumPct: integer;
+  PickAt: cardinal;
+  SeenOID: array[0..255] of integer;        // the mobs seen (the slot not seen longest is reused)
+  SeenLast: array[0..255] of cardinal;
+  SeenReady: boolean;                       // the first scan of a run: the mobs there are old ones
+  SeenScanAt: cardinal;
+  FreshOID: array[0..31] of integer;        // mobs that just showed up: not taken until FreshUntil
+  FreshUntil: array[0..31] of cardinal;
+  FreshHead: integer;
+  AfkOn: boolean;                           // an AFK break now (only the mobs on us are fought)
+  AfkNextAt, AfkUntil, AfkSitAt, AfkWakeUntil, StandAt: cardinal;
+  RebuffLeftNow, LowHoldMs: integer;        // the rebuff moment / its hold drawn for this cycle (s / ms)
+  RuLateAt: array[0..63] of cardinal;       // a self buff rule wanted again: not before this (0 = not drawn yet)
+  MapTeleport: string;                      // the map's "K teleport" line
+  DeadSince, VillageAt, ReturnAfter: cardinal;
+  RailAgainAt: cardinal;                    // a rail walk done / given up: not started again before this
+  StartBuff: boolean;                       // a start / up again: the watched buff missing -> the buffer first
+  LastActAt, IdleSince: cardinal;           // a skill / an attack went then; standing with a job to do since (0 = not)
+  VisOID: array[0..63] of integer;          // MobVisible: the answers kept VIS_MS
+  VisAt: array[0..63] of cardinal;
+  VisRes: array[0..63] of boolean;
+  VisHead: integer;
+  ShootOID, ShootX, ShootY: integer;
+  ShootAt: cardinal;
+  ShootOk: boolean;
+  CantSeeFlag: boolean;
+  CantSeeOID, CantSeeDist: integer;
+  CantSeeAt, LastSysOID: cardinal;
+
+  // ---------- roam (no target) ----------
+  RoamOn: boolean;
+  RoamX, RoamY, RoamZ: integer;
+  RoamStart, RoamWaitUntil: cardinal;
+
+  // ---------- rebuff ----------
+  LowOn: boolean;
+  LowSince: cardinal;
+
+  // ---------- PvP answer ----------
+  PvpOID: integer;
+  PvpAt, PvpLast, PvpScanAt: cardinal;
+  PvpSeenOID, PvpSeenAtk: array of integer;
+  PvpSeenTime: array of cardinal;
+
+  // ---------- weapon (anti-disarm) ----------
+  WeaponID: integer;
+  LastWeaponCheck: cardinal;
+
+  // ---------- alerts ----------
+  SeenChamps, SeenPlayers: array of integer;
+  LastChampionCheck, LastPlayerCheck: cardinal;
+  AlertSeq: integer;
+  AlertTxt: string;
+
+  // ---------- our log for the page ----------
+  LgT, LgS: array[0..39] of string;
+  LgHead, LgCnt: integer;
+
+  // ---------- the mob kinds round us (KindsJson) ----------
+  KId, KCnt, KNear, KOn: array[0..47] of integer;
+  KName: array[0..47] of string;
+
+// ===================== small helpers =====================
+
+function HexLE32(V: integer): string;
+begin
+  result := IntToHex(V and $FF, 2) + IntToHex((V shr 8) and $FF, 2) +
+            IntToHex((V shr 16) and $FF, 2) + IntToHex((V shr 24) and $FF, 2);
+end;
+
+// the character name -> a file name (letters, digits, _ and - only)
+function FileTag(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if ((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or
+       (C = '_') or (C = '-') then result := result + C
+    else result := result + '_';
+  end;
+  if result = '' then result := 'char';
+end;
+
+// the whole file, shared with a writer (the panel); false = not there / not read now
+function ReadText(Path: string; L: TStringList): boolean;
+var FS: TFileStream;
+begin
+  result := false;
+  L.Clear;
+  if not FileExists(Path) then exit;
+  try
+    FS := TFileStream.Create(Path, fmOpenRead or fmShareDenyNone);
+    try
+      L.LoadFromStream(FS);
+      result := true;
+    finally
+      FS.Free;
+    end;
+  except
+    result := false;
+  end;
+end;
+
+// the file, shared with readers (the panel reads it all the time)
+function WriteText(Path: string; L: TStringList): boolean;
+var FS: TFileStream;
+begin
+  result := true;
+  try
+    FS := TFileStream.Create(Path, fmCreate or fmShareDenyNone);
+    try
+      L.SaveToStream(FS);
+    finally
+      FS.Free;
+    end;
+  except
+    result := false;
+  end;
+end;
+
+// a JSON string with its quotes
+function JStr(S: string): string;
+var i, c: integer;
+  Ch: string;
+begin
+  result := '"';
+  for i := 1 to Length(S) do begin
+    Ch := Copy(S, i, 1);
+    c := Ord(S[i]);
+    if Ch = '"' then result := result + '\"'
+    else if Ch = '\' then result := result + '\\'
+    else if c < 32 then result := result + ' '
+    else result := result + Ch;
+  end;
+  result := result + '"';
+end;
+
+function JBool(B: boolean): string;
+begin
+  if B then result := 'true' else result := 'false';
+end;
+
+// field N (from 0) of S cut by the one-char Sep
+function Fld(S: string; N: integer; Sep: string): string;
+var i, k, p: integer;
+begin
+  result := '';
+  k := 0;
+  p := 1;
+  for i := 1 to Length(S) do
+    if Copy(S, i, 1) = Sep then begin
+      if k = N then begin
+        result := Copy(S, p, i - p);
+        exit;
+      end;
+      Inc(k);
+      p := i + 1;
+    end;
+  if k = N then result := Copy(S, p, Length(S) - p + 1);
+end;
+
+function FInt(S: string; N: integer; Sep: string; Def: integer): integer;
+begin
+  result := StrToIntDef(Trim(Fld(S, N, Sep)), Def);
+end;
+
+function PipesToCommas(S: string): string;
+var i: integer;
+  C: string;
+begin
+  result := '';
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if C = '|' then result := result + ',' else result := result + C;
+  end;
+end;
+
+function Clamp(V, Lo, Hi: integer): integer;
+begin
+  result := V;
+  if result < Lo then result := Lo;
+  if result > Hi then result := Hi;
+end;
+
+// a random whole number from A to B
+function RandIn(A, B: integer): integer;
+begin
+  result := A;
+  if B > A then result := A + Random(B - A + 1);
+end;
+
+procedure DsSet(k, A, B: integer);
+begin
+  DsMin[k] := A;
+  DsMax[k] := B;
+  DsNorm[k] := false;
+  DsMean[k] := (A + B) div 2;
+  DsSig[k] := (B - A) div 4;
+  if DsSig[k] < 1 then DsSig[k] := 1;
+end;
+
+// a human distribution "min max" (uniform) or "min max n mean sigma" (normal, cut to min..max). One number alone (the
+// older single settings): the min (OneIsMax false, the max DefMax) or the max (the min Lo)
+procedure ParseDist(k: integer; V: string; DefMin, DefMax, Lo, Hi: integer; OneIsMax: boolean);
+var A, B: integer;
+begin
+  V := Trim(V);
+  if Pos(' ', V) = 0 then begin
+    if OneIsMax then begin
+      A := Lo;
+      B := StrToIntDef(V, DefMax);
+    end else begin
+      A := StrToIntDef(V, DefMin);
+      B := DefMax;
+    end;
+  end else begin
+    A := FInt(V, 0, ' ', DefMin);
+    B := FInt(V, 1, ' ', DefMax);
+  end;
+  A := Clamp(A, Lo, Hi);
+  B := Clamp(B, A, Hi);
+  DsMin[k] := A;
+  DsMax[k] := B;
+  DsNorm[k] := LowerCase(Trim(Fld(V, 2, ' '))) = 'n';
+  DsMean[k] := Clamp(FInt(V, 3, ' ', (A + B) div 2), A, B);
+  DsSig[k] := Clamp(FInt(V, 4, ' ', (B - A) div 4), 1, Hi);
+end;
+
+// min..max turned round Pivot (an older setting kept the other way round)
+procedure DsFlip(k, Pivot: integer);
+var A: integer;
+begin
+  A := DsMin[k];
+  DsMin[k] := Pivot - DsMax[k];
+  DsMax[k] := Pivot - A;
+  DsMean[k] := Pivot - DsMean[k];
+end;
+
+// a random value of the distribution k: uniform on min..max, or normal (mean, sigma) cut to it (12 uniforms - no Ln)
+function DrawDist(k: integer): integer;
+var i, Tries: integer;
+  Z, X: double;
+begin
+  result := RandIn(DsMin[k], DsMax[k]);
+  if (not DsNorm[k]) or (DsMax[k] <= DsMin[k]) then exit;
+  for Tries := 1 to 20 do begin
+    Z := -6.0;
+    for i := 1 to 12 do Z := Z + Random(1000000) / 1000000.0;
+    X := DsMean[k] + Z * DsSig[k];
+    if (X >= DsMin[k]) and (X <= DsMax[k]) then begin
+      result := Round(X);
+      exit;
+    end;
+  end;
+end;
+
+// the rebuff moment of this cycle: with a human somewhere between the time left set and h_rebuff % less (never
+// more), the hold 50..150 % of the one set; drawn again after every rebuff and with new settings
+procedure RebuffDraw();
+begin
+  RebuffLeftNow := CfRebuffLeft;
+  LowHoldMs := CfRebuffHold * 1000;
+  if CfHuman and (CfHRebuff > 0) then begin
+    RebuffLeftNow := CfRebuffLeft * (100 - DrawDist(DS_REBUFF)) div 100;
+    if RebuffLeftNow < 60 then RebuffLeftNow := 60;
+    if RebuffLeftNow > CfRebuffLeft then RebuffLeftNow := CfRebuffLeft;
+    LowHoldMs := CfRebuffHold * RandIn(50, 150) * 10;
+  end;
+end;
+
+// the loop pause: the spam time, with a human a random bit more (no clockwork presses)
+function LoopMs(): integer;
+begin
+  result := CfSpamMs;
+  if CfHuman and (CfHPress > 0) then result := result + DrawDist(DS_PRESS);
+end;
+
+// our line: the bot window, the page's log (the last LOG_KEEP), the debug log
+procedure Say(Tg, Text: string; Color: integer);
+begin
+  Engine.Msg(Tg, Text, Color);
+  LgT[LgHead] := FormatDateTime('hh:nn:ss', Now);
+  LgS[LgHead] := Tg + ' ' + Text;
+  LgHead := (LgHead + 1) mod LOG_KEEP;
+  if LgCnt < LOG_KEEP then Inc(LgCnt);
+  LogLine(Tg, Text);
+end;
+
+// the debug log only (Settings > Debug log on the page)
+procedure Dbg(Tg, Text: string);
+begin
+  if LogOn() then LogLine(Tg, Text);
+end;
+
+// a red line, a sound from Library\Sounds, the game window blinks; the panel pops a balloon (AlertSeq)
+procedure Alert(Tg, Text, Sound: string);
+begin
+  Say(Tg, Text, 255);
+  if (Sound <> '') and FileExists(Script.Path + SOUND_DIR + Sound) then PlaySound(Script.Path + SOUND_DIR + Sound);
+  Engine.BlinkWindow(true);
+  Inc(AlertSeq);
+  AlertTxt := Tg + ' ' + Text;
+end;
+
+// ===================== the settings =====================
+
+procedure AddErr(T: string);
+begin
+  if CfgErr <> '' then CfgErr := CfgErr + ',';
+  CfgErr := CfgErr + JStr(T);
+end;
+
+procedure SetDefaults();
+begin
+  CfRun := false;
+  CfRunId := '';
+  CfGrid := '';
+  CfGridVer := '';
+  CfProfile := '';
+  CfDeath := 'wait';
+  CfPick := 'hp';
+  CfSpamMs := 100;
+  CfTargetRange := 900;
+  CfAggroRange := 900;
+  CfHeight := 400;
+  CfRadius := 900;
+  CfChampHP := 100000;
+  CfWeapon := 0;
+  CfOnUsFirst := true;
+  CfSwitch := true;
+  CfMapHunt := true;
+  CfSeeFirst := true;
+  CfHuman := false;
+  CfHClicks := true;
+  CfHPieceMin := 350;
+  CfHPieceMax := 800;
+  CfHSide := 15;
+  CfHStopMin := 120;
+  CfHStopMax := 300;
+  CfHRange := 80;
+  CfHPress := 120;
+  CfHPickMin := 400;
+  CfHPickMax := 1200;
+  CfHSpawnMin := 2000;
+  CfHSpawnMax := 5000;
+  CfAfk := true;
+  CfAfkSit := true;
+  CfAfkEveryMin := 40;
+  CfAfkEveryMax := 80;
+  CfAfkForMin := 3;
+  CfAfkForMax := 10;
+  CfHMulti := 25;
+  CfHRebuff := 40;
+  CfHBufMin := 500;
+  CfHBufMax := 4000;
+  CfHForget := 10;
+  CfHForgetMin := 20;
+  CfHForgetMax := 120;
+  CfTeleport := '';
+  DsSet(DS_PIECE, 350, 800);
+  DsSet(DS_STOP, 120, 300);
+  DsSet(DS_RANGE, 100, 120);
+  DsSet(DS_PRESS, 0, 120);
+  DsSet(DS_PICK, 400, 1200);
+  DsSet(DS_SPAWN, 2000, 5000);
+  DsSet(DS_REBUFF, 0, 40);
+  DsSet(DS_SELFBUF, 500, 4000);
+  DsSet(DS_FORGET, 20, 120);
+  DsSet(DS_AFKEVERY, 40, 80);
+  DsSet(DS_AFKFOR, 3, 10);
+  CfSkipChamp := true;
+  CfRoam := true;
+  CfAutoAttack := true;
+  CfChampAlert := true;
+  CfPvp := false;
+  CfDebug := false;
+  CfRoamWaitMin := 3000;
+  CfRoamWaitMax := 5000;
+  CfPlayerAlert := 0;
+  CfPvpMin := 700;
+  CfPvpMax := 1500;
+  CfRebuffID := 0;
+  CfRebuffLeft := 600;
+  CfRebuffHold := 30;
+  CfRebuffBpN := 0;
+  CfNoAlert := ',';
+  RuN := 0;
+  MpN := 0;
+  SuN := 0;
+end;
+
+function CondCode(K: string): integer;
+begin
+  result := 0;
+  if K = 'mhp<' then result := CD_MHP_LT
+  else if K = 'mhp>' then result := CD_MHP_GT
+  else if K = 'mmp<' then result := CD_MMP_LT
+  else if K = 'mmp>' then result := CD_MMP_GT
+  else if K = 'mcp<' then result := CD_MCP_LT
+  else if K = 'thp<' then result := CD_THP_LT
+  else if K = 'thp>' then result := CD_THP_GT
+  else if K = 'tmax>' then result := CD_TMAX_GT
+  else if K = 'teff-' then result := CD_TEFF_NO
+  else if K = 'teff+' then result := CD_TEFF_ON
+  else if K = 'mbuf-' then result := CD_MBUF_NO
+  else if K = 'mbuf+' then result := CD_MBUF_ON
+  else if K = 'php<' then result := CD_PHP_LT
+  else if K = 'pet-' then result := CD_PET_NO
+  else if K = 'pet+' then result := CD_PET_ON
+  else if K = 'ton+' then result := CD_TON_YES
+  else if K = 'ton-' then result := CD_TON_NO
+  else if K = 'cmb+' then result := CD_CMB_YES
+  else if K = 'cmb-' then result := CD_CMB_NO;
+end;
+
+// one condition "kind:value" (value "ID/s" for mbuf-) into slot k
+procedure ParseCond(k: integer; S: string);
+var p: integer;
+  Kd, V: string;
+begin
+  RcK[k] := 0;
+  RcV1[k] := 0;
+  RcV2[k] := 0;
+  S := Trim(S);
+  if S = '' then exit;
+  p := Pos(':', S);
+  if p > 0 then begin
+    Kd := Copy(S, 1, p - 1);
+    V := Copy(S, p + 1, 999);
+  end else begin
+    Kd := S;
+    V := '';
+  end;
+  RcK[k] := CondCode(LowerCase(Trim(Kd)));
+  if RcK[k] = 0 then AddErr('unknown condition "' + Kd + '"');
+  p := Pos('/', V);
+  if p > 0 then begin
+    RcV1[k] := StrToIntDef(Trim(Copy(V, 1, p - 1)), 0);
+    RcV2[k] := StrToIntDef(Trim(Copy(V, p + 1, 99)), 0);
+  end else RcV1[k] := StrToIntDef(Trim(V), 0);
+end;
+
+// rule=on|type|id|target|dmin|dmax|move|reuse_ms|iffail|toggle|repeat|prio|around(0 off 1 me 2 target)|r|aggro|
+//      cmp(0 >= 1 <=)|n|same_mob_ms|mobs(0 all 1 only 2 except)|ids,..|cond1|cond2|cond3|cond4|name
+procedure ParseRule(S: string);
+var r, c, j: integer;
+  T: string;
+begin
+  if RuN >= MAX_RULES then begin
+    AddErr('more than ' + IntToStr(MAX_RULES) + ' rules: the rest are left out');
+    exit;
+  end;
+  r := RuN;
+  RuID[r] := FInt(S, 2, '|', 0);
+  if RuID[r] <= 0 then begin
+    AddErr('a rule with no ID: left out');
+    exit;
+  end;
+  RuOn[r] := Trim(Fld(S, 0, '|')) = '1';
+  T := UpperCase(Trim(Fld(S, 1, '|')));
+  if T = 'I' then RuType[r] := RT_ITEM
+  else if T = 'A' then RuType[r] := RT_ACTION
+  else RuType[r] := RT_SKILL;
+  T := LowerCase(Trim(Fld(S, 3, '|')));
+  if T = 'self' then RuTgt[r] := TG_SELF
+  else if T = 'pet' then RuTgt[r] := TG_PET
+  else if T = 'player' then RuTgt[r] := TG_PLAYER
+  else RuTgt[r] := TG_MOB;
+  RuDMin[r] := Clamp(FInt(S, 4, '|', 0), 0, 5000);
+  RuDMax[r] := Clamp(FInt(S, 5, '|', 0), 0, 5000);
+  RuMove[r] := Trim(Fld(S, 6, '|')) = '1';
+  RuReuse[r] := Clamp(FInt(S, 7, '|', 0), 0, 3600000);
+  RuIfFail[r] := Trim(Fld(S, 8, '|')) = '1';
+  RuToggle[r] := Trim(Fld(S, 9, '|')) = '1';
+  RuRepeat[r] := Trim(Fld(S, 10, '|')) = '1';
+  RuPrio[r] := FInt(S, 11, '|', 50);
+  RuArMode[r] := Clamp(FInt(S, 12, '|', 0), 0, 2);
+  RuArR[r] := Clamp(FInt(S, 13, '|', 150), 10, 5000);
+  RuArAggro[r] := Trim(Fld(S, 14, '|')) = '1';
+  RuArCmp[r] := Clamp(FInt(S, 15, '|', 0), 0, 1);
+  RuArN[r] := Clamp(FInt(S, 16, '|', 0), 0, 99);
+  RuMobReuse[r] := Clamp(FInt(S, 17, '|', 0), 0, 3600000);
+  RuMobMode[r] := Clamp(FInt(S, 18, '|', 0), 0, 2);
+  RuMobs[r] := ',' + Trim(Fld(S, 19, '|')) + ',';
+  for c := 0 to 3 do ParseCond(r * 4 + c, Fld(S, 20 + c, '|'));
+  RuName[r] := Trim(Fld(S, 24, '|'));
+  if RuName[r] = '' then RuName[r] := '#' + IntToStr(RuID[r]);
+  RuLast[r] := 0;
+  RuSent[r] := 0;
+  RuPrevL[r] := 0;
+  RuSentOID[r] := 0;
+  RuCasts[r] := 0;
+  for j := 0 to OldN - 1 do        // the same skill / item as before the reload: its last use is kept
+    if (OldType[j] = RuType[r]) and (OldID[j] = RuID[r]) then begin
+      RuLast[r] := OldLast[j];
+      RuCasts[r] := OldCasts[j];
+      break;
+    end;
+  Inc(RuN);
+end;
+
+// mob=npcid|prio|name
+procedure ParseMob(S: string);
+var ID: integer;
+begin
+  if MpN >= MAX_MOBP then exit;
+  ID := FInt(S, 0, '|', 0);
+  if ID <= 0 then exit;
+  MpID[MpN] := ID;
+  MpPrio[MpN] := Clamp(FInt(S, 1, '|', 3), 1, 9);
+  Inc(MpN);
+end;
+
+// supply=item|min|max
+procedure ParseSupply(S: string);
+var ID: integer;
+begin
+  if SuN >= MAX_SUP then exit;
+  ID := FInt(S, 0, '|', 0);
+  if ID <= 0 then exit;
+  SuID[SuN] := ID;
+  SuMin[SuN] := FInt(S, 1, '|', 0);
+  SuMax[SuN] := FInt(S, 2, '|', 0);
+  if SuMax[SuN] < SuMin[SuN] then SuMax[SuN] := SuMin[SuN];
+  Inc(SuN);
+end;
+
+// a map name the page may give: letters, digits, _ - . space, ending .navgrid (no folders)
+function GridNameOk(S: string): boolean;
+var i: integer;
+  C: string;
+begin
+  result := false;
+  if (Length(S) < 9) or (LowerCase(Copy(S, Length(S) - 7, 8)) <> '.navgrid') then exit;
+  for i := 1 to Length(S) do begin
+    C := Copy(S, i, 1);
+    if not (((C >= 'a') and (C <= 'z')) or ((C >= 'A') and (C <= 'Z')) or ((C >= '0') and (C <= '9')) or
+       (C = '_') or (C = '-') or (C = '.') or (C = ' ')) then exit;
+  end;
+  result := true;
+end;
+
+// the rules by priority (a smaller number first; the same number: the file order)
+procedure SortRules();
+var i, j, t: integer;
+begin
+  for i := 0 to RuN - 1 do RuOrd[i] := i;
+  for i := 1 to RuN - 1 do begin
+    t := RuOrd[i];
+    j := i - 1;
+    while j >= 0 do begin
+      if RuPrio[RuOrd[j]] <= RuPrio[t] then break;
+      RuOrd[j + 1] := RuOrd[j];
+      Dec(j);
+    end;
+    RuOrd[j + 1] := t;
+  end;
+  RuMobRules := 0;
+  for i := 0 to RuN - 1 do
+    if RuOn[i] and (RuTgt[i] = TG_MOB) then Inc(RuMobRules);
+end;
+
+procedure LoadCfg(L: TStringList);
+var i, p: integer;
+  S, K, V: string;
+begin
+  OldN := RuN;
+  for i := 0 to RuN - 1 do begin
+    OldType[i] := RuType[i];
+    OldID[i] := RuID[i];
+    OldLast[i] := RuLast[i];
+    OldCasts[i] := RuCasts[i];
+  end;
+  SetDefaults();
+  CfgErr := '';
+  for i := 0 to L.Count - 1 do begin
+    S := Trim(L[i]);
+    if (S = '') or (Copy(S, 1, 1) = '#') or (Copy(S, 1, 1) = ';') then continue;
+    p := Pos('=', S);
+    if p <= 1 then continue;
+    K := LowerCase(Trim(Copy(S, 1, p - 1)));
+    V := Trim(Copy(S, p + 1, Length(S)));
+    if K = 'rule' then ParseRule(V)
+    else if K = 'mob' then ParseMob(V)
+    else if K = 'supply' then ParseSupply(V)
+    else if K = 'run' then CfRun := V = '1'
+    else if K = 'run_id' then CfRunId := V
+    else if K = 'grid' then begin
+      if (V = '') or GridNameOk(V) then CfGrid := V
+      else AddErr('bad map name "' + V + '"');
+    end
+    else if K = 'grid_ver' then CfGridVer := V
+    else if K = 'spam_ms' then CfSpamMs := Clamp(StrToIntDef(V, 100), 30, 1000)
+    else if K = 'target_range' then CfTargetRange := Clamp(StrToIntDef(V, 900), 100, 5000)
+    else if K = 'aggro_range' then CfAggroRange := Clamp(StrToIntDef(V, 900), 100, 5000)
+    else if K = 'height' then CfHeight := Clamp(StrToIntDef(V, 400), 0, 10000)
+    else if K = 'radius' then CfRadius := Clamp(StrToIntDef(V, 900), 100, 10000)
+    else if K = 'pick' then CfPick := LowerCase(V)
+    else if K = 'onus_first' then CfOnUsFirst := V = '1'
+    else if K = 'switch' then CfSwitch := V = '1'
+    else if K = 'map_hunt' then CfMapHunt := V = '1'
+    else if K = 'see_first' then CfSeeFirst := V = '1'
+    else if K = 'human' then CfHuman := V = '1'
+    else if K = 'h_clicks' then CfHClicks := V = '1'
+    else if K = 'h_piece' then begin                   // "min max [n mean sigma]" units
+      ParseDist(DS_PIECE, V, 350, 800, 100, 3000, false);
+      CfHPieceMin := DsMin[DS_PIECE];
+      CfHPieceMax := DsMax[DS_PIECE];
+    end
+    else if K = 'h_side' then CfHSide := Clamp(StrToIntDef(V, 15), 0, 45)
+    else if K = 'h_stop' then begin                    // "min max [n mean sigma]" units
+      ParseDist(DS_STOP, V, 120, 300, 0, 1000, false);
+      CfHStopMin := DsMin[DS_STOP];
+      CfHStopMax := DsMax[DS_STOP];
+    end
+    else if K = 'h_closer' then begin                  // "min max [n mean sigma]" how far in, % of the reach
+      ParseDist(DS_RANGE, V, 100, 120, 80, 170, false);
+      CfHRange := DsMin[DS_RANGE];
+    end
+    else if K = 'h_range' then begin                   // the older "cast from % of the reach": 200 minus it
+      ParseDist(DS_RANGE, V, 80, 100, 30, 120, false);
+      DsFlip(DS_RANGE, 200);
+      CfHRange := DsMin[DS_RANGE];
+    end
+    else if K = 'h_press' then begin                   // "min max [n mean sigma]" ms (one number: the max)
+      ParseDist(DS_PRESS, V, 0, 120, 0, 1000, true);
+      CfHPress := DsMax[DS_PRESS];
+    end
+    else if K = 'h_pick' then begin                    // "min max [n mean sigma]" ms
+      ParseDist(DS_PICK, V, 400, 1200, 0, 10000, false);
+      CfHPickMin := DsMin[DS_PICK];
+      CfHPickMax := DsMax[DS_PICK];
+    end
+    else if K = 'h_spawn' then begin                   // "min max [n mean sigma]" ms
+      ParseDist(DS_SPAWN, V, 2000, 5000, 0, 60000, false);
+      CfHSpawnMin := DsMin[DS_SPAWN];
+      CfHSpawnMax := DsMax[DS_SPAWN];
+    end
+    else if K = 'afk' then CfAfk := V = '1'
+    else if K = 'h_multi' then CfHMulti := Clamp(StrToIntDef(V, 25), 0, 100)
+    else if K = 'h_rebuff' then begin                  // "min max [n mean sigma]" % later (one number: the max)
+      ParseDist(DS_REBUFF, V, 0, 40, 0, 90, true);
+      CfHRebuff := DsMax[DS_REBUFF];
+    end
+    else if K = 'h_selfbuff' then begin                // "min max [n mean sigma]" ms
+      ParseDist(DS_SELFBUF, V, 500, 4000, 0, 60000, false);
+      CfHBufMin := DsMin[DS_SELFBUF];
+      CfHBufMax := DsMax[DS_SELFBUF];
+    end
+    else if K = 'h_forget' then CfHForget := Clamp(StrToIntDef(V, 10), 0, 100)
+    else if K = 'h_forget_s' then begin                // "min max [n mean sigma]" s
+      ParseDist(DS_FORGET, V, 20, 120, 1, 3600, false);
+      CfHForgetMin := DsMin[DS_FORGET];
+      CfHForgetMax := DsMax[DS_FORGET];
+    end
+    else if K = 'teleport' then CfTeleport := V
+    else if K = 'afk_sit' then CfAfkSit := V = '1'
+    else if K = 'afk_every' then begin                 // "min max [n mean sigma]" minutes of farming
+      ParseDist(DS_AFKEVERY, V, 40, 80, 1, 1440, false);
+      CfAfkEveryMin := DsMin[DS_AFKEVERY];
+      CfAfkEveryMax := DsMax[DS_AFKEVERY];
+    end
+    else if K = 'afk_for' then begin                   // "min max [n mean sigma]" minutes
+      ParseDist(DS_AFKFOR, V, 3, 10, 1, 600, false);
+      CfAfkForMin := DsMin[DS_AFKFOR];
+      CfAfkForMax := DsMax[DS_AFKFOR];
+    end
+    else if K = 'skip_champ' then CfSkipChamp := V = '1'
+    else if K = 'champ_hp' then CfChampHP := Clamp(StrToIntDef(V, 100000), 1000, 2000000000)
+    else if K = 'roam' then CfRoam := V = '1'
+    else if K = 'roam_wait' then begin                  // "min max" ms
+      CfRoamWaitMin := Clamp(FInt(V, 0, ' ', 3000), 0, 600000);
+      CfRoamWaitMax := Clamp(FInt(V, 1, ' ', 5000), CfRoamWaitMin, 600000);
+    end
+    else if K = 'auto_attack' then CfAutoAttack := V = '1'
+    else if K = 'rebuff_id' then CfRebuffID := Clamp(StrToIntDef(V, 0), 0, 99999)
+    else if K = 'rebuff_left' then CfRebuffLeft := Clamp(StrToIntDef(V, 600), 1, 36000)
+    else if K = 'rebuff_hold' then CfRebuffHold := Clamp(StrToIntDef(V, 30), 0, 3600)
+    else if K = 'rebuff_bypass' then begin
+      CfRebuffBpN := 0;
+      while (CfRebuffBpN < 16) and (Trim(Fld(V, CfRebuffBpN, '|')) <> '') do begin
+        CfRebuffBp[CfRebuffBpN] := Trim(Fld(V, CfRebuffBpN, '|'));
+        Inc(CfRebuffBpN);
+      end;
+    end
+    else if K = 'player_alert' then CfPlayerAlert := Clamp(StrToIntDef(V, 0), 0, 5000)
+    else if K = 'noalert' then CfNoAlert := ',' + LowerCase(PipesToCommas(V)) + ','
+    else if K = 'champ_alert' then CfChampAlert := V = '1'
+    else if K = 'pvp' then CfPvp := V = '1'
+    else if K = 'pvp_delay' then begin
+      CfPvpMin := Clamp(StrToIntDef(Fld(V, 0, ' '), 700), 0, 10000);
+      CfPvpMax := Clamp(StrToIntDef(Fld(V, 1, ' '), 1500), CfPvpMin, 20000);
+    end
+    else if K = 'profile' then CfProfile := V
+    else if K = 'weapon' then CfWeapon := StrToIntDef(V, 0)
+    else if K = 'death' then CfDeath := LowerCase(V)
+    else if K = 'debug' then CfDebug := V = '1';
+  end;
+  SortRules();
+end;
+
+// ===================== the game: small reads =====================
+
+function NpcIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  for i := 0 to NpcList.Count - 1 do
+    if NpcList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+function CharIdx(OID: integer): integer;
+var i: integer;
+begin
+  result := -1;
+  if OID = 0 then exit;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then
+    if CharList(i).OID = OID then begin
+      result := i;
+      exit;
+    end;
+end;
+
+// reuse left of our skill (ms), 0 = ready / unknown
+function SkillLeft(ID: integer): cardinal;
+var i, SID: integer;
+begin
+  result := 0;
+  for i := 0 to SkillList.Count - 1 do begin
+    SID := SkillList(i).ID;
+    if SID = ID then begin
+      result := SkillList(i).EndTime;
+      exit;
+    end;
+  end;
+end;
+
+function HasSkill(ID: integer): boolean;
+var Sk: TL2Skill;
+begin
+  result := SkillList.ByID(ID, Sk);
+end;
+
+function BuffTime(ID: integer): cardinal;
+var i: integer;
+begin
+  result := 0;
+  for i := 0 to User.Buffs.Count - 1 do
+    if User.Buffs.Items(i).ID = ID then begin
+      result := User.Buffs.Items(i).EndTime;
+      exit;
+    end;
+end;
+
+function BuffOn(ID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to User.Buffs.Count - 1 do
+    if User.Buffs.Items(i).ID = ID then begin
+      result := true;
+      exit;
+    end;
+end;
+
+function ItemCount(ItemID: integer): Int64;
+var i, ID: integer;
+  Cnt: Int64;
+begin
+  result := 0;
+  for i := 0 to Inventory.User.Count - 1 do begin
+    ID := Inventory.User.Items(i).ID;
+    if ID = ItemID then begin
+      Cnt := Inventory.User.Items(i).Count;
+      result := result + Cnt;
+    end;
+  end;
+end;
+
+function HaveSummon(): boolean;
+begin
+  result := (PetList.Count > 0) and (not PetList(0).Dead);
+end;
+
+function PetHpPct(): integer;
+begin
+  result := 0;
+  if PetList.Count > 0 then result := PetList(0).HP;
+end;
+
+function IsOurPet(OID: integer): boolean;
+var j, P: integer;
+begin
+  result := false;
+  for j := 0 to PetList.Count - 1 do begin
+    P := PetList(j).OID;
+    if P = OID then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// our summons, other players' pets, chests...: never targets
+function IgnoredNpc(i: integer): boolean;
+var OID: integer;
+  N: string;
+begin
+  result := true;
+  OID := NpcList(i).OID;
+  if IsOurPet(OID) then exit;
+  if NpcList(i).IsPet then exit;
+  N := LowerCase(NpcList(i).Name);
+  if Pos(',' + N + ',', IGNORE_NAMES) > 0 then exit;
+  result := false;
+end;
+
+function HeightOk(Z: integer): boolean;
+begin
+  result := (CfHeight <= 0) or (Abs(Z - User.Z) <= CfHeight);
+end;
+
+// the farm area: the map's walkable / sight cells; no map: the circle of CfRadius round where the run started
+function OnArea(X, Y, Z: integer): boolean;
+var DX, DY: double;
+begin
+  if MapOk then result := NavGridFree(X, Y)
+  else begin
+    DX := X - HomeX;
+    DY := Y - HomeY;
+    result := Sqrt(DX * DX + DY * DY) <= CfRadius;
+  end;
+end;
+
+// the mob hits us / the summon, or holds one of us as its target
+function MobOnUs(i: integer): boolean;
+var Atk, Tgt, PetOID: integer;
+  T: TL2Live;
+begin
+  result := false;
+  Atk := NpcList(i).AtkOID;
+  Tgt := 0;
+  T := NpcList(i).Target;
+  if T <> nil then Tgt := T.OID;
+  if (Atk = User.OID) or (Tgt = User.OID) then begin
+    result := true;
+    exit;
+  end;
+  if HaveSummon() then begin
+    PetOID := PetList(0).OID;
+    result := (Atk = PetOID) or (Tgt = PetOID);
+  end;
+end;
+
+// where the target is: a mob, else a player
+function TgtPos(OID: integer; var X, Y, Z: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  i := NpcIdx(OID);
+  if i >= 0 then begin
+    X := NpcList(i).X;
+    Y := NpcList(i).Y;
+    Z := NpcList(i).Z;
+    result := true;
+    exit;
+  end;
+  i := CharIdx(OID);
+  if i >= 0 then begin
+    X := CharList(i).X;
+    Y := CharList(i).Y;
+    Z := CharList(i).Z;
+    result := true;
+  end;
+end;
+
+function TgtDist(OID: integer): integer;
+var X, Y, Z: integer;
+begin
+  result := MaxInt;
+  if TgtPos(OID, X, Y, Z) then result := Round(User.DistTo(X, Y, Z));
+end;
+
+function TgtHp(OID: integer): integer;
+var i: integer;
+begin
+  result := 0;
+  i := NpcIdx(OID);
+  if i >= 0 then begin
+    result := NpcList(i).HP;
+    exit;
+  end;
+  i := CharIdx(OID);
+  if i >= 0 then result := CharList(i).HP;
+end;
+
+function TgtMaxHp(OID: integer): integer;
+var i: integer;
+begin
+  result := 0;
+  i := NpcIdx(OID);
+  if i >= 0 then result := NpcList(i).MaxHP;
+end;
+
+function TgtNpcId(OID: integer): integer;
+var i: integer;
+begin
+  result := 0;
+  i := NpcIdx(OID);
+  if i >= 0 then result := NpcList(i).ID;
+end;
+
+function TgtName(OID: integer): string;
+var i: integer;
+begin
+  result := '';
+  i := NpcIdx(OID);
+  if i >= 0 then begin
+    result := NpcList(i).Name;
+    exit;
+  end;
+  i := CharIdx(OID);
+  if i >= 0 then result := CharList(i).Name;
+end;
+
+function TgtOnUs(OID: integer): boolean;
+var i, Atk, Tgt: integer;
+  T: TL2Live;
+begin
+  result := false;
+  i := NpcIdx(OID);
+  if i >= 0 then begin
+    result := MobOnUs(i);
+    exit;
+  end;
+  i := CharIdx(OID);
+  if i < 0 then exit;
+  Atk := CharList(i).AtkOID;
+  Tgt := 0;
+  T := CharList(i).Target;
+  if T <> nil then Tgt := T.OID;
+  result := (Atk = User.OID) or (Tgt = User.OID);
+end;
+
+// the effect is on the target: its ID, or the name of our skill with that ID (the server may show another ID)
+function TgtHasEff(OID, ID: integer): boolean;
+var i, j, BID: integer;
+  Sk: TL2Skill;
+  SkName, BName: string;
+begin
+  result := false;
+  SkName := '';
+  if SkillList.ByID(ID, Sk) then SkName := UpperCase(Sk.Name);
+  i := NpcIdx(OID);
+  try
+    if i >= 0 then begin
+      for j := 0 to NpcList(i).Buffs.Count - 1 do begin
+        BID := NpcList(i).Buffs.Items(j).ID;
+        if BID = ID then begin
+          result := true;
+          exit;
+        end;
+        if SkName <> '' then begin
+          BName := UpperCase(NpcList(i).Buffs.Items(j).Name);
+          if BName = SkName then begin
+            result := true;
+            exit;
+          end;
+        end;
+      end;
+      exit;
+    end;
+    i := CharIdx(OID);
+    if i >= 0 then
+      for j := 0 to CharList(i).Buffs.Count - 1 do begin
+        BID := CharList(i).Buffs.Items(j).ID;
+        if BID = ID then begin
+          result := true;
+          exit;
+        end;
+      end;
+  except
+    result := false;
+  end;
+end;
+
+// every move: the packet of a mouse click (the server finds the path round the walls)
+procedure MoveServer(X, Y, Z: integer);
+var UX, UY, UZ: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  Engine.SendToServer('0F' + HexLE32(X) + HexLE32(Y) + HexLE32(Z) +
+    HexLE32(UX) + HexLE32(UY) + HexLE32(UZ) + HexLE32(1));
+end;
+
+// a click on where we stand: the run stops
+procedure StopMoving();
+var UX, UY, UZ: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  MoveServer(UX, UY, UZ);
+end;
+
+// RequestActionUse: a summon / pet / social action
+procedure UseActionPkt(ActionID: integer);
+begin
+  Engine.SendToServer('56' + HexLE32(ActionID) + '00000000' + '00');
+end;
+
+procedure RefreshInventory();
+begin
+  Engine.SendToServer(INVENTORY_PACKET);
+  Delay(INVENTORY_WAIT);
+end;
+
+// ===================== memory of the fight =====================
+
+function DebAge(r, OID: integer): cardinal;
+var i: integer;
+begin
+  result := $7FFFFFFF;
+  for i := 0 to 127 do
+    if (DebR[i] = r) and (DebOID[i] = OID) and (DebAt[i] > 0) then
+      if GetTickCount - DebAt[i] < result then result := GetTickCount - DebAt[i];
+end;
+
+procedure MarkDeb(r, OID: integer);
+begin
+  DebR[DebHead] := r;
+  DebOID[DebHead] := OID;
+  DebAt[DebHead] := GetTickCount;
+  DebHead := (DebHead + 1) mod 128;
+end;
+
+function IsUnreach(OID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to 15 do
+    if (UnrOID[i] = OID) and (UnrAt[i] > 0) and (GetTickCount - UnrAt[i] < UNREACH_MS) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+procedure MarkUnreach(OID: integer);
+begin
+  UnrOID[UnrHead] := OID;
+  UnrAt[UnrHead] := GetTickCount;
+  UnrHead := (UnrHead + 1) mod 16;
+end;
+
+// "Can't see target.": the system message event (OnAction), or a new line of the system chat
+function CantSeeTarget(): boolean;
+var i: integer;
+  M: TChatMessage;
+  T: string;
+begin
+  result := CantSeeFlag;
+  CantSeeFlag := false;
+  try
+    for i := 0 to History.Count(mtSystem) - 1 do begin
+      M := History.GetMessage(i, mtSystem);
+      if M.OID <= LastSysOID then continue;
+      LastSysOID := M.OID;
+      T := LowerCase(M.Text);
+      if Pos('see target', T) > 0 then result := true;
+    end;
+  except
+  end;
+end;
+
+procedure InitSysMessages();
+var i: integer;
+  M: TChatMessage;
+begin
+  LastSysOID := 0;
+  try
+    for i := 0 to History.Count(mtSystem) - 1 do begin
+      M := History.GetMessage(i, mtSystem);
+      if M.OID > LastSysOID then LastSysOID := M.OID;
+    end;
+  except
+  end;
+end;
+
+// ===================== weapon (anti-disarm) and the bot profile =====================
+
+function IsEquipped(ItemID: integer): boolean;
+var i, ID: integer;
+begin
+  result := false;
+  for i := 0 to Inventory.User.Count - 1 do begin
+    ID := Inventory.User.Items(i).ID;
+    if (ID = ItemID) and Inventory.User.Items(i).Equipped then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+procedure EquipWeapon(ItemID: integer);
+var Tries: integer;
+begin
+  Tries := 0;
+  while (Tries < EQUIP_TRIES) and (not User.Dead) do begin
+    RefreshInventory();
+    if IsEquipped(ItemID) then exit;
+    Inc(Tries);
+    Say('[Weapon]', 'Weapon ' + IntToStr(ItemID) + ' is not on (disarm?), equipping', 128);
+    Engine.UseItem(ItemID);
+    Delay(1000);
+    if IsEquipped(ItemID) then exit;
+  end;
+end;
+
+// the weapon in hands now (right hand / both hands)
+procedure RememberWeapon();
+var i, Part: integer;
+begin
+  WeaponID := 0;
+  for i := 0 to Inventory.User.Count - 1 do begin
+    if not Inventory.User.Items(i).Equipped then continue;
+    Part := Inventory.User.Items(i).BodyPart;
+    if (Part = WEAPON_SLOT_RHAND) or (Part = WEAPON_SLOT_LRHAND) then begin
+      WeaponID := Inventory.User.Items(i).ID;
+      Say('[Weapon]', 'Remembered weapon: ' + Inventory.User.Items(i).Name, 0);
+      exit;
+    end;
+  end;
+  Say('[Weapon]', 'No weapon in hands - anti-disarm is off', 0);
+end;
+
+procedure CheckWeapon();
+begin
+  if WeaponID <= 0 then exit;
+  if GetTickCount - LastWeaponCheck < WEAPON_POLL_MS then exit;
+  LastWeaponCheck := GetTickCount;
+  if not IsEquipped(WeaponID) then EquipWeapon(WeaponID);
+end;
+
+// the bot profile (.xml of Library\Configurations): its alarms / pickup / potions work, the interface on.
+// No profile: the interface off. Its fight must be off - the script fights
+procedure ApplyProfile();
+begin
+  if CfProfile = ProfileLoaded then exit;
+  ProfileLoaded := CfProfile;
+  if (CfProfile <> '') and FileExists(Script.Path + CONFIG_DIR + CfProfile) then begin
+    Say('[PvE]', 'Bot profile ' + CfProfile + ' loaded, the interface on', 0);
+    Engine.LoadConfig(Script.Path + CONFIG_DIR + CfProfile);
+    Delay(500);
+    Engine.FaceControl(0, true);
+  end else begin
+    if CfProfile <> '' then Say('[PvE]', 'No bot profile ' + CfProfile + ' in Library\Configurations', 255);
+    Engine.FaceControl(0, false);
+  end;
+end;
+
+// ===================== alerts =====================
+
+// a champion appeared in the farm area: once per mob
+procedure ChampionTick();
+var i, j, n, OID, MaxHP, NX, NY, NZ: integer;
+  Known: boolean;
+  Cur: array of integer;
+begin
+  if not CfChampAlert then exit;
+  if GetTickCount - LastChampionCheck < 1000 then exit;
+  LastChampionCheck := GetTickCount;
+  SetLength(Cur, 0);
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if NpcList(i).Dead or IgnoredNpc(i) then continue;
+    MaxHP := NpcList(i).MaxHP;
+    if MaxHP <= CfChampHP then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    if not OnArea(NX, NY, NZ) then continue;
+    OID := NpcList(i).OID;
+    n := Length(Cur);
+    SetLength(Cur, n + 1);
+    Cur[n] := OID;
+    Known := false;
+    for j := 0 to Length(SeenChamps) - 1 do
+      if SeenChamps[j] = OID then begin
+        Known := true;
+        break;
+      end;
+    if not Known then
+      Alert('[Champion]', NpcList(i).Name + ' (' + IntToStr(MaxHP) + ' HP) is in the farm area', CHAMPION_SOUND);
+  end;
+  SetLength(SeenChamps, Length(Cur));
+  for i := 0 to Length(Cur) - 1 do SeenChamps[i] := Cur[i];
+end;
+
+// a player (not in the no-alert list) came this close: once per player while he stays
+procedure PlayerTick();
+var i, j, n, OID, PX, PY, PZ, Dist: integer;
+  Known: boolean;
+  Nm: string;
+  Cur: array of integer;
+begin
+  if CfPlayerAlert <= 0 then exit;
+  if GetTickCount - LastPlayerCheck < 500 then exit;
+  LastPlayerCheck := GetTickCount;
+  SetLength(Cur, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    OID := CharList(i).OID;
+    if OID = User.OID then continue;
+    if CharList(i).IsMember then continue;
+    PX := CharList(i).X;
+    PY := CharList(i).Y;
+    PZ := CharList(i).Z;
+    Dist := Round(User.DistTo(PX, PY, PZ));
+    if Dist > CfPlayerAlert then continue;
+    Nm := LowerCase(CharList(i).Name);
+    if Pos(',' + Nm + ',', CfNoAlert) > 0 then continue;
+    n := Length(Cur);
+    SetLength(Cur, n + 1);
+    Cur[n] := OID;
+    Known := false;
+    for j := 0 to Length(SeenPlayers) - 1 do
+      if SeenPlayers[j] = OID then begin
+        Known := true;
+        break;
+      end;
+    if not Known then Alert('[Player]', CharList(i).Name + ' is close (' + IntToStr(Dist) + ')', '');
+  end;
+  SetLength(SeenPlayers, Length(Cur));
+  for i := 0 to Length(Cur) - 1 do SeenPlayers[i] := Cur[i];
+end;
+
+// ===================== for the panel: the live file and our state =====================
+
+// Nav\<char>.navlive (the map page draws it): N nick | U x y z hp dead | S state | C x y ms (the last click) |
+// G x y ms (the goal) | R x y ... (its route) | A target | P x y (the roam point) | H x y (the spot to cast from) |
+// M oid x y on-us in-sight name | Y oid x y name | END
+procedure LiveTick();
+var L: TStringList;
+  i, UX, UY, UZ, NX, NY, NZ, Vis: integer;
+  D: double;
+  S: string;
+begin
+  UX := User.X;
+  UY := User.Y;
+  UZ := User.Z;
+  L := TStringList.Create;
+  L.Add('NAVLIVE 1');
+  L.Add('N ' + User.Name);
+  S := '0';
+  if User.Dead then S := '1';
+  L.Add('U ' + IntToStr(UX) + ' ' + IntToStr(UY) + ' ' + IntToStr(UZ) + ' ' + IntToStr(User.HP) + ' ' + S);
+  L.Add('S ' + Phase + ': ' + What);
+  if NavLastClickAt() <> 0 then
+    L.Add('C ' + IntToStr(NavLastClickX()) + ' ' + IntToStr(NavLastClickY()) + ' ' + IntToStr(GetTickCount - NavLastClickAt()));
+  if NavLastGoalAt() <> 0 then begin
+    L.Add('G ' + IntToStr(NavLastGoalX()) + ' ' + IntToStr(NavLastGoalY()) + ' ' + IntToStr(GetTickCount - NavLastGoalAt()));
+    S := NavLastRoute();
+    if S <> '' then L.Add('R ' + S);
+  end;
+  L.Add('A ' + IntToStr(CurTarget));
+  if RoamOn then L.Add('P ' + IntToStr(RoamX) + ' ' + IntToStr(RoamY));
+  if ShootOk and (ShootOID <> 0) and (ShootOID = ApprOID) then L.Add('H ' + IntToStr(ShootX) + ' ' + IntToStr(ShootY));
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if NpcList(i).Dead then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    D := Sqrt(1.0 * (NX - UX) * (NX - UX) + 1.0 * (NY - UY) * (NY - UY));
+    if D > LIVE_RANGE then continue;
+    if not HeightOk(NZ) then continue;
+    Vis := 1;
+    if MapOk then Vis := Ord(NavSee(UX, UY, NX, NY));
+    L.Add('M ' + IntToStr(NpcList(i).OID) + ' ' + IntToStr(NX) + ' ' + IntToStr(NY) + ' ' + IntToStr(Ord(MobOnUs(i))) + ' ' +
+      IntToStr(Vis) + ' ' + NpcList(i).Name);
+  end;
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    if CharList(i).OID = User.OID then continue;
+    NX := CharList(i).X;
+    NY := CharList(i).Y;
+    D := Sqrt(1.0 * (NX - UX) * (NX - UX) + 1.0 * (NY - UY) * (NY - UY));
+    if D > LIVE_RANGE then continue;
+    L.Add('Y ' + IntToStr(CharList(i).OID) + ' ' + IntToStr(NX) + ' ' + IntToStr(NY) + ' ' + CharList(i).Name);
+  end;
+  L.Add('END');
+  WriteText(LivePath, L);
+  L.Free;
+end;
+
+// the mob kinds round us: NPC ID, name, how many, the nearest, how many on us (the page's priority list)
+function KindsJson(): string;
+var i, j, k, n, ID, NX, NY, NZ, D: integer;
+begin
+  n := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if NpcList(i).Dead or IgnoredNpc(i) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    NZ := NpcList(i).Z;
+    D := Round(User.DistTo(NX, NY, NZ));
+    if D > MOBS_RANGE then continue;
+    ID := NpcList(i).ID;
+    j := n;
+    for k := 0 to n - 1 do
+      if KId[k] = ID then begin
+        j := k;
+        break;
+      end;
+    if j = n then begin
+      if n >= MAX_KINDS then continue;
+      KId[n] := ID;
+      KName[n] := NpcList(i).Name;
+      KCnt[n] := 0;
+      KNear[n] := D;
+      KOn[n] := 0;
+      Inc(n);
+    end;
+    Inc(KCnt[j]);
+    if D < KNear[j] then KNear[j] := D;
+    if MobOnUs(i) then Inc(KOn[j]);
+  end;
+  result := '[';
+  for j := 0 to n - 1 do begin
+    if j > 0 then result := result + ',';
+    result := result + '[' + IntToStr(KId[j]) + ',' + JStr(KName[j]) + ',' + IntToStr(KCnt[j]) + ',' + IntToStr(KNear[j]) + ',' +
+      IntToStr(KOn[j]) + ']';
+  end;
+  result := result + ']';
+end;
+
+function SkillsJson(): string;
+var i, ID, Lv: integer;
+  Left: cardinal;
+  P: string;
+begin
+  result := '[';
+  for i := 0 to SkillList.Count - 1 do begin
+    ID := SkillList(i).ID;
+    Lv := SkillList(i).Level;
+    Left := SkillList(i).EndTime;
+    P := '0';
+    if SkillList(i).Passive then P := '1';
+    if i > 0 then result := result + ',';
+    result := result + '[' + IntToStr(ID) + ',' + JStr(SkillList(i).Name) + ',' + IntToStr(Lv) + ',' + P + ',' + IntToStr(Left) + ']';
+  end;
+  result := result + ']';
+end;
+
+// the bag without the gear (potions, elixirs, shots...): for Items rules and supplies
+function ItemsJson(): string;
+var i, n, ID, Tp: integer;
+  Cnt: Int64;
+begin
+  result := '[';
+  n := 0;
+  for i := 0 to Inventory.User.Count - 1 do begin
+    if n >= 200 then break;
+    Tp := Inventory.User.Items(i).ItemType;
+    if Tp <= 2 then continue;
+    ID := Inventory.User.Items(i).ID;
+    Cnt := Inventory.User.Items(i).Count;
+    if n > 0 then result := result + ',';
+    result := result + '[' + IntToStr(ID) + ',' + JStr(Inventory.User.Items(i).Name) + ',' + IntToStr(Cnt) + ']';
+    Inc(n);
+  end;
+  result := result + ']';
+end;
+
+function BuffsJson(): string;
+var i, ID: integer;
+  Left: cardinal;
+begin
+  result := '[';
+  for i := 0 to User.Buffs.Count - 1 do begin
+    ID := User.Buffs.Items(i).ID;
+    Left := User.Buffs.Items(i).EndTime;
+    if i > 0 then result := result + ',';
+    result := result + '[' + IntToStr(ID) + ',' + JStr(User.Buffs.Items(i).Name) + ',' + IntToStr(Left div 1000) + ']';
+  end;
+  result := result + ']';
+end;
+
+function LogJson(): string;
+var i, k: integer;
+begin
+  result := '[';
+  for i := 0 to LgCnt - 1 do begin
+    k := (LgHead - LgCnt + i + LOG_KEEP) mod LOG_KEEP;
+    if i > 0 then result := result + ',';
+    result := result + '[' + JStr(LgT[k]) + ',' + JStr(LgS[k]) + ']';
+  end;
+  result := result + ']';
+end;
+
+// per rule: how often it went this run and how long ago (the page shows it in the list)
+function RulesJson(): string;
+var r: integer;
+  Ago: cardinal;
+begin
+  result := '[';
+  for r := 0 to RuN - 1 do begin
+    Ago := 0;
+    if RuLast[r] <> 0 then Ago := (GetTickCount - RuLast[r]) div 1000;
+    if r > 0 then result := result + ',';
+    result := result + '[' + IntToStr(RuID[r]) + ',' + IntToStr(RuCasts[r]) + ',' + IntToStr(Ago) + ']';
+  end;
+  result := result + ']';
+end;
+
+procedure DumpState();
+var L: TStringList;
+  S, T: string;
+  i, Secs: integer;
+begin
+  Secs := 0;
+  if RunOn then Secs := (GetTickCount - RunStartAt) div 1000;
+  S := '{"char": ' + JStr(User.Name) + ', "ver": ' + IntToStr(PVE_VER) + ', "written": ' +
+    JStr(FormatDateTime('yyyy-mm-dd hh:nn:ss', Now)) + ', "hwnd": ' + IntToStr(Engine.GameWindow) + ',';
+  L := TStringList.Create;
+  L.Add(S);
+  T := '';
+  if LastRule >= 0 then T := RuName[LastRule];
+  L.Add(' "run": {"on": ' + JBool(RunOn) + ', "id": ' + JStr(SeenRunId) + ', "phase": ' + JStr(Phase) + ', "what": ' + JStr(What) +
+    ', "secs": ' + IntToStr(Secs) + ', "kills": ' + IntToStr(Kills) + ', "started": ' + JStr(RunStartTxt) +
+    ', "last_rule": ' + JStr(T) + ', "alert_seq": ' + IntToStr(AlertSeq) + ', "alert": ' + JStr(AlertTxt) + '},');
+  S := '"dead": false';
+  if User.Dead then S := '"dead": true';
+  L.Add(' "me": {"hp": ' + IntToStr(User.HP) + ', "mp": ' + IntToStr(User.MP) + ', "cp": ' + IntToStr(User.CP) +
+    ', "x": ' + IntToStr(User.X) + ', "y": ' + IntToStr(User.Y) + ', "z": ' + IntToStr(User.Z) + ', ' + S +
+    ', "combat": ' + JBool(User.InCombat) + ', "lvl": ' + IntToStr(User.Level) + ', "pet": ' + JBool(HaveSummon()) +
+    ', "pet_hp": ' + IntToStr(PetHpPct()) + '},');
+  i := NpcIdx(CurTarget);
+  if (CurTarget <> 0) and (i >= 0) then
+    L.Add(' "tgt": {"oid": ' + IntToStr(CurTarget) + ', "id": ' + IntToStr(NpcList(i).ID) + ', "name": ' + JStr(NpcList(i).Name) +
+      ', "hp": ' + IntToStr(NpcList(i).HP) + ', "dist": ' + IntToStr(TgtDist(CurTarget)) + '},')
+  else L.Add(' "tgt": null,');
+  L.Add(' "map": {"file": ' + JStr(MapFile) + ', "ok": ' + JBool(MapOk) + ', "msg": ' + JStr(MapMsg) + ', "spots": ' +
+    IntToStr(SpotN) + ', "safe": ' + JBool(HasSafe) + ', "ver": ' + JStr(MapVer) + ', "teleport": ' + JStr(MapTeleport) +
+    ', "rails": ' + IntToStr(NavRailCount()) + '},');
+  L.Add(' "cfg": {"read": ' + JStr(CfgReadAt) + ', "rules": ' + IntToStr(RuN) + ', "errors": [' + CfgErr + ']},');
+  L.Add(' "rules": ' + RulesJson() + ',');
+  L.Add(' "skills": ' + SkillsJson() + ',');
+  L.Add(' "items": ' + ItemsJson() + ',');
+  L.Add(' "buffs": ' + BuffsJson() + ',');
+  L.Add(' "mobs": ' + KindsJson() + ',');
+  L.Add(' "log": ' + LogJson());
+  L.Add('}');
+  if (not WriteText(StatePath, L)) and (not StateTold) then begin
+    StateTold := true;
+    Engine.Msg('[PvE]', 'Cannot write ' + StatePath, 255);
+  end;
+  L.Free;
+end;
+
+// ===================== run / pause, the settings file, the service tick =====================
+
+procedure StartRun();
+begin
+  RunOn := true;
+  RunStartAt := GetTickCount;
+  RunStartTxt := FormatDateTime('hh:nn:ss', Now);
+  Kills := 0;
+  HomeX := User.X;
+  HomeY := User.Y;
+  HomeZ := User.Z;
+  CurTarget := 0;
+  FightOID := 0;
+  Pend := -1;
+  RoamOn := false;
+  RoamWaitUntil := 0;
+  LowOn := false;
+  ApprOID := 0;
+  PvpOID := 0;
+  OffMapSince := 0;
+  PickAt := 0;
+  StartBuff := true;
+  SeenReady := false;                       // the mobs there now are no new ones
+  AfkOn := false;
+  AfkUntil := 0;
+  AfkNextAt := 0;
+  AfkWakeUntil := 0;
+  HumStop := DrawDist(DS_STOP);
+  HumPct := DrawDist(DS_RANGE);
+  Phase := 'farm';
+  What := 'started';
+  ApplyProfile();
+  if CfWeapon > 0 then WeaponID := CfWeapon
+  else if CfWeapon = 0 then RememberWeapon()
+  else WeaponID := 0;
+  InitSysMessages();
+  if MapOk then Say('[PvE]', 'Started on the map ' + MapFile + ' (' + IntToStr(RuN) + ' rules)', 128)
+  else Say('[PvE]', 'Started with no map: farming within ' + IntToStr(CfRadius) + ' of here (' + IntToStr(RuN) + ' rules)', 128);
+end;
+
+procedure PauseRun(Why: string);
+begin
+  if not RunOn then exit;
+  RunOn := false;
+  Phase := 'paused';
+  What := Why;
+  AfkOn := false;
+  AfkUntil := 0;
+  AfkNextAt := 0;
+  CurTarget := 0;
+  Pend := -1;
+  RoamOn := false;
+  ApprOID := 0;
+  if not User.Dead then StopMoving();
+  Say('[PvE]', 'Paused: ' + Why, 128);
+end;
+
+procedure CheckCfg();
+var L: TStringList;
+  OldGrid, OldVer: string;
+begin
+  L := TStringList.Create;
+  if not ReadText(CfgPath, L) then begin
+    L.Free;
+    if FileExists(CfgPath) then exit;        // there, not read right now (the panel writes it): the next time
+    FirstCfg := false;
+    if not CfgMissTold then begin
+      CfgMissTold := true;
+      Say('[PvE]', 'No settings yet (' + Tag + '.pve): open PvePanel (Library\PvePanel\PvePanel.exe) and pick this character', 128);
+    end;
+    exit;
+  end;
+  CfgMissTold := false;
+  if L.Text = CfgText then begin
+    L.Free;
+    FirstCfg := false;
+    exit;
+  end;
+  CfgText := L.Text;
+  OldGrid := CfGrid;
+  OldVer := CfGridVer;
+  LoadCfg(L);
+  L.Free;
+  CfgReadAt := FormatDateTime('hh:nn:ss', Now);
+  if (CfGrid <> OldGrid) or (CfGridVer <> OldVer) or (not MapTried) then MapWanted := true;
+  if CfDebug and (not LogOn()) then begin
+    LogStart(Tag);
+    Say('[PvE]', 'Debug log: ' + LogFile(), 0);
+  end else if (not CfDebug) and LogOn() then LogStop();
+  NavSetDebug(CfDebug);
+  NavSetHuman(CfHuman and CfHClicks, CfHPieceMin, CfHPieceMax, CfHSide, CfHMulti, DsNorm[DS_PIECE], DsMean[DS_PIECE],
+    DsSig[DS_PIECE]);
+  RebuffDraw();
+  if RunOn then ApplyProfile();
+  if FirstCfg then begin                      // what was asked before this start does not start again
+    FirstCfg := false;
+    SeenRunId := CfRunId;
+    exit;
+  end;
+  if CfRun and (CfRunId <> SeenRunId) then begin
+    SeenRunId := CfRunId;
+    if not RunOn then StartRun();
+  end else if (not CfRun) and RunOn then PauseRun('paused on the panel');
+end;
+
+// the settings, the live file, the state, the debug log - every loop, the blocking runs too
+procedure Service();
+begin
+  if GetTickCount - CfgAt >= CFG_MS then begin
+    CfgAt := GetTickCount;
+    CheckCfg();
+  end;
+  if GetTickCount - LiveAt >= LIVE_MS then begin
+    LiveAt := GetTickCount;
+    LiveTick();
+  end;
+  if GetTickCount - StateAt >= STATE_MS then begin
+    StateAt := GetTickCount;
+    DumpState();
+  end;
+  LogTick();
+end;
+
+// in a blocking run (rebuff, safe point, shop): go on? (paused on the panel / dead -> no)
+function KeepOn(): boolean;
+begin
+  Service();
+  result := RunOn and (not User.Dead);
+end;
+
+// ===================== the map =====================
+
+procedure LoadMap();
+var L: TStringList;
+  i: integer;
+  S, K, F: string;
+begin
+  MapWanted := false;
+  MapTried := true;
+  NavReset();
+  MapOk := false;
+  SpotN := 0;
+  SpotIdx := -1;
+  HasSafe := false;
+  MapTeleport := '';
+  RoamOn := false;
+  MapFile := CfGrid;
+  MapVer := CfGridVer;
+  if CfGrid = '' then begin
+    MapMsg := 'no map: farming within ' + IntToStr(CfRadius) + ' of where it started';
+    exit;
+  end;
+  F := Script.Path + 'Nav\' + CfGrid;
+  if not FileExists(F) then begin
+    MapMsg := 'no file Nav\' + CfGrid;
+    Say('[Map]', 'No map file ' + F, 255);
+    exit;
+  end;
+  What := 'loading the map ' + CfGrid;
+  DumpState();                                // the page sees it before a long build
+  Say('[Map]', 'Loading ' + CfGrid, 0);
+  NavSetGrid(CfGrid);
+  NavBuild();
+  MapOk := NavGridIs(CfGrid);
+  // its farm spots (F x y z) and the safe point (S x y z): roam points / where to rebuff
+  L := TStringList.Create;
+  if ReadText(F, L) then
+    for i := 0 to L.Count - 1 do begin
+      S := L[i];
+      K := Copy(S, 1, 2);
+      if (K = 'F ') and (SpotN < MAX_SPOTS) then begin
+        SpotX[SpotN] := FInt(S, 1, ' ', 0);
+        SpotY[SpotN] := FInt(S, 2, ' ', 0);
+        SpotZ[SpotN] := FInt(S, 3, ' ', 0);
+        Inc(SpotN);
+      end else if K = 'S ' then begin
+        SafeX := FInt(S, 1, ' ', 0);
+        SafeY := FInt(S, 2, ' ', 0);
+        SafeZ := FInt(S, 3, ' ', 0);
+        HasSafe := true;
+      end else if Copy(S, 1, 11) = 'K teleport ' then MapTeleport := Trim(Copy(S, 12, Length(S)));
+    end;
+  L.Free;
+  if MapOk then begin
+    MapMsg := 'map ' + CfGrid + ': ' + IntToStr(SpotN) + ' farm spots';
+    if HasSafe then MapMsg := MapMsg + ', a safe point';
+  end else MapMsg := 'the map ' + CfGrid + ' did not load';
+  Say('[Map]', MapMsg, 0);
+  if not RunOn then What := 'paused - start it on the panel';
+end;
+
+// ===================== targets =====================
+
+// which mobs go first: 1 first .. 4 low, 9 never; not listed = 3
+function MobPrio(NpcId: integer): integer;
+var j: integer;
+begin
+  result := 3;
+  for j := 0 to MpN - 1 do
+    if MpID[j] = NpcId then begin
+      result := MpPrio[j];
+      exit;
+    end;
+end;
+
+// a mob busy with us / the summon within the aggro range: fought wherever it stands (off the map too)
+function IsOnUs(i: integer): boolean;
+var NX, NY, NZ: integer;
+begin
+  result := false;
+  if NpcList(i).Dead then exit;
+  if IgnoredNpc(i) then exit;
+  if not MobOnUs(i) then exit;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  result := (Round(User.DistTo(NX, NY, NZ)) <= CfAggroRange) and HeightOk(NZ);
+end;
+
+// the map sees the mob from us: its sight line (walk + sight cells, no wall of the map between); kept VIS_MS (a line
+// check of every mob every tick is not cheap)
+function MobVisible(OID, X, Y: integer): boolean;
+var k, UX, UY: integer;
+begin
+  for k := 0 to 63 do
+    if (VisOID[k] = OID) and (GetTickCount - VisAt[k] < VIS_MS) then begin
+      result := VisRes[k];
+      exit;
+    end;
+  UX := User.X;
+  UY := User.Y;
+  result := NavSee(UX, UY, X, Y);
+  VisOID[VisHead] := OID;
+  VisAt[VisHead] := GetTickCount;
+  VisRes[VisHead] := result;
+  VisHead := (VisHead + 1) mod 64;
+end;
+
+// ===================== human: new mobs =====================
+
+procedure FreshAdd(OID: integer; UpTo: cardinal);
+begin
+  FreshOID[FreshHead] := OID;
+  FreshUntil[FreshHead] := UpTo;
+  FreshHead := (FreshHead + 1) mod 32;
+end;
+
+// the mob showed up a moment ago (a respawn / came into sight): not a target yet
+function IsFresh(OID: integer): boolean;
+var k: integer;
+begin
+  result := false;
+  for k := 0 to 31 do
+    if (FreshOID[k] = OID) and (GetTickCount < FreshUntil[k]) then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// every SEEN_SCAN_MS: a mob not seen before gets a random wait (h_spawn); on the first scan of a run all are old
+procedure SeenTick();
+var i, k, OID, Oldest: integer;
+  T, OldT: cardinal;
+  Found: boolean;
+begin
+  if GetTickCount - SeenScanAt < SEEN_SCAN_MS then exit;
+  SeenScanAt := GetTickCount;
+  T := GetTickCount;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    OID := NpcList(i).OID;
+    Found := false;
+    for k := 0 to 255 do
+      if SeenOID[k] = OID then begin
+        SeenLast[k] := T;
+        Found := true;
+        break;
+      end;
+    if Found then continue;
+    Oldest := 0;
+    OldT := SeenLast[0];
+    for k := 1 to 255 do
+      if SeenLast[k] < OldT then begin
+        OldT := SeenLast[k];
+        Oldest := k;
+      end;
+    SeenOID[Oldest] := OID;
+    SeenLast[Oldest] := T;
+    if SeenReady and (not NpcList(i).Dead) then FreshAdd(OID, T + cardinal(DrawDist(DS_SPAWN)));
+  end;
+  SeenReady := true;
+end;
+
+// a new target: alive, not "never", no champion (skip), on the map / the circle, in range, on our floor, not given up
+function Takeable(i: integer): boolean;
+var NX, NY, NZ, OID, MaxHP: integer;
+begin
+  result := false;
+  if NpcList(i).Dead then exit;
+  if IgnoredNpc(i) then exit;
+  if MobPrio(NpcList(i).ID) >= 9 then exit;
+  MaxHP := NpcList(i).MaxHP;
+  if CfSkipChamp and (MaxHP > CfChampHP) then exit;
+  OID := NpcList(i).OID;
+  if IsUnreach(OID) then exit;
+  if CfHuman and (CfHSpawnMax > 0) and IsFresh(OID) then exit;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  if not HeightOk(NZ) then exit;
+  // the whole map on (and a map loaded): any mob the game shows us on the map's cells; else only within the range
+  if (not (CfMapHunt and MapOk)) and (Round(User.DistTo(NX, NY, NZ)) > CfTargetRange) then exit;
+  result := OnArea(NX, NY, NZ);
+  if not result then exit;
+  // not targeted while the map does not see it (behind a wall): taken once it shows up; the one we hit already is kept
+  if MapOk and CfSeeFirst and (not ((OID = FightOID) and FightHit)) then result := MobVisible(OID, NX, NY);
+end;
+
+// beyond the near range (such a mob is a target only with the whole map on)
+function MobFar(i: integer): boolean;
+var NX, NY, NZ: integer;
+begin
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  result := Round(User.DistTo(NX, NY, NZ)) > CfTargetRange;
+end;
+
+// the run length along the map to a far mob, kept WAY_MS (a way across the map is not cheap to count); -1 = no way
+function FarWay(OID, X, Y: integer): double;
+var k: integer;
+begin
+  for k := 0 to 15 do
+    if (WayOID[k] = OID) and (WayAt[k] > 0) and (GetTickCount - WayAt[k] < WAY_MS) then begin
+      result := WayLen[k];
+      exit;
+    end;
+  result := NavPathLen(X, Y);
+  WayOID[WayHead] := OID;
+  WayLen[WayHead] := result;
+  WayAt[WayHead] := GetTickCount;
+  WayHead := (WayHead + 1) mod 16;
+end;
+
+// how good a mob is as a target: its class first (1 best), then the lowest HP or the nearest
+function MobScore(i: integer): double;
+var NX, NY, NZ, P: integer;
+  D: double;
+begin
+  P := MobPrio(NpcList(i).ID);
+  if P > 8 then P := 8;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  D := User.DistTo(NX, NY, NZ);
+  if CfPick = 'near' then result := P * 100000000.0 + D
+  else result := P * 100000000.0 + NpcList(i).CurHP * 10.0 + D / 1000.0;
+end;
+
+// the far mob's place in its class: class first, then the straight distance (its run is counted later, by FarPick)
+function FarScore(i: integer): double;
+var NX, NY, NZ, P: integer;
+begin
+  P := MobPrio(NpcList(i).ID);
+  if P > 8 then P := 8;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  result := P * 100000000.0 + User.DistTo(NX, NY, NZ);
+end;
+
+// of the far ones kept by ChooseTarget (FcI), of a class better than BelowP: the shortest run along the map.
+// No way there: left for a while (MarkUnreach). -1 = none
+function FarPick(BelowP: integer): integer;
+var k, j, P, OID, NX, NY: integer;
+  W, Sc, BestSc: double;
+begin
+  result := -1;
+  BestSc := 0;
+  for k := 0 to FcN - 1 do begin
+    j := FcI[k];
+    if j >= NpcList.Count then continue;
+    P := MobPrio(NpcList(j).ID);
+    if P > 8 then P := 8;
+    if P >= BelowP then continue;
+    OID := NpcList(j).OID;
+    NX := NpcList(j).X;
+    NY := NpcList(j).Y;
+    W := FarWay(OID, NX, NY);
+    if W < 0 then begin
+      Dbg('[Target]', TgtName(OID) + ' ' + IntToStr(OID) + ': no way to it on the map - left for a while');
+      MarkUnreach(OID);
+      continue;
+    end;
+    Sc := P * 100000000.0 + W;
+    if (result < 0) or (Sc < BestSc) then begin
+      result := j;
+      BestSc := Sc;
+    end;
+  end;
+end;
+
+function ChooseTarget(): integer;
+var i, k, BestI, CurI, CurP, NearP: integer;
+  Sc, BestSc: double;
+  CurOk, Fresh: boolean;
+begin
+  result := 0;
+  // the mob we fought died: a kill
+  if FightOID <> 0 then begin
+    i := NpcIdx(FightOID);
+    if i < 0 then FightOID := 0
+    else if NpcList(i).Dead then begin
+      if FightHit then Inc(Kills);
+      FightOID := 0;
+    end;
+  end;
+  // 1) the mobs on us (an AFK break: only they)
+  if CfOnUsFirst or AfkOn then begin
+    BestI := -1;
+    BestSc := 0;
+    for i := 0 to NpcList.Count - 1 do begin
+      if i >= NpcList.Count then break;
+      if not IsOnUs(i) then continue;
+      Sc := MobScore(i);
+      if (BestI < 0) or (Sc < BestSc) then begin
+        BestI := i;
+        BestSc := Sc;
+      end;
+    end;
+    if BestI >= 0 then begin
+      result := NpcList(BestI).OID;
+      exit;
+    end;
+  end;
+  if AfkOn then exit;
+  // 2) the current one, while it still is a target
+  CurOk := false;
+  CurP := 9;
+  CurI := NpcIdx(CurTarget);
+  if CurI >= 0 then begin
+    if IsOnUs(CurI) then CurOk := true
+    else CurOk := Takeable(CurI);
+    if CurOk then CurP := MobPrio(NpcList(CurI).ID);
+  end;
+  // 3) the best new one: the near ones (within CfTargetRange) by MobScore; the far ones of the map (the whole map on)
+  // aside - the 3 best by class and straight distance, their run along the map counted only when one is needed
+  BestI := -1;
+  BestSc := 0;
+  FcN := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if not (Takeable(i) or ((not CfOnUsFirst) and IsOnUs(i))) then continue;
+    if CfMapHunt and MapOk and MobFar(i) and (not IsOnUs(i)) then begin
+      Sc := FarScore(i);
+      if (FcN < 3) or (Sc < FcS[FcN - 1]) then begin
+        if FcN < 3 then Inc(FcN);
+        k := FcN - 1;
+        while (k > 0) and (FcS[k - 1] > Sc) do begin
+          FcS[k] := FcS[k - 1];
+          FcI[k] := FcI[k - 1];
+          Dec(k);
+        end;
+        FcS[k] := Sc;
+        FcI[k] := i;
+      end;
+      continue;
+    end;
+    Sc := MobScore(i);
+    if (BestI < 0) or (Sc < BestSc) then begin
+      BestI := i;
+      BestSc := Sc;
+    end;
+  end;
+  NearP := 9;
+  if BestI >= 0 then NearP := MobPrio(NpcList(BestI).ID);
+  if CurOk then begin
+    result := CurTarget;
+    if IsOnUs(CurI) then exit;                 // never away from a mob that hits us
+    Fresh := (FightOID <> CurTarget) or (not FightHit);
+    // running to a far one, nothing cast at it yet, and a near one of its class or better: the near one
+    if Fresh and (BestI >= 0) and (NearP <= CurP) and MobFar(CurI) then begin
+      result := NpcList(BestI).OID;
+      exit;
+    end;
+    // a mob of a better class can be taken: switch to it (a far one only while nothing is cast at the current one)
+    if CfSwitch then begin
+      if (BestI >= 0) and (NearP < CurP) then begin
+        result := NpcList(BestI).OID;
+        exit;
+      end;
+      if Fresh and (FcN > 0) then begin
+        i := FarPick(CurP);
+        if i >= 0 then result := NpcList(i).OID;
+      end;
+    end;
+    exit;
+  end;
+  // a far one only when it is of a better class than the best near one (or no near one)
+  i := -1;
+  if FcN > 0 then i := FarPick(NearP);
+  if i >= 0 then result := NpcList(i).OID
+  else if BestI >= 0 then result := NpcList(BestI).OID;
+end;
+
+// ===================== the fight rules =====================
+
+// mobs within R of us (Md 1) or of the target (Md 2); Aggro: only those on us / the summon
+function AroundCount(Md, R: integer; Aggro: boolean; OID: integer): integer;
+var i, CX, CY, CZ, NX, NY: integer;
+  DX, DY: double;
+begin
+  result := 0;
+  if Md = 1 then begin
+    CX := User.X;
+    CY := User.Y;
+    CZ := User.Z;
+  end else if not TgtPos(OID, CX, CY, CZ) then exit;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if NpcList(i).Dead or IgnoredNpc(i) then continue;
+    if Aggro and (not MobOnUs(i)) then continue;
+    NX := NpcList(i).X;
+    NY := NpcList(i).Y;
+    DX := NX - CX;
+    DY := NY - CY;
+    if Sqrt(DX * DX + DY * DY) <= R then Inc(result);
+  end;
+end;
+
+function CondOne(k, OID: integer): boolean;
+var V1, V2, H: integer;
+  T: cardinal;
+begin
+  result := true;
+  V1 := RcV1[k];
+  V2 := RcV2[k];
+  case RcK[k] of
+    CD_MHP_LT: begin H := User.HP; result := H < V1; end;
+    CD_MHP_GT: begin H := User.HP; result := H > V1; end;
+    CD_MMP_LT: begin H := User.MP; result := H < V1; end;
+    CD_MMP_GT: begin H := User.MP; result := H > V1; end;
+    CD_MCP_LT: begin H := User.CP; result := H < V1; end;
+    CD_THP_LT: result := (OID <> 0) and (TgtHp(OID) < V1);
+    CD_THP_GT: result := (OID <> 0) and (TgtHp(OID) > V1);
+    CD_TMAX_GT: result := (OID <> 0) and (TgtMaxHp(OID) > V1);
+    CD_TEFF_NO: result := (OID <> 0) and (not TgtHasEff(OID, V1));
+    CD_TEFF_ON: result := (OID <> 0) and TgtHasEff(OID, V1);
+    CD_MBUF_NO: begin
+        if not BuffOn(V1) then result := true
+        else if V2 > 0 then begin
+          T := BuffTime(V1);
+          result := (T > 0) and (T < cardinal(V2) * 1000);
+        end else result := false;
+      end;
+    CD_MBUF_ON: result := BuffOn(V1);
+    CD_PHP_LT: result := HaveSummon() and (PetHpPct() < V1);
+    CD_PET_NO: result := PetList.Count = 0;
+    CD_PET_ON: result := HaveSummon();
+    CD_TON_YES: result := (OID <> 0) and TgtOnUs(OID);
+    CD_TON_NO: result := (OID = 0) or (not TgtOnUs(OID));
+    CD_CMB_YES: result := User.InCombat;
+    CD_CMB_NO: result := not User.InCombat;
+  end;
+end;
+
+// "use only for" / "for all except" (NPC IDs)
+function MobFilterOk(r, OID: integer): boolean;
+var Inside: boolean;
+begin
+  result := true;
+  if RuMobMode[r] = 0 then exit;
+  Inside := Pos(',' + IntToStr(TgtNpcId(OID)) + ',', RuMobs[r]) > 0;
+  if RuMobMode[r] = 1 then result := Inside else result := not Inside;
+end;
+
+// the skill is ours / the item is in the bag
+function RuleKnown(r: integer): boolean;
+begin
+  result := true;
+  if RuType[r] = RT_SKILL then result := HasSkill(RuID[r])
+  else if RuType[r] = RT_ITEM then result := ItemCount(RuID[r]) > 0;
+end;
+
+// everything of the rule but its distance and its reuse
+function RuleOk(r, OID, Mode: integer): boolean;
+var c, N: integer;
+begin
+  result := false;
+  if not RuOn[r] then exit;
+  if RuTgt[r] = TG_MOB then begin
+    if Mode <> MODE_MOB then exit;
+    if not MobFilterOk(r, OID) then exit;
+  end else if RuTgt[r] = TG_PLAYER then begin
+    if Mode <> MODE_PVP then exit;
+  end else if RuTgt[r] = TG_PET then begin
+    if not HaveSummon() then exit;
+  end;
+  // its own reuse (Reuse, s): not again before it
+  if (RuReuse[r] > 0) and (RuLast[r] <> 0) and (GetTickCount - RuLast[r] < cardinal(RuReuse[r])) then exit;
+  // the same mob again only after this
+  if (RuMobReuse[r] > 0) and (OID <> 0) and ((RuTgt[r] = TG_MOB) or (RuTgt[r] = TG_PLAYER)) then
+    if DebAge(r, OID) < cardinal(RuMobReuse[r]) then exit;
+  if not RuleKnown(r) then exit;
+  if RuToggle[r] and BuffOn(RuID[r]) then exit;          // a toggle that is on already
+  if RuArMode[r] > 0 then begin
+    N := AroundCount(RuArMode[r], RuArR[r], RuArAggro[r], OID);
+    if RuArCmp[r] = 0 then begin
+      if N < RuArN[r] then exit;
+    end else if N > RuArN[r] then exit;
+  end;
+  for c := 0 to 3 do
+    if RcK[r * 4 + c] <> 0 then
+      if not CondOne(r * 4 + c, OID) then exit;
+  result := true;
+end;
+
+// the target is in sight: the map's SIGHT line (walk + sight cells, as the shoot spot is chosen - not the run line with
+// its margin off the walls: that one said "no" for a mob by a wall the skills reach) and no fresh "Can't see target."
+// for it at this distance (the game's own word wins: closer then)
+function SeeTgt(OID: integer): boolean;
+var X, Y, Z, UX, UY: integer;
+begin
+  result := true;
+  if (CantSeeOID = OID) and (GetTickCount - CantSeeAt < CANT_SEE_MS) and (TgtDist(OID) > CantSeeDist) then begin
+    result := false;
+    exit;
+  end;
+  if not MapOk then exit;
+  if not TgtPos(OID, X, Y, Z) then exit;
+  UX := User.X;
+  UY := User.Y;
+  result := NavSee(UX, UY, X, Y);
+end;
+
+// the rule to use now: by priority the first that may go right now; none ready -> the "repeat" one whose reuse ends
+// first (its packet is sent anyway: it goes the moment it can). WantRange: a rule wants us closer (Move)
+// the distance a mob rule is fired from (human, the rule runs closer): a melee one (reach up to HUMAN_MELEE) from the
+// stop distance drawn for this target - the skill runs the rest itself, as a player clicks it from close by; a
+// ranged one from how far in was drawn (h_closer %): 100 = its very edge, more = closer than needed, less = the skill
+// clicked a bit early (the game runs us in itself)
+function EffMax(r: integer): integer;
+begin
+  result := RuDMax[r];
+  if (not CfHuman) or (result <= 0) or (not RuMove[r]) then exit;
+  if result <= HUMAN_MELEE then begin
+    if HumStop > result then result := HumStop;
+  end else result := result * (200 - HumPct) div 100;
+end;
+
+// a self buff rule: target me, a toggle or the condition "I have no buff"
+function SelfBuffRule(r: integer): boolean;
+var c: integer;
+begin
+  result := false;
+  if RuTgt[r] <> TG_SELF then exit;
+  if RuToggle[r] then begin
+    result := true;
+    exit;
+  end;
+  for c := 0 to 3 do
+    if RcK[r * 4 + c] = CD_MBUF_NO then begin
+      result := true;
+      exit;
+    end;
+end;
+
+// human: a self buff wanted again goes a bit late (h_selfbuff), now and then much later - forgotten a while
+// (h_forget % of the times, h_forget_s). Drawn when it is wanted, again after it was not (PickRule)
+function BuffLate(r: integer): boolean;
+begin
+  result := false;
+  if not (CfHuman and SelfBuffRule(r)) then exit;
+  if RuLateAt[r] = 0 then begin
+    if (CfHForget > 0) and (Random(100) < CfHForget) then begin
+      RuLateAt[r] := GetTickCount + cardinal(DrawDist(DS_FORGET)) * 1000;
+      Dbg('[Human]', RuName[r] + ': forgotten for ' + IntToStr((RuLateAt[r] - GetTickCount) div 1000) + ' s');
+    end else RuLateAt[r] := GetTickCount + cardinal(DrawDist(DS_SELFBUF));
+  end;
+  result := GetTickCount < RuLateAt[r];
+end;
+
+function PickRule(Mode, OID: integer): integer;
+var o, r, D, Cand, MaxD: integer;
+  Left, CandL: cardinal;
+  Seen: boolean;
+begin
+  result := -1;
+  WantRange := 0;
+  Cand := -1;
+  CandL := $7FFFFFFF;
+  D := 0;
+  Seen := true;
+  if OID <> 0 then begin
+    D := TgtDist(OID);
+    Seen := SeeTgt(OID);
+  end;
+  for o := 0 to RuN - 1 do begin
+    r := RuOrd[o];
+    if not RuleOk(r, OID, Mode) then begin
+      RuLateAt[r] := 0;                  // not wanted now: the next time it is, a new delay
+      continue;
+    end;
+    if BuffLate(r) then continue;
+    if (RuTgt[r] = TG_MOB) or (RuTgt[r] = TG_PLAYER) then begin
+      MaxD := RuDMax[r];
+      if Mode = MODE_MOB then MaxD := EffMax(r);
+      if ((MaxD > 0) and (D > MaxD)) or (not Seen) then begin
+        if RuMove[r] and (WantRange = 0) then begin
+          if MaxD > 0 then WantRange := MaxD else WantRange := 600;
+        end;
+        continue;
+      end;
+      if D < RuDMin[r] then continue;
+    end;
+    Left := 0;
+    if RuType[r] = RT_SKILL then Left := SkillLeft(RuID[r]);
+    if Left = 0 then begin
+      result := r;
+      exit;
+    end;
+    if RuRepeat[r] and (RuType[r] = RT_SKILL) and (Left < CandL) then begin
+      Cand := r;
+      CandL := Left;
+    end;
+  end;
+  result := Cand;
+end;
+
+// a skill whose reuse just started after our send: it went (its own reuse, Same mob again, If fail)
+procedure CheckCasts();
+var r: integer;
+  L: cardinal;
+begin
+  for r := 0 to RuN - 1 do begin
+    if RuType[r] <> RT_SKILL then continue;
+    if (RuSent[r] = 0) or (GetTickCount - RuSent[r] > CAST_SEEN_MS) then begin
+      RuPrevL[r] := 0;
+      continue;
+    end;
+    L := SkillLeft(RuID[r]);
+    if (L > 0) and ((RuPrevL[r] = 0) or (L > RuPrevL[r] + 300)) then begin
+      RuLast[r] := GetTickCount;
+      Inc(RuCasts[r]);
+      if (RuMobReuse[r] > 0) and (RuSentOID[r] <> 0) then MarkDeb(r, RuSentOID[r]);
+      if (RuSentOID[r] <> 0) and (RuSentOID[r] = FightOID) then FightHit := true;
+      if Pend = r then Pend := -1;
+      Dbg('[Cast]', RuName[r] + ' went (reuse ' + IntToStr(L) + ' ms)');
+    end;
+    if RuToggle[r] and (Pend = r) and BuffOn(RuID[r]) then Pend := -1;
+    RuPrevL[r] := L;
+  end;
+end;
+
+// the fight mode of a target OID: no target / the PvP player / a mob
+function ModeOf(OID: integer): integer;
+begin
+  if OID = 0 then result := MODE_NONE
+  else if (PvpOID <> 0) and (OID = PvpOID) then result := MODE_PVP
+  else result := MODE_MOB;
+end;
+
+// a sent skill (not a repeat one) that has not started: sent again, nothing else meanwhile (up to LOCK_MS).
+// Its conditions no longer hold (the buff is on, the debuff is on the mob, the mob died): done. true = this tick is its
+function PendHold(): boolean;
+var r: integer;
+begin
+  result := false;
+  if Pend < 0 then exit;
+  r := Pend;
+  if GetTickCount - PendAt > CONFIRM_MS then begin
+    Pend := -1;                       // did not start (no MP, a wall, out of range): If fail -> again at once
+    Dbg('[Cast]', RuName[r] + ' did not go in ' + IntToStr(CONFIRM_MS) + ' ms');
+    exit;
+  end;
+  if GetTickCount - PendAt >= LOCK_MS then exit;
+  if (PendOID <> 0) and (TgtHp(PendOID) <= 0) then begin
+    Pend := -1;
+    exit;
+  end;
+  if (not RuIfFail[r]) and (RuReuse[r] > 0) then begin
+    // its own Reuse runs from the press already: RuleOk would say no - only the conditions are looked at
+  end else if not RuleOk(r, PendOID, ModeOf(PendOID)) then begin
+    Pend := -1;
+    exit;
+  end;
+  if GetTickCount - PendResent >= RESEND_MS then begin
+    Engine.DUseSkill(RuID[r], false, false);
+    PendResent := GetTickCount;
+  end;
+  result := true;
+end;
+
+procedure Fire(r, OID: integer);
+var POID: integer;
+begin
+  LastRule := r;
+  LastRuleAt := GetTickCount;
+  if RuType[r] = RT_ITEM then begin
+    Engine.UseItem(RuID[r]);
+    RuLast[r] := GetTickCount;
+    Inc(RuCasts[r]);
+    Dbg('[Rule]', 'item ' + RuName[r]);
+    exit;
+  end;
+  if RuType[r] = RT_ACTION then begin
+    UseActionPkt(RuID[r]);
+    RuLast[r] := GetTickCount;
+    Inc(RuCasts[r]);
+    if (RuMobReuse[r] > 0) and (OID <> 0) then MarkDeb(r, OID);
+    Dbg('[Rule]', 'action ' + RuName[r]);
+    exit;
+  end;
+  if (RuTgt[r] = TG_PET) and HaveSummon() then begin
+    POID := PetList(0).OID;
+    Engine.SetTarget(POID);
+    CurTarget := 0;                   // the fight sets its target again next tick
+  end;
+  // the reuse it has now (cast by the client / another rule): only a NEW reuse after this send is its cast
+  if (RuSent[r] = 0) or (GetTickCount - RuSent[r] > CAST_SEEN_MS) then RuPrevL[r] := SkillLeft(RuID[r]);
+  Engine.DUseSkill(RuID[r], false, false);
+  RuSent[r] := GetTickCount;
+  RuSentOID[r] := OID;
+  if (not RuIfFail[r]) and (not RuRepeat[r]) then RuLast[r] := GetTickCount;   // its Reuse counts from the press
+  if not RuRepeat[r] then begin
+    if Pend <> r then begin
+      Pend := r;
+      PendOID := OID;
+      PendAt := GetTickCount;
+    end;
+    PendResent := GetTickCount;
+  end;
+end;
+
+// ===================== runs: to the target, roam =====================
+
+// closer to the target: within Range and in sight - the map's spot to cast from when a wall is between
+procedure ApproachTick(OID, Range: integer);
+var X, Y, Z, GX, GY, R, DD, UX, UY: integer;
+begin
+  if not TgtPos(OID, X, Y, Z) then exit;
+  if ApprOID <> OID then begin
+    ApprOID := OID;
+    ApprStart := GetTickCount;
+    ApprLimit := APPROACH_MAX_MS;            // a far mob of the map: more time, by how far it is
+    DD := TgtDist(OID) - CfTargetRange;
+    if DD > 0 then ApprLimit := APPROACH_MAX_MS + cardinal(DD) * FAR_MS_PER_UNIT;
+    NavStepReset();
+  end;
+  if GetTickCount - ApprStart > ApprLimit then begin
+    Say('[Target]', 'Cannot get to ' + TgtName(OID) + ' in ' + IntToStr(ApprLimit div 1000) + ' s - left for a while', 0);
+    MarkUnreach(OID);
+    ApprOID := 0;
+    CurTarget := 0;
+    exit;
+  end;
+  R := Range - 50;
+  if R < 80 then R := 80;
+  GX := X;
+  GY := Y;
+  if MapOk then begin
+    if (ShootOID <> OID) or (GetTickCount - ShootAt > SHOOT_CACHE_MS) then begin
+      ShootOID := OID;
+      ShootAt := GetTickCount;
+      ShootOk := NavShootPoint(X, Y, R);
+      ShootX := NavShootX();
+      ShootY := NavShootY();
+    end;
+    // the shoot spot is where we stand already, yet the rule did not go: no standing there - straight at the mob
+    UX := User.X;
+    UY := User.Y;
+    if ShootOk and (Abs(ShootX - UX) + Abs(ShootY - UY) > 80) then begin
+      GX := ShootX;
+      GY := ShootY;
+    end;
+  end;
+  What := 'closer to ' + TgtName(OID) + ' (' + IntToStr(TgtDist(OID)) + ' -> ' + IntToStr(R) + ')';
+  NavStep(GX, GY, Z, MapOk);
+end;
+
+// no target: on to the next farm spot of the map (in turn), else a far point of the map; stand a while at each
+procedure RoamTick();
+var i, Best: integer;
+  D, BestD: double;
+  UX, UY: integer;
+begin
+  UX := User.X;
+  UY := User.Y;
+  // off the map a long time with nothing to do (died and went to town...): paused
+  if MapOk and (not NavGridFree(UX, UY)) then begin
+    if OffMapSince = 0 then OffMapSince := GetTickCount
+    else if GetTickCount - OffMapSince > OFF_MAP_MS then begin
+      OffMapSince := 0;
+      PauseRun('off the map ' + IntToStr(OFF_MAP_MS div 1000) + ' s with no target');
+      exit;
+    end;
+  end else OffMapSince := 0;
+  if not CfRoam then begin
+    What := 'waiting for mobs';
+    exit;
+  end;
+  if GetTickCount < RoamWaitUntil then begin
+    What := 'waiting at the point';
+    exit;
+  end;
+  if not RoamOn then begin
+    if SpotN > 0 then begin
+      if SpotIdx < 0 then begin              // the first: the nearest spot
+        Best := 0;
+        BestD := 1E18;
+        for i := 0 to SpotN - 1 do begin
+          D := Sqrt(1.0 * (SpotX[i] - UX) * (SpotX[i] - UX) + 1.0 * (SpotY[i] - UY) * (SpotY[i] - UY));
+          if D < BestD then begin
+            BestD := D;
+            Best := i;
+          end;
+        end;
+        SpotIdx := Best;
+      end else SpotIdx := (SpotIdx + 1) mod SpotN;
+      RoamX := SpotX[SpotIdx];
+      RoamY := SpotY[SpotIdx];
+      RoamZ := SpotZ[SpotIdx];
+      if RoamZ = 0 then RoamZ := User.Z;
+    end else if MapOk and NavFarPoint(600) then begin
+      RoamX := NavFarX();
+      RoamY := NavFarY();
+      RoamZ := User.Z;
+    end else begin
+      What := 'no mobs here';
+      exit;
+    end;
+    RoamOn := true;
+    RoamStart := GetTickCount;
+    NavStepReset();
+  end;
+  D := Sqrt(1.0 * (RoamX - UX) * (RoamX - UX) + 1.0 * (RoamY - UY) * (RoamY - UY));
+  if D <= ROAM_REACH then begin
+    RoamOn := false;
+    RoamWaitUntil := GetTickCount + cardinal(CfRoamWaitMin + Random(CfRoamWaitMax - CfRoamWaitMin + 1));
+    What := 'at the point, waiting';
+    exit;
+  end;
+  if (NavStillMs() > ROAM_STUCK_MS) and (GetTickCount - RoamStart > ROAM_STUCK_MS) then begin
+    Dbg('[Roam]', 'stuck on the way to ' + IntToStr(RoamX) + ',' + IntToStr(RoamY) + ' - the next point');
+    RoamOn := false;
+    exit;
+  end;
+  if GetTickCount - RoamStart > ROAM_MAX_MS then begin
+    RoamOn := false;
+    exit;
+  end;
+  What := 'running to the next point (' + IntToStr(Round(D)) + ')';
+  NavStep(RoamX, RoamY, RoamZ, MapOk);
+end;
+
+// ===================== one fight step =====================
+
+procedure FightTick(OID: integer);
+var r, W: integer;
+begin
+  if OID <> CurTarget then begin
+    Engine.SetTarget(OID);
+    CurTarget := OID;
+    LastSetTarget := GetTickCount;
+    if OID <> FightOID then begin
+      FightOID := OID;
+      FightHit := false;
+      HumStop := DrawDist(DS_STOP);
+      HumPct := DrawDist(DS_RANGE);
+      Dbg('[Target]', TgtName(OID) + ' ' + IntToStr(OID) + ' d=' + IntToStr(TgtDist(OID)));
+    end;
+  end else if GetTickCount - LastSetTarget >= RETARGET_MS then begin
+    Engine.SetTarget(OID);
+    LastSetTarget := GetTickCount;
+  end;
+  if CantSeeTarget() then begin
+    CantSeeOID := OID;
+    CantSeeAt := GetTickCount;
+    CantSeeDist := TgtDist(OID) - APPROACH_STEP;
+    if CantSeeDist < 60 then CantSeeDist := 60;
+    Dbg('[Target]', 'Can''t see ' + TgtName(OID) + ' - closer than ' + IntToStr(CantSeeDist));
+  end;
+  r := PickRule(MODE_MOB, OID);
+  W := WantRange;
+  if r >= 0 then begin
+    Fire(r, OID);
+    LastActAt := GetTickCount;
+    if RuTgt[r] = TG_MOB then ApprOID := 0;
+    What := RuName[r] + ' -> ' + TgtName(OID);
+    exit;
+  end;
+  if W > 0 then begin
+    if (CantSeeOID = OID) and (GetTickCount - CantSeeAt < CANT_SEE_MS) and (CantSeeDist < W) then W := CantSeeDist;
+    ApproachTick(OID, W);
+    exit;
+  end;
+  if (RuMobRules = 0) and CfAutoAttack then begin
+    // human: up by clicks to the stop distance first, then the attack runs the rest (as a player clicks the mob)
+    if CfHuman and (HumStop > 0) and (TgtDist(OID) > HumStop + 60) then begin
+      ApproachTick(OID, HumStop + 50);
+      exit;
+    end;
+    Engine.Attack(300);
+    LastActAt := GetTickCount;
+    FightHit := true;
+    What := 'attack -> ' + TgtName(OID);
+  end else begin
+    What := 'waiting for a skill -> ' + TgtName(OID);
+    LastActAt := GetTickCount;                 // a wait for the reuse is no stuck
+  end;
+end;
+
+// ===================== rebuff, safe point, supplies =====================
+
+function BuffLow(): boolean;
+begin
+  result := (CfRebuffID > 0) and (CfRebuffBpN > 0) and (BuffTime(CfRebuffID) < cardinal(RebuffLeftNow) * 1000);
+end;
+
+function HitsUs(i: integer): boolean;
+var NX, NY, NZ, Atk, PetOID: integer;
+begin
+  result := false;
+  if NpcList(i).Dead then exit;
+  if IgnoredNpc(i) then exit;
+  Atk := NpcList(i).AtkOID;
+  if Atk <> User.OID then begin
+    if not HaveSummon() then exit;
+    PetOID := PetList(0).OID;
+    if Atk <> PetOID then exit;
+  end;
+  NX := NpcList(i).X;
+  NY := NpcList(i).Y;
+  NZ := NpcList(i).Z;
+  result := (Round(User.DistTo(NX, NY, NZ)) <= CfAggroRange) and HeightOk(NZ);
+end;
+
+function PickHitter(): integer;
+var i, HP, BestHP: integer;
+begin
+  result := 0;
+  BestHP := MaxInt;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if not HitsUs(i) then continue;
+    HP := NpcList(i).CurHP;
+    if HP < BestHP then begin
+      BestHP := HP;
+      result := NpcList(i).OID;
+    end;
+  end;
+end;
+
+// kill whoever hits us now (no wait for the combat stance to drop)
+procedure KillHitters();
+var OID: integer;
+begin
+  while KeepOn() do begin
+    CheckCasts();
+    if PendHold() then begin
+      Delay(CfSpamMs);
+      continue;
+    end;
+    OID := PickHitter();
+    if OID = 0 then exit;
+    FightTick(OID);
+    Delay(CfSpamMs);
+  end;
+end;
+
+// fight whoever hits us until we are out of combat
+procedure FightUntilOutOfCombat();
+var OID: integer;
+begin
+  while KeepOn() do begin
+    CheckCasts();
+    CheckWeapon();
+    if PendHold() then begin
+      Delay(CfSpamMs);
+      continue;
+    end;
+    OID := PickHitter();
+    if OID <> 0 then begin
+      FightTick(OID);
+      Delay(CfSpamMs);
+      continue;
+    end;
+    if not User.InCombat then exit;
+    What := 'waiting to leave combat';
+    Delay(CfSpamMs);
+  end;
+end;
+
+// to the map's safe point (S), fighting whoever hits us on the way
+procedure GoToSafePoint();
+var Started: cardinal;
+begin
+  if not HasSafe then exit;
+  Say('[Rebuff]', 'To the safe point', 0);
+  CurTarget := 0;
+  NavStepReset();
+  Started := GetTickCount;
+  while KeepOn() do begin
+    if Round(User.DistTo(SafeX, SafeY, SafeZ)) <= PATH_REACHED then exit;
+    if GetTickCount - Started > 120000 then begin
+      Say('[Rebuff]', 'The safe point not reached in 2 min - buffing here', 128);
+      exit;
+    end;
+    if PickHitter() <> 0 then begin
+      KillHitters();
+      NavStepReset();
+      continue;
+    end;
+    What := 'to the safe point (' + IntToStr(Round(User.DistTo(SafeX, SafeY, SafeZ))) + ')';
+    NavStep(SafeX, SafeY, SafeZ, MapOk);
+    Delay(CfSpamMs);
+  end;
+end;
+
+procedure SendBuffs();
+var i: integer;
+begin
+  for i := 0 to CfRebuffBpN - 1 do
+    if Engine.BypassToServer(CfRebuffBp[i]) then Delay(555);
+end;
+
+function SupplyCatalog(ItemID: integer; var EntryID: integer; var Price: integer; var Nm: string): boolean;
+begin
+  result := true;
+  case ItemID of
+    1463: begin EntryID := 1;   Price := 14;    Nm := 'Soulshot D';               end;
+    1464: begin EntryID := 3;   Price := 22;    Nm := 'Soulshot C';               end;
+    1465: begin EntryID := 5;   Price := 50;    Nm := 'Soulshot B';               end;
+    1466: begin EntryID := 7;   Price := 120;   Nm := 'Soulshot A';               end;
+    1467: begin EntryID := 9;   Price := 200;   Nm := 'Soulshot S';               end;
+    3948: begin EntryID := 21;  Price := 28;    Nm := 'Blessed Spiritshot D';     end;
+    3949: begin EntryID := 23;  Price := 42;    Nm := 'Blessed Spiritshot C';     end;
+    3950: begin EntryID := 25;  Price := 245;   Nm := 'Blessed Spiritshot B';     end;
+    3951: begin EntryID := 27;  Price := 440;   Nm := 'Blessed Spiritshot A';     end;
+    3952: begin EntryID := 29;  Price := 720;   Nm := 'Blessed Spiritshot S';     end;
+    6645: begin EntryID := 31;  Price := 24;    Nm := 'Beast Soulshot';           end;
+    6647: begin EntryID := 35;  Price := 120;   Nm := 'Beast Blessed Spiritshot'; end;
+    3031: begin EntryID := 59;  Price := 540;   Nm := 'Spirit Ore';               end;
+    2508: begin EntryID := 47;  Price := 360;   Nm := 'Cursed Bone';              end;
+    726:  begin EntryID := 103; Price := 35000; Nm := 'Mana Drug';                end;
+    728:  begin EntryID := 101; Price := 40000; Nm := 'Mana Potion';              end;
+    1539: begin EntryID := 99;  Price := 20000; Nm := 'Healing Potion';           end;
+  else
+    result := false;
+  end;
+end;
+
+procedure MultisellBuy(EntryID, Amount: integer);
+begin
+  Engine.SendToServer('B0' + HexLE32(MULTISELL_ID) + HexLE32(EntryID) +
+    HexLE32(Amount) + '00000000' +
+    '00000000000000000000' + 'FEFF' + '00000000000000000000000000000000');
+end;
+
+// one bag refresh -> what is short (the adena for all of it) -> the shop once -> every purchase -> one check
+procedure BuySupplies();
+var i, n, EntryID, Price: integer;
+  Have, After, Adena, Need, CanPay: Int64;
+  Nm: string;
+  BuyIdx, BuyEntry, BuyNeed: array of integer;
+  BuyHave: array of Int64;
+  BuyName: array of string;
+begin
+  if SuN = 0 then exit;
+  RefreshInventory();
+  Adena := ItemCount(ADENA_ID);
+  SetLength(BuyIdx, 0);
+  for i := 0 to SuN - 1 do begin
+    if not SupplyCatalog(SuID[i], EntryID, Price, Nm) then begin
+      Say('[Supplies]', 'Item ' + IntToStr(SuID[i]) + ' is not in the shop list', 128);
+      continue;
+    end;
+    Have := ItemCount(SuID[i]);
+    if Have >= SuMin[i] then continue;
+    Need := SuMax[i] - Have;
+    CanPay := Adena div Price;
+    if Need > CanPay then Need := CanPay;
+    if Need <= 0 then begin
+      Say('[Supplies]', Nm + ': not enough adena', 128);
+      continue;
+    end;
+    Adena := Adena - Need * Price;
+    n := Length(BuyIdx);
+    SetLength(BuyIdx, n + 1);
+    SetLength(BuyEntry, n + 1);
+    SetLength(BuyNeed, n + 1);
+    SetLength(BuyHave, n + 1);
+    SetLength(BuyName, n + 1);
+    BuyIdx[n] := i;
+    BuyEntry[n] := EntryID;
+    BuyNeed[n] := Need;
+    BuyHave[n] := Have;
+    BuyName[n] := Nm;
+  end;
+  if Length(BuyIdx) = 0 then exit;
+  What := 'buying supplies';
+  Engine.BypassToServer(SHOP_OPEN);
+  Delay(SHOP_WAIT);
+  Engine.BypassToServer(MULTISELL_OPEN);
+  Delay(SHOP_WAIT);
+  for n := 0 to Length(BuyIdx) - 1 do begin
+    if User.Dead then exit;
+    Say('[Supplies]', BuyName[n] + ': ' + IntToStr(BuyHave[n]) + ' -> buying ' + IntToStr(BuyNeed[n]), 0);
+    MultisellBuy(BuyEntry[n], BuyNeed[n]);
+    Delay(BUY_GAP);
+  end;
+  Delay(BUY_WAIT);
+  RefreshInventory();
+  for n := 0 to Length(BuyIdx) - 1 do begin
+    After := ItemCount(SuID[BuyIdx[n]]);
+    if After > BuyHave[n] then Say('[Supplies]', BuyName[n] + ': now ' + IntToStr(After), 0)
+    else Say('[Supplies]', BuyName[n] + ': the purchase is NOT confirmed', 128);
+  end;
+end;
+
+// out of combat right here within Ms: what hits us is fought meanwhile; true = out of combat (the buffer may go here)
+function OutOfCombatHere(Ms: cardinal): boolean;
+var Started: cardinal;
+begin
+  result := false;
+  Started := GetTickCount;
+  while KeepOn() do begin
+    if PickHitter() <> 0 then begin
+      KillHitters();
+      continue;
+    end;
+    if not User.InCombat then begin
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > Ms then exit;
+    What := 'leaving combat to buff';
+    Delay(CfSpamMs);
+  end;
+end;
+
+// the watched buff low for the hold time (or missing at the start): kill the mobs on us -> out of combat here within
+// REBUFF_HERE_MS: the buffer's bypasses right here; mobs keep coming: the safe point first -> the bypasses until the buff
+// is on -> supplies
+procedure Rebuff();
+var Tries: integer;
+begin
+  Phase := 'rebuff';
+  Say('[Rebuff]', 'Buff ' + IntToStr(CfRebuffID) + ': ' + IntToStr(BuffTime(CfRebuffID) div 1000) + ' s left - rebuff', 128);
+  KillHitters();
+  if not KeepOn() then exit;
+  if OutOfCombatHere(REBUFF_HERE_MS) then Say('[Rebuff]', 'Out of combat - the buffer right here', 0)
+  else begin
+    if not KeepOn() then exit;
+    Say('[Rebuff]', 'Still in combat after ' + IntToStr(REBUFF_HERE_MS div 1000) + ' s - to the safe point', 0);
+    GoToSafePoint();
+    if not KeepOn() then exit;
+  end;
+  Tries := 0;
+  while BuffLow() do begin
+    FightUntilOutOfCombat();
+    if not KeepOn() then exit;
+    Inc(Tries);
+    if Tries > REBUFF_TRIES then begin
+      Say('[Rebuff]', 'No buff ' + IntToStr(CfRebuffID) + ' after ' + IntToStr(REBUFF_TRIES) + ' tries - check the bypasses', 255);
+      PauseRun('no buff after ' + IntToStr(REBUFF_TRIES) + ' rebuff tries');
+      exit;
+    end;
+    What := 'buffing (try ' + IntToStr(Tries) + ')';
+    SendBuffs();
+    Delay(2000);
+  end;
+  Say('[Rebuff]', 'Buff received', 0);
+  FightUntilOutOfCombat();
+  if not KeepOn() then exit;
+  BuySupplies();
+  CurTarget := 0;
+  Phase := 'farm';
+  RebuffDraw();
+  Say('[Rebuff]', 'Done, back to the farm', 0);
+end;
+
+// ===================== PvP answer =====================
+// A player (not party / clan / no-alert) hits us: after a random delay our rules "at the player" go at him (no Ctrl:
+// only a flagged player can be hit - no PK by mistake) until he stops, dies or leaves
+
+procedure PvpScan();
+var i, j, k, n, OID, Atk, Tgt, MyClan, ChClan: integer;
+  AtkT: cardinal;
+  T: TL2Live;
+  Hit: boolean;
+  Nm: string;
+  NewOID, NewAtk: array of integer;
+  NewTime: array of cardinal;
+begin
+  MyClan := User.ClanID;
+  SetLength(NewOID, 0);
+  SetLength(NewAtk, 0);
+  SetLength(NewTime, 0);
+  for i := 0 to CharList.Count - 1 do begin
+    if i >= CharList.Count then break;
+    OID := CharList(i).OID;
+    if OID = User.OID then continue;
+    if CharList(i).Dead or CharList(i).IsMember then continue;
+    ChClan := CharList(i).ClanID;
+    if (MyClan <> 0) and (ChClan = MyClan) then continue;
+    Atk := CharList(i).AtkOID;
+    AtkT := CharList(i).AtkTime;
+    Tgt := 0;
+    T := CharList(i).Target;
+    if T <> nil then Tgt := T.OID;
+    n := Length(NewOID);
+    SetLength(NewOID, n + 1);
+    SetLength(NewAtk, n + 1);
+    SetLength(NewTime, n + 1);
+    NewOID[n] := OID;
+    NewAtk[n] := Atk;
+    NewTime[n] := AtkT;
+    if (Atk <> User.OID) and (Tgt <> User.OID) then continue;
+    Hit := false;
+    if Atk = User.OID then begin
+      k := -1;
+      for j := 0 to Length(PvpSeenOID) - 1 do
+        if PvpSeenOID[j] = OID then begin
+          k := j;
+          break;
+        end;
+      Hit := (k >= 0) and ((PvpSeenAtk[k] <> User.OID) or (PvpSeenTime[k] <> AtkT));
+    end;
+    if (not Hit) and (Tgt = User.OID) and (CharList(i).Cast.EndTime > 0) then Hit := true;
+    if not Hit then continue;
+    Nm := LowerCase(CharList(i).Name);
+    if Pos(',' + Nm + ',', CfNoAlert) > 0 then continue;
+    if PvpOID = 0 then begin
+      PvpOID := OID;
+      PvpAt := GetTickCount + cardinal(CfPvpMin + Random(CfPvpMax - CfPvpMin + 1));
+      Alert('[PvP]', CharList(i).Name + ' attacks me, answering in ' + IntToStr(PvpAt - GetTickCount) + ' ms', '');
+    end;
+    if OID = PvpOID then PvpLast := GetTickCount;
+  end;
+  SetLength(PvpSeenOID, Length(NewOID));
+  SetLength(PvpSeenAtk, Length(NewOID));
+  SetLength(PvpSeenTime, Length(NewOID));
+  for i := 0 to Length(NewOID) - 1 do begin
+    PvpSeenOID[i] := NewOID[i];
+    PvpSeenAtk[i] := NewAtk[i];
+    PvpSeenTime[i] := NewTime[i];
+  end;
+end;
+
+// true = this tick is the player's (no mob fight now)
+function PvpStep(): boolean;
+var i, r: integer;
+begin
+  result := false;
+  if not CfPvp then exit;
+  if GetTickCount - PvpScanAt >= PVP_SCAN_MS then begin
+    PvpScanAt := GetTickCount;
+    PvpScan();
+  end;
+  if PvpOID = 0 then exit;
+  i := CharIdx(PvpOID);
+  if (i < 0) or CharList(i).Dead or (GetTickCount - PvpLast > PVP_FORGET_MS) then begin
+    Say('[PvP]', 'The player is gone / dead / stopped - back to the mobs', 0);
+    if CurTarget = PvpOID then CurTarget := 0;
+    PvpOID := 0;
+    exit;
+  end;
+  if GetTickCount < PvpAt then exit;
+  if (CurTarget <> PvpOID) or (GetTickCount - LastSetTarget >= RETARGET_MS) then begin
+    Engine.SetTarget(PvpOID);
+    CurTarget := PvpOID;
+    LastSetTarget := GetTickCount;
+  end;
+  r := PickRule(MODE_PVP, PvpOID);
+  if r < 0 then exit;                 // no rule at him in reach: the mobs meanwhile
+  Fire(r, PvpOID);
+  LastActAt := GetTickCount;
+  What := RuName[r] + ' -> ' + TgtName(PvpOID) + ' (PvP)';
+  result := true;
+end;
+
+// ===================== the way back: Aden -> buffer, supplies -> gatekeeper -> teleport -> rail -> spot =====================
+
+function TeleportBp(): string;
+begin
+  result := CfTeleport;
+  if result = '' then result := MapTeleport;
+end;
+
+// where the farm starts: the first farm spot of the map, else its safe point; false = neither
+function SpotPos(var X, Y, Z: integer): boolean;
+begin
+  result := true;
+  if SpotN > 0 then begin
+    X := SpotX[0];
+    Y := SpotY[0];
+    Z := SpotZ[0];
+  end else if HasSafe then begin
+    X := SafeX;
+    Y := SafeY;
+    Z := SafeZ;
+  end else result := false;
+end;
+
+function Dist2D(X, Y: integer): integer;
+var DX, DY: double;
+begin
+  DX := X - User.X;
+  DY := Y - User.Y;
+  result := Round(Sqrt(DX * DX + DY * DY));
+end;
+
+function InAden(): boolean;
+begin
+  result := Dist2D(ADEN_X, ADEN_Y) < ADEN_RADIUS;
+end;
+
+// off the map's cells and farther than TRAVEL_FAR from where the farm starts (up in town, started in town...)
+function FarFromMap(): boolean;
+var UX, UY, X, Y, Z: integer;
+begin
+  result := false;
+  if not MapOk then exit;
+  UX := User.X;
+  UY := User.Y;
+  if NavGridFree(UX, UY) then exit;
+  if not SpotPos(X, Y, Z) then exit;
+  result := Dist2D(X, Y) > TRAVEL_FAR;
+end;
+
+// a run to X, Y in ticks (human clicks when on): the panel stays live, a pause stops it, the mobs that hit us are
+// fought first. Graph: along the map. True = within Reach
+function RunTo(X, Y, Z, Reach: integer; Graph: boolean; MaxMs: cardinal; Why: string): boolean;
+var Started: cardinal;
+  D: integer;
+begin
+  result := false;
+  NavStepReset();
+  Started := GetTickCount;
+  while KeepOn() do begin
+    D := Dist2D(X, Y);
+    if D <= Reach then begin
+      result := true;
+      exit;
+    end;
+    if GetTickCount - Started > MaxMs then exit;
+    if NavStillMs() > 6000 then exit;
+    if PickHitter() <> 0 then begin
+      KillHitters();
+      NavStepReset();
+      continue;
+    end;
+    What := Why + ' (' + IntToStr(D) + ')';
+    if Graph then NavStep(X, Y, Z, true) else NavStepPlain(X, Y, Z);
+    Delay(LoopMs());
+  end;
+end;
+
+// the rail to run now: the rail point nearest to us (any rail, within RAIL_NEAR) and the way along that rail to the end
+// that leads in - the end nearer to the spot (no spot: the end on the map's cells, else the far one). False = no rail
+// near, or we are at that end already
+function RailPlan(var Start, Upto, Dir: integer): boolean;
+var r, a, b, i, UX, UY, X, Y, Z, Lim, BestI, BestR, PX, PY: integer;
+  D, BestD, DX, DY, DA, DB: double;
+  FreeA, FreeB: boolean;
+begin
+  result := false;
+  UX := User.X;
+  UY := User.Y;
+  Lim := RAIL_NEAR;                         // a const in a double sum becomes a double for PaxScript: IntToStr fails then
+  BestD := Lim + 1;
+  BestI := -1;
+  BestR := -1;
+  for r := 0 to NavRailCount() - 1 do begin
+    a := NavRailFirst(r);
+    b := NavRailLast(r);
+    if (a < 0) or (b < a) then continue;
+    for i := a to b do begin
+      DX := NavRailX(i) - UX;
+      DY := NavRailY(i) - UY;
+      D := Sqrt(DX * DX + DY * DY);
+      if D < BestD then begin
+        BestD := D;
+        BestI := i;
+        BestR := r;
+      end;
+    end;
+  end;
+  if BestI < 0 then exit;
+  a := NavRailFirst(BestR);
+  b := NavRailLast(BestR);
+  if SpotPos(X, Y, Z) then begin
+    DX := NavRailX(a) - X;
+    DY := NavRailY(a) - Y;
+    DA := Sqrt(DX * DX + DY * DY);
+    DX := NavRailX(b) - X;
+    DY := NavRailY(b) - Y;
+    DB := Sqrt(DX * DX + DY * DY);
+  end else begin
+    PX := NavRailX(a);
+    PY := NavRailY(a);
+    FreeA := NavGridFree(PX, PY);
+    PX := NavRailX(b);
+    PY := NavRailY(b);
+    FreeB := NavGridFree(PX, PY);
+    DX := NavRailX(a) - UX;
+    DY := NavRailY(a) - UY;
+    DA := -Sqrt(DX * DX + DY * DY);         // no spot: the far end ...
+    DX := NavRailX(b) - UX;
+    DY := NavRailY(b) - UY;
+    DB := -Sqrt(DX * DX + DY * DY);
+    if FreeA and (not FreeB) then DA := -1E9; // ... unless just one end is on the map's cells
+    if FreeB and (not FreeA) then DB := -1E9;
+  end;
+  Start := BestI;
+  if DB <= DA then begin
+    Upto := b;
+    Dir := 1;
+  end else begin
+    Upto := a;
+    Dir := -1;
+  end;
+  result := Start <> Upto;
+end;
+
+// a rail point by point from the nearest one to the end that leads in (RailPlan): each point clicked straight (no
+// graph, no green needed there); a point not reached in time / stuck: the next one. True = run to its end
+function RailWalk(): boolean;
+var i, Start, Upto, Dir, Missed, X, Y, Z, n, k: integer;
+  Lb: string;
+begin
+  result := false;
+  if not RailPlan(Start, Upto, Dir) then exit;
+  n := Abs(Upto - Start) + 1;
+  Say('[Rail]', 'Along the rail: ' + IntToStr(n) + ' points, point by point', 0);
+  Missed := 0;
+  i := Start;
+  k := 1;
+  while KeepOn() do begin
+    X := NavRailX(i);
+    Y := NavRailY(i);
+    Z := User.Z;
+    Lb := 'the rail ' + IntToStr(k) + '/' + IntToStr(n);
+    if not RunTo(X, Y, Z, RAIL_REACH, false, RAIL_POINT_MS, Lb) then begin
+      if not KeepOn() then exit;
+      Inc(Missed);
+      Dbg('[Rail]', 'point ' + IntToStr(k) + ' (' + IntToStr(X) + ',' + IntToStr(Y) + ') not reached - the next one');
+    end;
+    if i = Upto then break;
+    i := i + Dir;
+    Inc(k);
+  end;
+  if not KeepOn() then exit;
+  if Missed > 0 then Say('[Rail]', 'The rail is run (' + IntToStr(Missed) + ' points not reached - check it there)', 128)
+  else Say('[Rail]', 'The rail is run', 0);
+  NavStepReset();
+  result := true;
+end;
+
+// the teleport skill to Aden, up to 3 tries; true = in Aden
+function TeleportToAden(): boolean;
+var Tries: integer;
+  T: cardinal;
+begin
+  result := InAden();
+  if result then exit;
+  for Tries := 1 to 3 do begin
+    if not KeepOn() then exit;
+    What := 'the teleport to Aden (try ' + IntToStr(Tries) + ')';
+    Say('[Return]', What, 0);
+    if Engine.UseSkill(ADEN_SKILL_ID) then begin
+      T := GetTickCount;
+      while (GetTickCount - T < 20000) and (not InAden()) and KeepOn() do Delay(500);
+      if InAden() then begin
+        result := true;
+        exit;
+      end;
+    end;
+    Delay(2000);
+  end;
+end;
+
+// the Aden gatekeeper's dialog, then the teleport bypass (as the old farm scripts); true = we really moved away
+function TeleportToSpot(): boolean;
+var i, NpcOID, Tries: integer;
+  Bp: string;
+begin
+  result := false;
+  Bp := TeleportBp();
+  NpcOID := 0;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if NpcList(i).ID = GK_ID then begin
+      NpcOID := NpcList(i).OID;
+      break;
+    end;
+  end;
+  if NpcOID = 0 then begin
+    Say('[Return]', 'The Aden gatekeeper is not near', 128);
+    exit;
+  end;
+  for Tries := 1 to 3 do begin
+    if not KeepOn() then exit;
+    What := 'the teleport to the spot (try ' + IntToStr(Tries) + ')';
+    Engine.SetTarget(NpcOID);
+    Delay(RandIn(600, 1200));
+    if Engine.DlgOpen(GK_ID) then begin
+      Delay(RandIn(1200, 2000));
+      Engine.DlgSel(0);
+      Delay(RandIn(1500, 2500));
+      Engine.BypassToServer(Bp);
+      Delay(1500);
+      Engine.ConfirmDialog(true);
+      Delay(4000);
+      if Dist2D(GK_X, GK_Y) > 3000 then begin
+        Say('[Return]', 'Teleported', 128);
+        result := true;
+        exit;
+      end;
+    end;
+    Say('[Return]', 'The teleport try ' + IntToStr(Tries) + ' failed', 128);
+    Delay(2000);
+  end;
+end;
+
+// the buffer in town (all buffs are gone after a death): its bypasses until the watched buff is on
+procedure TownBuff();
+var Tries: integer;
+begin
+  if (CfRebuffID = 0) or (CfRebuffBpN = 0) then exit;
+  Tries := 0;
+  while BuffLow() and KeepOn() and (Tries < 10) do begin
+    Inc(Tries);
+    What := 'buffing in town (try ' + IntToStr(Tries) + ')';
+    SendBuffs();
+    Delay(2000);
+  end;
+  if BuffLow() then Say('[Return]', 'No buff ' + IntToStr(CfRebuffID) + ' after ' + IntToStr(Tries) + ' tries - on anyway', 128);
+end;
+
+// the way back to the spot (death = return, up in town / started far from the map): Aden -> the buffer, the supplies ->
+// the gatekeeper -> the teleport -> the rail from the landing point -> the spot. True = there
+function ReturnToSpot(): boolean;
+var X, Y, Z: integer;
+begin
+  result := false;
+  if not SpotPos(X, Y, Z) then begin
+    PauseRun('the way back: the map has no farm spot (star) and no safe point');
+    exit;
+  end;
+  if TeleportBp() = '' then begin
+    PauseRun('the way back: no teleport to the spot (page Map)');
+    exit;
+  end;
+  if Z = 0 then Z := User.Z;
+  Phase := 'return';
+  Say('[Return]', '=== Back to the spot ===', 128);
+  CurTarget := 0;
+  ApprOID := 0;
+  RoamOn := false;
+  if not TeleportToAden() then begin
+    if KeepOn() then PauseRun('the way back: could not get to Aden');
+    exit;
+  end;
+  Delay(RandIn(1500, 4000));
+  TownBuff();
+  if not KeepOn() then exit;
+  BuySupplies();
+  if not KeepOn() then exit;
+  if not RunTo(GK_X, GK_Y, GK_Z, 150, false, 60000, 'to the gatekeeper') then
+    if not KeepOn() then exit;
+  if not TeleportToSpot() then begin
+    if KeepOn() then PauseRun('the way back: the teleport to the spot failed');
+    exit;
+  end;
+  Delay(RandIn(2000, 4000));
+  RailWalk();
+  if not KeepOn() then exit;
+  if not RunTo(X, Y, Z, PATH_REACHED, MapOk, 180000, 'to the spot') then begin
+    if not KeepOn() then exit;
+    Say('[Return]', 'The spot not reached - farming from here', 128);
+  end else Say('[Return]', 'At the spot', 128);
+  RebuffDraw();
+  NavStepReset();
+  Phase := 'farm';
+  result := true;
+end;
+
+// ===================== human: the target wait, AFK breaks =====================
+
+// a new target that does not hit us is taken a moment later (h_pick: we "see" it first)
+function PickWait(OID: integer): boolean;
+var i: integer;
+begin
+  result := false;
+  if not (CfHuman and (CfHPickMax > 0)) then exit;
+  i := NpcIdx(OID);
+  if (i >= 0) and IsOnUs(i) then exit;
+  if PickAt = 0 then PickAt := GetTickCount + cardinal(DrawDist(DS_PICK));
+  result := GetTickCount < PickAt;
+end;
+
+function AnyOnUs(): boolean;
+var i: integer;
+begin
+  result := false;
+  for i := 0 to NpcList.Count - 1 do begin
+    if i >= NpcList.Count then break;
+    if IsOnUs(i) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// sitting: stand up (not again within STAND_MS: the action may toggle)
+procedure StandUp();
+begin
+  if (not User.Sitting) or (GetTickCount - StandAt < STAND_MS) then exit;
+  StandAt := GetTickCount;
+  Engine.Stand;
+end;
+
+// everything of the fight and the runs forgotten: the next tick chooses and moves from scratch (after a break, when
+// stuck); the target is chosen again (a stuck one is marked unreachable by the caller)
+procedure HumanReset();
+begin
+  CurTarget := 0;
+  ApprOID := 0;
+  FightOID := 0;
+  FightHit := false;
+  ShootOID := 0;
+  RoamOn := false;
+  RoamWaitUntil := 0;
+  PickAt := 0;
+  Pend := -1;
+  IdleSince := 0;
+  NavStepReset();
+end;
+
+// a target / a run to do, yet no step and no cast for IDLE_MS: start over (the target left a while). True = it did
+function IdleCheck(): boolean;
+begin
+  result := false;
+  if (CurTarget = 0) and (not RoamOn) then begin
+    IdleSince := 0;
+    exit;
+  end;
+  if (NavStillMs() < 1500) or (GetTickCount - LastActAt < 4000) then begin
+    IdleSince := 0;
+    exit;
+  end;
+  if IdleSince = 0 then begin
+    IdleSince := GetTickCount;
+    exit;
+  end;
+  if GetTickCount - IdleSince < IDLE_MS then exit;
+  Say('[Stuck]', 'Nothing done for ' + IntToStr(IDLE_MS div 1000) + ' s (' + What + ') - starting over', 128);
+  if CurTarget <> 0 then MarkUnreach(CurTarget);
+  HumanReset();
+  result := true;
+end;
+
+procedure AfkEnd(Why: string);
+begin
+  if AfkOn then Say('[AFK]', 'The break is over (' + Why + ')', 0);
+  AfkOn := false;
+  AfkUntil := 0;
+  AfkSitAt := 0;
+  AfkNextAt := GetTickCount + cardinal(DrawDist(DS_AFKEVERY)) * 60000;
+  HumanReset();                                 // the farm starts clean: no target, run or click left from before
+  if User.Sitting then begin
+    StandUp();
+    AfkWakeUntil := GetTickCount + STAND_MS;
+  end;
+end;
+
+// AFK breaks: after afk_every minutes of farming (random) a break of afk_for minutes (random) - no new targets, no
+// buffs, no runs; sat down (afk_sit) after a few seconds. A mob on us is fought (ChooseTarget takes only those).
+// It starts when no mob is on us and nothing is cast at the target. True = this tick is the break's
+function AfkTick(): boolean;
+var Left: cardinal;
+begin
+  result := false;
+  if GetTickCount < AfkWakeUntil then begin
+    What := 'standing up';
+    result := true;
+    exit;
+  end;
+  if not (CfHuman and CfAfk) then begin
+    if AfkOn then AfkEnd('turned off');
+    AfkNextAt := 0;
+    exit;
+  end;
+  if AfkNextAt = 0 then AfkNextAt := GetTickCount + cardinal(DrawDist(DS_AFKEVERY)) * 60000;
+  if not AfkOn then begin
+    if GetTickCount < AfkNextAt then exit;
+    if AnyOnUs() or ((CurTarget <> 0) and FightHit) then exit;
+    AfkOn := true;
+    AfkUntil := GetTickCount + cardinal(DrawDist(DS_AFKFOR)) * 60000;
+    AfkSitAt := 0;
+    if CfAfkSit then AfkSitAt := GetTickCount + cardinal(RandIn(2000, 6000));
+    CurTarget := 0;
+    ApprOID := 0;
+    RoamOn := false;
+    Pend := -1;
+    PickAt := 0;
+    StopMoving();
+    Say('[AFK]', 'A break for ' + IntToStr((AfkUntil - GetTickCount) div 60000) + ' min', 0);
+  end;
+  if GetTickCount >= AfkUntil then begin
+    AfkEnd('time');
+    result := GetTickCount < AfkWakeUntil;
+    exit;
+  end;
+  Phase := 'afk';
+  if AnyOnUs() then begin
+    StandUp();
+    What := 'AFK break - a mob on me, fighting it';
+    exit;
+  end;
+  Left := (AfkUntil - GetTickCount) div 1000;
+  What := 'AFK break, back in ' + IntToStr(Left div 60) + ':' + Copy(IntToStr(100 + Left mod 60), 2, 2);
+  if (AfkSitAt <> 0) and (GetTickCount >= AfkSitAt) and (not User.Sitting) and (not User.Dead) then begin
+    Engine.Sit;
+    AfkSitAt := GetTickCount + 30000;          // not sat (moving...): again later
+  end;
+  result := true;
+end;
+
+// ===================== the farm tick =====================
+
+procedure FarmTick();
+var OID, r, RS, RU, RD, UX, UY: integer;
+begin
+  Phase := 'farm';
+  // the start / up again: the watched buff missing and nothing hits us - the buffer's bypasses right here, before the
+  // rail, the runs and the mobs (far from the map with the way back on: the way back buffs in town)
+  if StartBuff then begin
+    StartBuff := false;
+    if BuffLow() and (not AnyOnUs()) and (not ((CfDeath = 'return') and FarFromMap())) then begin
+      Say('[Rebuff]', 'No buff ' + IntToStr(CfRebuffID) + ' at the start - the buffer first', 0);
+      LowOn := false;
+      Rebuff();
+      exit;
+    end;
+  end;
+  // off the painted map with a rail near (the teleport landing...): the rail first, point by point - no short cuts
+  UX := User.X;
+  UY := User.Y;
+  if MapOk and (GetTickCount >= RailAgainAt) and (not NavGridFree(UX, UY)) and (not AnyOnUs()) and RailPlan(RS, RU, RD) then begin
+    RailWalk();
+    RailAgainAt := GetTickCount + 30000;
+    exit;
+  end;
+  // far from the map (up in town after a death, started in town): back to the spot, or a pause - no run across the world
+  if (GetTickCount >= ReturnAfter) and FarFromMap() then begin
+    if CfDeath = 'return' then begin
+      if not ReturnToSpot() then ReturnAfter := GetTickCount + 10000;
+    end else PauseRun('far from the map - bring the character there, or Alerts: When I die = back to the spot');
+    exit;
+  end;
+  CheckCasts();
+  CheckWeapon();
+  ChampionTick();
+  PlayerTick();
+  // the watched buff low the hold time in a row -> rebuff (a moment without it in the list is no rebuff)
+  if BuffLow() then begin
+    if not LowOn then begin
+      LowOn := true;
+      LowSince := GetTickCount;
+    end;
+  end else if LowOn then begin
+    LowOn := false;
+    if GetTickCount - LowSince >= 1000 then
+      Say('[Rebuff]', 'The buff is there again after ' + IntToStr((GetTickCount - LowSince) div 1000) + ' s - no rebuff', 0);
+  end;
+  if CfHuman and (CfHSpawnMax > 0) then SeenTick();
+  if PvpStep() then exit;
+  if AfkTick() then exit;
+  if IdleCheck() then exit;
+  if LowOn and (not AfkOn) and (GetTickCount - LowSince >= cardinal(LowHoldMs)) then begin
+    LowOn := false;
+    Rebuff();
+    exit;
+  end;
+  if PendHold() then exit;
+  OID := ChooseTarget();
+  if OID = 0 then begin
+    CurTarget := 0;
+    ApprOID := 0;
+    PickAt := 0;
+    if AfkOn then exit;                // the break: no buffs, no runs
+    r := PickRule(MODE_NONE, 0);       // no target: buffs, the summon, potions
+    if r >= 0 then begin
+      Fire(r, 0);
+      LastActAt := GetTickCount;
+      What := RuName[r];
+      exit;
+    end;
+    RoamTick();
+    exit;
+  end;
+  // human: a new target that does not hit us - a moment to "see" it; a run going on goes on meanwhile
+  if (OID <> CurTarget) and (OID <> FightOID) and PickWait(OID) then begin
+    if RoamOn then RoamTick();
+    What := 'noticed ' + TgtName(OID);
+    exit;
+  end;
+  PickAt := 0;
+  RoamOn := false;
+  OffMapSince := 0;
+  FightTick(OID);
+end;
+
+// "Can't see target." comes as a system message event
+procedure OnAction(Action: TL2Action; P1, P2: cardinal);
+begin
+  if (Action = laSysMsg) and (P1 = CANT_SEE_MSG_ID) then CantSeeFlag := true;
+end;
+
+// ===================== main =====================
+
+begin
+  Tag := FileTag(User.Name);
+  CfgPath := Script.Path + Tag + '.pve';
+  StatePath := Script.Path + Tag + '.pve.json';
+  LivePath := Script.Path + 'Nav\' + Tag + '.navlive';
+  SetDefaults();
+  Pend := -1;
+  LastRule := -1;
+  ProfileLoaded := '?';                     // the first start applies the profile (or turns the interface off)
+  Phase := 'paused';
+  What := 'paused - start it on the panel';
+  FirstCfg := true;
+  Randomize;
+  Say('[PvE]', 'PvePanel farm for ' + User.Name + ': paused. Start / pause / settings: Library\PvePanel\PvePanel.exe', 128);
+  CheckCfg();
+  InitSysMessages();
+  DumpState();
+  while Delay(LoopMs()) do begin
+    Service();
+    if MapWanted then LoadMap();
+    if User.Dead then begin
+      if not WasDead then begin
+        WasDead := true;
+        DeadSince := GetTickCount;
+        CurTarget := 0;
+        AfkOn := false;
+        AfkUntil := 0;
+        AfkNextAt := 0;
+        Pend := -1;
+        RoamOn := false;
+        Alert('[Death]', 'The character died', DEATH_SOUND);
+        if RunOn and (CfDeath = 'pause') then PauseRun('died');
+      end;
+      if RunOn then begin
+        Phase := 'dead';
+        What := 'dead, waiting for a resurrection';
+        // death = return: "To Village" after a while (again every 2 s while still dead)
+        if (CfDeath = 'return') and (GetTickCount - DeadSince >= VILLAGE_WAIT_MS) and (GetTickCount - VillageAt >= 2000) then begin
+          VillageAt := GetTickCount;
+          What := 'dead - to the village';
+          Engine.GoHome;
+        end;
+      end;
+      continue;
+    end;
+    if WasDead then begin
+      WasDead := false;
+      ReturnAfter := GetTickCount + RESPAWN_WAIT_MS;
+      StartBuff := true;                      // the buffs are gone: the buffer before anything (when nothing hits us)
+      Say('[PvE]', 'Alive again', 0);
+      NavStepReset();
+      if RunOn then begin
+        What := 'resurrected';
+        Phase := 'farm';
+      end;
+    end;
+    if not RunOn then begin
+      Phase := 'paused';
+      continue;
+    end;
+    FarmTick();
+  end;
+end.

@@ -34,6 +34,11 @@
   .pill.warn { color: var(--warn); } .pill.warn .dot { background: var(--warn); }
   .pill.bad { color: var(--bad); } .pill.bad .dot { background: var(--bad); }
   .pill:empty { display: none; }
+  button.bagbtn { cursor: pointer; color: var(--text); }
+  button.bagbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button.bagbtn svg { width: 13px; height: 13px; flex: none; }
+  button.bagbtn.busy { opacity: 1; color: var(--accent); }
+  button.bagbtn.busy svg { animation: spin .9s linear infinite; }
 
   button { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2); color: var(--text);
     border: 1px solid var(--line2); border-radius: 7px; padding: 5px 10px; font: inherit; cursor: pointer; white-space: nowrap;
@@ -246,6 +251,24 @@
   .opt { display: grid; grid-template-columns: 1fr auto; gap: 4px 14px; align-items: center; padding: 10px 12px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); }
   .opt .d { grid-column: 1; font-size: 12px; color: var(--dim); }
   .opt .t { font-weight: 600; }
+  .stopopt { display: inline-flex; align-items: center; gap: 7px; margin-right: 14px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .stopopt .sw { margin: 0; }
+  input.dmax { width: 64px; }
+  /* the voice */
+  .vstate { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .vkey { min-width: 110px; justify-content: center; font-weight: 700; }
+  .vkey.cap { border-color: var(--accent); color: var(--accent); }
+  .vmeter { display: inline-block; width: 90px; height: 6px; border-radius: 3px; background: var(--panel3); overflow: hidden; vertical-align: middle; margin-left: 8px; }
+  .vmeter > i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .2s; }
+  .vtry { display: flex; gap: 6px; margin-top: 10px; }
+  .vtry input { flex: 1; }
+  .vlog { margin-top: 10px; display: flex; flex-direction: column; gap: 5px; max-height: 320px; overflow: auto; }
+  .vrow { display: grid; grid-template-columns: 58px 1fr auto; gap: 2px 10px; padding: 7px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line); font-size: 12.5px; }
+  .vrow .vt { color: var(--dim); }
+  .vrow .vq { font-weight: 600; }
+  .vrow .vr { grid-column: 2 / 4; color: var(--muted); }
+  .vrow.ok .vr { color: var(--ok); } .vrow.bad .vr { color: var(--bad); }
+  .vrow .vm { color: var(--dim); white-space: nowrap; }
   .opt .c { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 6px; align-items: center; }
   .seg { display: inline-flex; border: 1px solid var(--line2); border-radius: 8px; overflow: hidden; }
   .seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 5px 11px; }
@@ -317,6 +340,7 @@
     <select id="charSel" title="Чью сумку точим"></select>
   </div>
   <span id="botState" class="pill"></span>
+  <button id="bagBtn" class="pill bagbtn" hidden><svg class="i" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg><span id="bagTxt"></span></button>
   <span class="sp"></span>
   <span id="saveState" class="pill"></span>
 </div>
@@ -395,12 +419,10 @@
         <div class="opts">
           <div class="opt"><span class="t">Порядок</span><span class="d">«По одной» — вещь точится до цели (или пока не сломается), потом следующая. «По кругу» — по одной попытке на каждую вещь по очереди.</span>
             <span class="c"><span class="seg" id="optOrder"><button data-v="seq">по одной</button><button data-v="round">по кругу</button></span></span></div>
-          <div class="opt"><span class="t">Остановиться, если вещь сломалась</span><span class="d">Иначе бот просто идёт к следующей вещи.</span>
-            <span class="c"><label class="sw"><input type="checkbox" id="optBreak"><span></span></label></span></div>
+          
           <div class="opt"><span class="t">Не больше свитков за запуск</span><span class="d">0 — без лимита. Удобно, чтобы не спустить всё за раз.</span>
             <span class="c"><input type="number" id="optMax" min="0" max="100000" step="1"></span></div>
-          <div class="opt"><span class="t">Остановиться, когда до цели дойдут N вещей</span><span class="d">0 — точить все. Вещь считается, когда дошла до последней цели (дальше её не берёт ни один диапазон). С порядком «по одной» бот ведёт одну вещь до конца, потом следующую.</span>
-            <span class="c"><input type="number" id="optDone" min="0" max="100000" step="1"></span></div>
+          
         </div>
       </section>
       <section class="card">
@@ -413,6 +435,24 @@
           <div class="opt"><span class="t">Лог пакетов</span><span class="d">Library\Logs\enchant_&lt;ник&gt;_&lt;время&gt;.log — шаги бота и ответы сервера. Если заточка не идёт — пришли этот файл. Заточка руками тоже туда пишется.</span>
             <span class="c"><label class="sw"><input type="checkbox" id="optDebug"><span></span></label></span></div>
         </div>
+      </section>
+      <section class="card" id="voiceCard">
+        <h3>Голос <span class="muted">— всё на этом ПК, без интернета</span></h3>
+        <div class="vstate" id="vState"></div>
+        <div class="opts">
+          <div class="opt"><span class="t">Голосовое управление</span><span class="d">Зажми клавишу, скажи команду, отпусти. Работает и в окне игры: команда идёт персонажу этого окна. Распознавание и нейросеть грузятся на видеокарту (~5 ГБ видеопамяти).</span>
+            <span class="c"><label class="sw"><input type="checkbox" id="vOn"><span></span></label></span></div>
+          <div class="opt"><span class="t">Клавиша «говорю»</span><span class="d">Нажми кнопку, потом нужную клавишу или кнопку мыши. Лучше ту, что игра не использует.</span>
+            <span class="c"><button class="vkey" id="vKey">—</button></span></div>
+          <div class="opt"><span class="t">Микрофон <span class="vmeter"><i id="vLevel"></i></span></span><span class="d">Полоска — громкость прямо сейчас (если молчит — не тот микрофон).</span>
+            <span class="c"><select id="vMic"></select></span></div>
+          <div class="opt"><span class="t">Звуки</span><span class="d">Писк при записи и при результате. Выключено — только надпись над игрой.</span>
+            <span class="c"><label class="sw"><input type="checkbox" id="vBeeps"><span></span></label></span></div>
+          <div class="opt"><span class="t">Нейросеть для сложных фраз</span><span class="d">Короткие команды («старт», «стоп», «до плюс шести», «свиток брони А») работают сразу. Остальное разбирает локальная нейросеть (~1 с).</span>
+            <span class="c"><label class="sw"><input type="checkbox" id="vLlm"><span></span></label></span></div>
+        </div>
+        <div class="vtry"><input type="text" id="vText" placeholder="Команда текстом — как будто сказал (например: заточи до шести и потом кристаллизуй дошедшие)"><button class="primary" id="vSend">Выполнить</button></div>
+        <div class="vlog" id="vLog"></div>
       </section>
       <section class="card">
         <h3>Файлы</h3>
@@ -429,7 +469,7 @@
         <li><b>Вещи</b> выбираются по виду: «Avadon Leather Armor ×8» — все такие в сумке, с любой заточкой, кроме надетых (их не трогаем, чтобы не сломать свои). Докупил ещё — они тоже попадут. Надетую вещь можно выбрать отдельной строкой.</li>
         <li><b>Потом</b> (у диапазона): когда заточка кончится сама (всё дошло, кончились свитки или лимит), бот кристаллизует выбранные вещи диапазона — дошедшие до цели, не дошедшие или все. Надетые — никогда. После «Стоп» не кристаллизует. Кнопка <b>«Кристаллизовать сейчас»</b> делает то же без заточки (с подтверждением).</li>
         <li><b>Как точит</b>: как клиент игры — открывает свиток, кладёт вещь в окно и дальше жмёт только «Заточить», пока вещь не дойдёт до цели; потом кладёт в то же окно следующую. Инвентарь не открывает: уровни и свитки берёт из ответов сервера.</li>
-        <li><b>Сумка</b>: бот сам замечает не все изменения, поэтому просит у сервера всю сумку на старте и в конце заточки (в игре на миг откроется инвентарь). Докупил что-то — кнопка «обновить сумку» в выборе вещей.</li>
+        <li><b>Сумка</b>: бот сам замечает не все изменения, поэтому просит у сервера всю сумку на старте и в конце заточки (в игре на миг откроется инвентарь). Докупил что-то — кнопка «↻ сумка» сверху (или «обновить сумку» в выборе вещей).</li>
         <li>Свитки и камни берутся по ID из сумки, количество видно рядом. Кончились — бот остановится и скажет, чего не хватило.</li>
         <li><b>Между заточками</b> — пауза после результата до следующего «Заточить» той же вещи (можно 0). <b>После новой вещи</b> — пауза между «положил вещь в окно» и её первым «Заточить»: многие сервера (L2J / Mobius) кикают, если меньше 2 с («autoenchant»).</li>
         <li><b>Старт</b> работает, только когда бот на связи. Перезапуск скрипта сам заточку не начинает. <b>Стоп</b> — сразу, если «Заточить» ещё не нажато; иначе после результата этой попытки.</li>
@@ -532,7 +572,7 @@ async function writeFile(name, text) { return API.put(name, cp1251(text)); }
 const CRYST = { none: 'ничего', done: 'дошедшие до цели', left: 'не дошедшие до цели', all: 'все вещи диапазона' };
 // items: single items by OID (a worn one); kinds: every item of that item ID in the bag, not worn (mass enchanting)
 // stoneFrom / stoneTo: the stone only for tries at +stoneFrom .. +(stoneTo - 1); -1: the range's own from / to
-function newJob(o) { return Object.assign({ on: true, name: '', from: 0, to: 3, scroll: 0, scrollName: '', stoneOn: false, stone: 0, stoneName: '', stoneFrom: -1, stoneTo: -1, items: [], kinds: [], cryst: 'none' }, o); }
+function newJob(o) { return Object.assign({ on: true, name: '', from: 0, to: 3, scroll: 0, scrollName: '', stoneOn: false, stone: 0, stoneName: '', stoneFrom: -1, stoneTo: -1, items: [], kinds: [], cryst: 'none', stopBreak: false, doneMax: 0 }, o); }
 // doneMax: the run stops when this many items reached their last target (0: no such stop)
 function defaultCfg() { return { run: 0, runId: '', crystId: '', delayMs: 200, putMs: 2000, order: 'seq', maxScrolls: 0, doneMax: 0, stopOnBreak: false, chat: false, sound: true, debug: true, jobs: [] }; }
 const stFrom = j => j.stoneFrom >= 0 ? j.stoneFrom : j.from;
@@ -572,6 +612,8 @@ function parseCfg(text) {
     else if (k === 'stone_name') j.stoneName = v;
     else if (k === 'stone_from') j.stoneFrom = clampInt(v, -1, 100, -1);
     else if (k === 'stone_to') j.stoneTo = clampInt(v, -1, 100, -1);
+    else if (k === 'stop_on_break') j.stopBreak = v === '1';
+    else if (k === 'done_max') j.doneMax = clampInt(v, 0, 1e6, 0);
     else if (k === 'cryst') j.cryst = CRYST[lc(v)] ? lc(v) : 'none';
     else if (k === 'item') {
       const p = v.split('|'), oid = parseInt(p[0], 10);
@@ -582,6 +624,11 @@ function parseCfg(text) {
       if (id > 0 && !j.kinds.some(x => x.id === id)) j.kinds.push({ id, name: p.slice(1).join(' ').trim() });
     }
   }
+  // the old global stops (the whole run): now every range's own
+  if (c.stopOnBreak || c.doneMax > 0) {
+    for (const j of c.jobs) { if (c.stopOnBreak) j.stopBreak = true; if (c.doneMax > 0 && !j.doneMax) j.doneMax = c.doneMax; }
+    c.stopOnBreak = false; c.doneMax = 0;
+  }
   return c;
 }
 function cfgText(c) {
@@ -591,6 +638,7 @@ function cfgText(c) {
     'sound=' + (c.sound ? 1 : 0), 'debug=' + (c.debug ? 1 : 0), ''];
   c.jobs.forEach((j, i) => L.push('[job]', 'on=' + (j.on ? 1 : 0), 'name=' + (clean(j.name) || 'Диапазон ' + (i + 1)),
     'from=' + clampInt(j.from, 0, 100, 0), 'to=' + clampInt(j.to, 0, 100, 3), 'scroll=' + (j.scroll | 0), 'scroll_name=' + clean(j.scrollName),
+    'stop_on_break=' + (j.stopBreak ? 1 : 0), 'done_max=' + clampInt(j.doneMax, 0, 1e6, 0),
     'stone_on=' + (j.stoneOn ? 1 : 0), 'stone=' + (j.stone | 0), 'stone_name=' + clean(j.stoneName), 'stone_from=' + clampInt(j.stoneFrom, -1, 100, -1), 'stone_to=' + clampInt(j.stoneTo, -1, 100, -1), 'cryst=' + (CRYST[j.cryst] ? j.cryst : 'none'),
     ...j.kinds.map(x => 'kind=' + x.id + '|' + clean(x.name)),
     ...j.items.map(x => 'item=' + x.oid + '|' + (x.id | 0) + '|' + clean(x.name)), ''));
@@ -605,6 +653,7 @@ let cfg = defaultCfg(), cfgSaved = '', cfgMod = 0;
 let saveT = 0, saving = false, saveAgain = false, savedAt = 0, saveErr = '';
 let pend = null;                 // { kind: 'start' | 'stop', id, at }: waiting for the bot to take it
 let lastSeq = -1, flashT = 0;
+let bagWait = 0, bagWaitTag = null;   // the bar's «↻ сумка»: when it asked the bot (ms) and for whom; 0 = not waiting
 let tab = store.get('tab') || 'jobs';
 const C = () => chars[cur] || null;
 const ST = () => (C() && C().st) || null;
@@ -801,6 +850,7 @@ function endText(r) {
   const n = r.end_id;
   switch (r.end) {
     case 'done': return ['ok', 'Готово: все вещи дошли до цели'];
+    case 'ranges': return ['ok', 'Готово: все диапазоны закончены (где-то вещь сломалась — там стоп)'];
     case 'count': return ['ok', 'Готово: ' + n + ' ' + plural(n, 'вещь дошла', 'вещи дошли', 'вещей дошли') + ' до цели'];
     case 'stonepkt': return ['warn', 'Камни ещё не включены: нужен сниф заточки с камнем'];
     case 'noscroll': return ['warn', n ? 'Кончились свитки: ' + stuffName(n, scrollNameById(n)) : 'У диапазона не выбран свиток'];
@@ -910,6 +960,7 @@ function renderHero() {
   renderCrystBtn();
 }
 function renderBot() {
+  renderBagBtn();
   const b = $('botState'), c = C();
   b.textContent = '';
   if (!dir) { b.className = 'pill'; return; }
@@ -1000,6 +1051,10 @@ function jobCard(j, i) {
     onchange: e => { j.cryst = e.target.value; changed(); } }, ...Object.entries(CRYST).map(([v, t]) => el('option', { value: v, text: v === 'none' ? 'не кристаллизовать' : 'кристаллизовать ' + t })));
   R.cr.value = j.cryst;
   R.crCnt = el('span', { class: 'cnt' });
+  R.brSw = el('input', { type: 'checkbox', checked: !!j.stopBreak, onchange: e => { j.stopBreak = e.target.checked; changed(); } });
+  R.dmax = el('input', { type: 'number', class: 'dmax', min: 0, max: 100000, step: 1, value: j.doneMax || 0, title: '0 — точить все вещи диапазона',
+    oninput: e => { j.doneMax = clampInt(e.target.value, 0, 1e6, 0); scheduleSave(); } });
+  R.stopNow = el('span', { class: 'cnt' });
   R.tiles = el('div', { class: 'tiles' });
   R.warns = el('div', { class: 'warns' });
   R.sum = el('div', { class: 'jsum' });
@@ -1007,6 +1062,9 @@ function jobCard(j, i) {
     el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Свиток' }), el('div', { class: 'pick' }, R.sc, R.scCnt)),
     el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Камень' }), el('div', { class: 'pick' }, el('label', { class: 'sw', title: 'Класть камень' }, R.stSw, el('span')), R.st, R.stCnt, R.stRng)),
     el('div', { class: 'row top' }, el('span', { class: 'lbl', text: 'Вещи' }), el('div', { style: 'display:grid;gap:8px' }, R.tiles, R.sum)),
+    el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Стоп' }), el('div', { class: 'pick' },
+      el('label', { class: 'stopopt', title: 'Сломалась вещь этого диапазона — диапазон закончен (остальные точатся дальше)' }, el('span', { class: 'sw' }, R.brSw, el('span')), 'на первом сломе'),
+      el('label', { class: 'stopopt', title: 'Диапазон закончен, когда столько его вещей дойдут до «до». 0 — все' }, 'после', R.dmax, 'вещей у цели'), R.stopNow)),
     el('div', { class: 'row' }, el('span', { class: 'lbl', text: 'Потом' }), el('div', { class: 'pick' }, R.cr, R.crCnt)),
     R.warns));
   return card;
@@ -1065,6 +1123,14 @@ function fillCards(force) {
     R.crCnt.className = 'cnt' + (nc ? ' bad' : '');
     R.crCnt.textContent = nc ? 'сейчас подходит ' + nc + ' шт.' : 'сейчас ни одной';
     card.classList.toggle('live', !!(c && c.job === i));
+    if (document.activeElement !== R.dmax) R.dmax.value = j.doneMax || 0;
+    R.brSw.checked = !!j.stopBreak;
+    { const rr = (ST() && ST().run) || {}, jd = (rr.jd || [])[i], jc = (rr.jc || [])[i];
+      const parts = [];
+      if (jd !== undefined && (rr.state === 'running' || jd > 0)) parts.push((j.doneMax ? jd + ' из ' + j.doneMax : jd) + ' у цели');
+      if (jc === 1) parts.push('закончен: вещь сломалась'); else if (jc === 2) parts.push('закончен: набрал своё');
+      R.stopNow.textContent = parts.join(' · '); R.stopNow.hidden = !parts.length;
+      R.stopNow.className = 'cnt' + (jc === 1 ? ' bad' : ''); }
     // tiles
     R.tiles.textContent = '';
     const cnt = { work: 0, done: 0, below: 0, gone: 0, broke: 0, skip: 0, cur: 0 };
@@ -1119,7 +1185,6 @@ function fillCards(force) {
     if (!j.scroll) w('Выбери свиток', 'bad');
     else if (!stuff.has(j.scroll) && s) w('Свитка нет в сумке', '');
     if (j.cryst !== 'none') w('После заточки кристаллизует ' + CRYST[j.cryst] + ' — вещи исчезнут, это не отменить', 'bad');
-    if (j.stoneOn) w('Камни ещё не включены в боте: нужен один сниф заточки с камнем (enchant_sniffer.txt). Без него бот остановится перед первой попыткой с камнем', '');
     if (j.stoneOn && stFrom(j) >= stTo(j)) w('Камень: «с +' + stFrom(j) + ' до +' + stTo(j) + '» — ни одной попытки с камнем', 'bad');
     if (j.stoneOn && !j.stone) w('Камни включены — выбери камень', 'bad');
     else if (j.stoneOn && !stuff.has(j.stone) && s) w('Камня нет в сумке', '');
@@ -1184,16 +1249,43 @@ $('jobAdd').onclick = () => {
 // ===== asking the bot for the whole bag: <tag>.ench.req gets a new number (the bot sends RequestItemList) =====
 let reqAt = 0;
 async function askBag(quiet) {
-  if (!dir || !cur) return;
+  if (!dir || !cur) return false;
   reqAt = Date.now();
-  try { await writeFile(cur + '.ench.req', String(reqAt) + '\r\n'); } catch (e) { return; }
+  try { await writeFile(cur + '.ench.req', String(reqAt) + '\r\n'); } catch (e) { return false; }
   if (!quiet) toast('Попросил бота обновить сумку — секунда-две');
+  return true;
 }
 function bagAge() {
   const s = ST(), c = C();
   if (!s || s.bag_ago === undefined || s.bag_ago < 0 || !c) return -1;
   return s.bag_ago + Math.max(0, (Date.now() - c.stAt) / 1000);
 }
+// the bar's «↻ сумка»: how old the bag is; spins till the bot sends the whole bag after the ask (bagWait)
+const agoTxt = a => a < 60 ? Math.round(a) + ' с' : a < 3600 ? Math.round(a / 60) + ' мин' : Math.round(a / 3600) + ' ч';
+function renderBagBtn() {
+  const b = $('bagBtn'), c = C();
+  b.hidden = !dir || !c || !c.st;
+  if (b.hidden) return;
+  if (bagWait && bagWaitTag !== cur) bagWait = 0;
+  const a = bagAge(), run = running(), on = live();
+  if (bagWait) {
+    const since = (Date.now() - bagWait) / 1000;
+    if (c.stAt > bagWait && a >= 0 && a <= since + 0.3) { bagWait = 0; toast('Сумка обновлена'); }
+    else if (since > 15) { bagWait = 0; toast('Бот не прислал сумку за 15 с — попробуй ещё раз'); }
+  }
+  b.classList.toggle('busy', !!bagWait);
+  b.disabled = !!bagWait || !on || run;
+  $('bagTxt').textContent = bagWait ? 'обновляю сумку…' : 'сумка' + (a < 0 ? '' : ' · ' + agoTxt(a));
+  b.title = run ? 'Во время заточки бот сам обновляет сумку после попыток'
+    : !on ? 'Бот не на связи — запусти Enchanter\\enchant.txt'
+    : 'Обновить сумку: бот попросит у сервера весь инвентарь (в игре на миг откроется инвентарь)' + (a < 0 ? '' : '. Последний раз ' + agoTxt(a) + ' назад');
+}
+$('bagBtn').onclick = async () => {
+  if (bagWait || !live() || running()) return;
+  bagWait = Date.now(); bagWaitTag = cur;
+  renderBagBtn();
+  if (!(await askBag(true))) { bagWait = 0; renderBagBtn(); toast('Не получилось записать запрос боту'); }
+};
 
 // ===== the item picker: a row per kind (item ID, every one not worn, any level) + a row per worn item =====
 let pk = null;   // { i (the job), kinds: Set of item IDs, oids: Set of OIDs (single items), type, grade }
@@ -1326,9 +1418,8 @@ function renderLog() {
 // ===== settings =====
 function renderOpts() {
   for (const b of $('optOrder').children) b.classList.toggle('on', b.dataset.v === cfg.order);
-  $('optBreak').checked = cfg.stopOnBreak; $('optChat').checked = cfg.chat; $('optSound').checked = cfg.sound; $('optDebug').checked = cfg.debug;
+  $('optChat').checked = cfg.chat; $('optSound').checked = cfg.sound; $('optDebug').checked = cfg.debug;
   if (document.activeElement !== $('optMax')) $('optMax').value = cfg.maxScrolls;
-  if (document.activeElement !== $('optDone')) $('optDone').value = cfg.doneMax;
   const f = $('filesInfo'); f.textContent = '';
   if (cur) f.append(el('div', { html: 'Страницу и файлы отдаёт <code>EnchPanel.exe</code> (http://127.0.0.1:7780)' }),
     el('div', { html: 'Настройки: <code>Library\\Enchanter\\' + cur + '.ench</code> (пишет эта страница)' }),
@@ -1336,12 +1427,10 @@ function renderOpts() {
     el('div', { html: 'Лог пакетов: <code>Library\\Logs\\enchant_' + cur + '_*.log</code>' }));
 }
 $('optOrder').onclick = e => { const v = e.target.dataset && e.target.dataset.v; if (!v) return; cfg.order = v; renderOpts(); scheduleSave(); };
-$('optBreak').onchange = e => { cfg.stopOnBreak = e.target.checked; scheduleSave(); };
 $('optChat').onchange = e => { cfg.chat = e.target.checked; scheduleSave(); };
 $('optSound').onchange = e => { cfg.sound = e.target.checked; scheduleSave(); };
 $('optDebug').onchange = e => { cfg.debug = e.target.checked; scheduleSave(); };
 $('optMax').oninput = e => { cfg.maxScrolls = clampInt(e.target.value, 0, 1e6, 0); scheduleSave(); };
-$('optDone').oninput = e => { cfg.doneMax = clampInt(e.target.value, 0, 1e6, 0); scheduleSave(); };
 
 // ===== errors of the bot =====
 function renderErrors() {
@@ -1363,6 +1452,110 @@ function renderAll() { renderHero(); renderDelay(); renderJobs(); renderLog(); r
 
 // ===== polling =====
 let tick = 0, polling = false, lastScan = 0;
+// ===== the voice (EnchPanel's /api/voice) =====
+let voice = null, vCap = false, vSig = '', vUiSeq = -1;
+const VSTATE = { off: ['', 'выкл'], loading: ['warn', 'загружается…'], ready: ['ok', 'готово'], error: ['bad', 'ошибка'] };
+async function voiceApi(q, method) {
+  const r = await fetch('/api/voice' + (q || ''), { method: method || 'GET', cache: 'no-store', headers: method ? { 'X-Ench': '1' } : {} });
+  if (!r.ok) throw new Error(await r.text() || r.status);
+  return r.json();
+}
+async function voiceLoad() {
+  if (!$('voiceCard')) return;
+  try { voice = await voiceApi(); } catch (e) { voice = null; }
+  // a voice command for the page: a tab / a character to show (the first look only takes the number)
+  const u = voice && voice.ui;
+  if (u && u.seq !== vUiSeq) {
+    const first = vUiSeq < 0; vUiSeq = u.seq;
+    if (!first) {
+      if (u.char && u.char !== cur && chars[u.char]) await pickChar(u.char);
+      if (u.tab) showTab(u.tab);
+    }
+  }
+  if (!$('tab-opts').hidden || !vSig) renderVoice();
+}
+function vPill(cls, txt) { return el('span', { class: 'pill ' + cls }, el('span', { class: 'dot' }), txt); }
+function renderVoice() {
+  const v = voice;
+  $('voiceCard').hidden = !v || v.none;
+  if (!v || v.none) return;
+  const st = $('vState'); st.textContent = '';
+  if (v.missing) st.append(vPill('bad', 'не хватает файла: ' + v.missing));
+  else if (!v.on) st.append(vPill('', 'выключено'));
+  else {
+    const a = VSTATE[v.stt] || VSTATE.off, b = VSTATE[v.llmState] || VSTATE.off;
+    st.append(vPill(a[0], 'распознавание: ' + a[1]));
+    if (v.llm) st.append(vPill(b[0], 'нейросеть: ' + b[1]));
+    if (v.err) st.append(vPill('bad', v.err));
+  }
+  if (document.activeElement !== $('vOn')) $('vOn').checked = !!v.on;
+  $('vLlm').checked = !!v.llm;
+  $('vBeeps').checked = !!v.beeps;
+  if (!vCap) $('vKey').textContent = v.key || '—';
+  const mics = ['По умолчанию (Windows)', ...v.mics], sig = mics.join('|') + '#' + v.mic;
+  if ($('vMic').dataset.sig !== sig) {
+    $('vMic').dataset.sig = sig; $('vMic').textContent = '';
+    mics.forEach((n, i) => $('vMic').append(el('option', { value: i - 1, text: n })));
+    $('vMic').value = String(v.mic);
+  }
+  $('vLevel').style.width = (v.level < 0 ? 0 : Math.min(100, Math.round(v.level * 160))) + '%';
+  const sig2 = (v.log || []).map(x => x.n).join(',');
+  if (sig2 === vSig) return;
+  vSig = sig2;
+  const lg = $('vLog'); lg.textContent = '';
+  if (!(v.log || []).length) { lg.append(el('div', { class: 'muted', text: 'Пока ни одной команды.' })); return; }
+  for (const x of v.log) {
+    const ms = [x.stt ? 'речь ' + x.stt + ' мс' : '', x.llm ? 'нейросеть ' + x.llm + ' мс' : '', 'всего ' + x.all + ' мс'].filter(Boolean).join(' · ');
+    lg.append(el('div', { class: 'vrow ' + (x.ok ? 'ok' : 'bad') },
+      el('span', { class: 'vt', text: x.t }), el('span', { class: 'vq', text: (x.text ? '«' + x.text + '»' : '—') + (x.char ? '  · ' + x.char : '') }),
+      el('span', { class: 'vm', text: x.via + ' · ' + ms }),
+      el('span', { class: 'vr', text: (x.ok ? '✓ ' : '✗ ') + x.result, title: x.acts || '' })));
+  }
+}
+async function voiceSet(q) {
+  try { voice = await voiceApi(q, 'PUT'); renderVoice(); } catch (e) { toast('Голос: ' + e.message); }
+}
+if ($('voiceCard')) {
+  $('vOn').onchange = e => voiceSet('?on=' + (e.target.checked ? 1 : 0));
+  $('vLlm').onchange = e => voiceSet('?llm=' + (e.target.checked ? 1 : 0));
+  $('vBeeps').onchange = e => voiceSet('?beeps=' + (e.target.checked ? 1 : 0));
+  $('vMic').onchange = e => voiceSet('?mic=' + encodeURIComponent(e.target.value));
+  const KEYMAP = { ControlRight: 'RControl', ControlLeft: 'LControl', AltRight: 'RAlt', AltLeft: 'LAlt', ShiftRight: 'RShift', ShiftLeft: 'LShift',
+    CapsLock: 'CapsLock', Space: 'Space', Tab: 'Tab', Pause: 'Pause', ScrollLock: 'ScrollLock', Insert: 'Insert', Home: 'Home', End: 'End',
+    PageUp: 'PageUp', PageDown: 'PageDown', Delete: 'Delete', Backquote: 'Backquote', NumpadAdd: 'NumAdd', NumpadSubtract: 'NumSub', NumpadMultiply: 'NumMul', NumpadDivide: 'NumDiv' };
+  const keyName = code => KEYMAP[code] || (/^Key[A-Z]$/.test(code) ? code.slice(3) : /^Digit\d$/.test(code) ? code.slice(5) : /^F\d{1,2}$/.test(code) ? code : /^Numpad\d$/.test(code) ? 'Num' + code.slice(6) : '');
+  const capEnd = name => { vCap = false; $('vKey').classList.remove('cap'); if (name) voiceSet('?key=' + encodeURIComponent(name)); else renderVoice(); };
+  $('vKey').onclick = () => { vCap = true; $('vKey').classList.add('cap'); $('vKey').textContent = 'нажми…'; };
+  window.addEventListener('keydown', e => {
+    if (!vCap) return;
+    e.preventDefault(); e.stopPropagation();
+    if (e.code === 'Escape') { capEnd(''); return; }
+    const n = keyName(e.code); if (!n) { toast('Эту клавишу не взять'); return; }
+    capEnd(n);
+  }, true);
+  window.addEventListener('mousedown', e => {
+    if (!vCap || e.target === $('vKey')) return;
+    const m = { 1: 'Mouse3', 3: 'Mouse4', 4: 'Mouse5' }[e.button];
+    if (m) { e.preventDefault(); capEnd(m); } else capEnd('');
+  }, true);
+  const send = async () => {
+    const txt = $('vText').value.trim(); if (!txt) return;
+    $('vSend').disabled = true;
+    try {
+      const r = await fetch('/api/voice/text?text=' + encodeURIComponent(txt) + (cur ? '&char=' + encodeURIComponent(cur) : ''), { method: 'PUT', headers: { 'X-Ench': '1' } });
+      const j = r.ok ? await r.json() : null;
+      toast(j ? (j.Ok ? '✓ ' : '✗ ') + j.Result : 'Не выполнено: ' + r.status);
+      $('vText').value = '';
+    } catch (e) { toast('Не выполнено: ' + e.message); }
+    $('vSend').disabled = false;
+    voiceLoad();
+  };
+  $('vSend').onclick = send;
+  $('vText').onkeydown = e => { if (e.key === 'Enter') send(); };
+  setInterval(voiceLoad, 1000);
+  voiceLoad();
+}
+
 async function poll() {
   if (polling || !dir) return;
   polling = true;

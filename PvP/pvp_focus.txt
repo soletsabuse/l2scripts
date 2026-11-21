@@ -52,7 +52,8 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             one took over) -> taken at once + the after action. The list is a chain: a character on it follows
 //             only the ones above him (the first one leads himself, the next one leads when the ones above are out).
 //             volley=<ID>|..: the one we follow starts one of these skills -> the same skill of ours at his target at
-//             once (a volley; only when ours is ready; ctrl= of the group)
+//             once (a volley; only when ours is ready; ctrl= of the group). No enemy at his target (none, himself,
+//             a friend: an escape, a self buff) -> ours at once, our target left as it is
 //             assist_aggro: 2 an aggroed assister is skipped (an enemy in sight holds him in the target), 1 no assist
 //             while I am aggroed, 0 no check
 //             assist_src=net (assist via the server): ONE assister (the first name; none: the party leader; @lead:
@@ -63,6 +64,12 @@ uses SysUtils, Classes, TCP, ChatMenu in '..\Scripts\Core\chat_menu.pas';
 //             before the game knows it: in sight); at a friend: selected, no after action. What goes to the server:
 //             the picks of the script only (a group key, res-kill, cast auto; the same one again = a re-focus: the
 //             others take it / hit it again) - never a mouse click, never an assist follow (N|T)
+// Gather (gather_key= / gather_range= of the general part): the leader presses it -> his place and range go through
+//             PvpPanel (the bots of this PC, the relay) to every bot; the ones following him now (an assist group on:
+//             via the server - he is the one it takes; in game - on its list above me / the party leader) run
+//             straight to him till within gather_range (the leader's). Ends there, at a new target of ours / a pick
+//             of his (the fight goes on), no nearer for GATHER_STUCK_MS (a wall), after GATHER_MAX_MS, when we die.
+//             Farther than GATHER_FAR: stays. Also the page's 'Gather now' (KEY|@gather)
 // CP potions (cp_item, '0' none): a thread of its own looks at our CP every CP_LOOK_MS; below cp_pct % -> the potion,
 // again not sooner than cp_gap_ms (the server's flood guard); the potions left: looked at every second (told when none)
 //   cast    - enemies casting one of the skills (Battle Force 426, Spell Force 427, a resurrection ...):
@@ -121,6 +128,12 @@ const
   SRV_PAGE      = 'http://127.0.0.1:7790';
   SRV_RETRY_MS  = 3000;     // no server: tried again this often
   CAST_SCAN_MS  = 100;      // who casts what: looked at this often
+  KEY_GATHER    = 32;       // the key slot of gather_key= (the general part of the profile)
+  GATHER_FAR    = 8000;     // gather: a follower farther from the leader than this stays where he is
+  GATHER_LOOK_MS = 100;     // gather: the run looked at this often ...
+  GATHER_STEP_MS = 300;     // ... and put again this often (the leader moves)
+  GATHER_STUCK_MS = 5000;   // gather: no nearer for this long -> given up (a wall, he runs away)
+  GATHER_MAX_MS = 60000;    // gather: given up after this long anyway
   CAST_KEEP_MS  = 600;      // a cast seen this lately still counts (a channel flickers between the looks)
   REV_SCAN_MS   = 100;      // who is dead / up again: looked at this often (the res-kill window is in ms)
   REV_GAP_MS    = 2500;     // seen dead this lately, now alive = got up (else he came back from the town)
@@ -198,10 +211,11 @@ function GetForegroundWindow: cardinal; stdcall; external 'user32.dll';
 var
   // the groups. The key thread reads GroupN / GKey / GWas / EvAt only (numbers); the rest is the main thread's
   GroupN: integer;
-  GKey: array[0..31] of integer;                     // VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = auto only. Slot g: the
-                                                     // key of group g; 16 + g: its res-kill key (auto, res_key=)
-  GWas: array[0..31] of boolean;                     // a look: the key was down the last time
-  EvAt: array[0..31] of cardinal;                    // the last key event of the key
+  GKey: array[0..32] of integer;                     // VK + 256 * (1 Ctrl, 2 Shift, 4 Alt); 0 = auto only. Slot g: the
+                                                     // key of group g; 16 + g: its res-kill key (auto, res_key=);
+                                                     // KEY_GATHER: gather_key=
+  GWas: array[0..32] of boolean;                     // a look: the key was down the last time
+  EvAt: array[0..32] of cardinal;                    // the last key event of the key
   ModAt: array[0..2] of cardinal;                    // Ctrl / Shift / Alt last seen down
   NextG: integer;                                    // a group key pressed, to be done (-1 none)
   LastG, LastSrc: integer;                           // the last press taken: its group, by 1 a key event / 2 a look
@@ -284,6 +298,13 @@ var
   NetDirty: boolean;                                 // a target / the room came: the net groups look now
   NetSlot: integer;                                  // NetCaller: his place in the list
   NetLead, NetLeadShow: string;                      // the team leader of the room (lower case / as it is), '' none
+  GatherKey: string;                                 // gather_key= (the general part): the leader calls his followers
+  GatherRange: integer;                              // gather_range=: they come this near (the leader's, sent along)
+  GaOn: boolean;                                     // gather: running to the leader now
+  GaWho, GaShow: string;                             // ... the leader (lower case / as it is)
+  GaX, GaY, GaZ, GaR: integer;                       // ... his place (live while in sight), how near
+  GaAt, GaStepAt, GaBestAt, GaLookAt: cardinal;      // ... since / the last run put / the last time nearer / looked
+  GaBest, GaTg0, GaSeq: integer;                     // ... the nearest so far; our target then; his pick count then
   ManualAt: cardinal;                                // the last key pick (the auto picks wait AUTO_HOLD_MS after it)
   // assist: whom (name, '' = the party leader), the aggro check, his OID found (re-found by name now and then), his
   // target seen last (the follow acts on a change)
@@ -572,11 +593,11 @@ begin
   for m := 0 to 2 do
     if KeyDown(ModVK(m)) then ModAt[m] := GetTickCount;
   Focused := GetForegroundWindow() = Engine.GameWindow;   // only in the game window of this character
-  for k := 0 to 31 do begin
+  for k := 0 to KEY_GATHER do begin
     g := k;
     if g >= 16 then g := g - 16;
-    if g >= GroupN then continue;
-    if GKey[k] = 0 then continue;   // auto only / no res-kill key
+    if (k < KEY_GATHER) and (g >= GroupN) then continue;
+    if GKey[k] = 0 then continue;   // auto only / no res-kill key / no gather key
     VK := GKey[k] mod 256;
     St := GetAsyncKeyState(VK);
     DownNow := (St and $8000) <> 0;
@@ -598,10 +619,10 @@ begin
     KeyCode := 0;
     if Engine.WaitAction([laKey], KeyCode, P2, 1000) <> laKey then continue;
     if GetForegroundWindow() <> Engine.GameWindow then continue;
-    for k := 0 to 31 do begin
+    for k := 0 to KEY_GATHER do begin
       g := k;
       if g >= 16 then g := g - 16;
-      if g >= GroupN then continue;
+      if (k < KEY_GATHER) and (g >= GroupN) then continue;
       Code := GKey[k];
       if Code = 0 then continue;
       if KeyCode <> Code mod 256 then continue;
@@ -2304,7 +2325,8 @@ begin
 end;
 
 // a volley (an assist group on, volley=): the one it follows started one of its skills -> his target + the same skill
-// of ours (sent till it starts, as the after skill). Ours not there / in its reuse -> nothing
+// of ours (sent till it starts, as the after skill). No enemy at his target (none, himself, us, a friend: an escape, a
+// self buff) -> ours at once, the target left as it is. Ours not there / in its reuse -> nothing (said in the log)
 procedure VolleyTick();
 var g, i, k, Tg, Left: integer;
   Sk: TL2Skill;
@@ -2317,24 +2339,31 @@ begin
   if i < 0 then exit;
   if CharList(i).OID <> VolOID then exit;            // another one of the list: not the one we follow now
   Tg := VolTgt;
-  if (Tg = 0) or (Tg = MyOID) then exit;
-  if (Tg <> ResOID) and (not GAsNet[g]) then
+  if (Tg = MyOID) or (Tg = VolOID) then Tg := 0;    // his skill on himself / at us: ours where we stand
+  if Tg <> 0 then begin
+    k := CharIdxOf(Tg);
+    if k >= 0 then
+      if IsOurs(k) then Tg := 0;                     // at a friend: ours where we stand too
+  end;
+  if (Tg <> 0) and (Tg <> ResOID) and (not GAsNet[g]) then
     if ResKeeps() then begin                         // we are on the one res-kill took: he first
       Engine.Msg('[PvP]', GName[g] + ': volley skipped - the res-kill target first', 0);
       exit;
     end;
-  k := CharIdxOf(Tg);
-  if k >= 0 then
-    if IsOurs(k) then exit;                          // his skill at a friend
-  if not SkillList.ByID(VolSk, Sk) then exit;        // we have no such skill
+  if not SkillList.ByID(VolSk, Sk) then begin
+    Engine.Msg('[PvP]', GName[g] + ': volley - we have no skill ' + IntToStr(VolSk), 0);
+    exit;
+  end;
   Left := Sk.EndTime;
   if Left > 1000 then begin
     Engine.Msg('[PvP]', GName[g] + ': volley ' + Sk.Name + ' - ours in its reuse', 0);
     exit;
   end;
-  if TargetOID() <> Tg then
-    if not Engine.SetTarget(Tg) then exit;
-  AsLast[g] := Tg;                                   // his target is ours: AssistTick does not take it again
+  if Tg <> 0 then begin
+    if TargetOID() <> Tg then
+      if not Engine.SetTarget(Tg) then exit;
+    AsLast[g] := Tg;                                 // his target is ours: AssistTick does not take it again
+  end else Tg := TargetOID();                        // no enemy of his: ours as it is (AfterTick: the target kept)
   PendSk := VolSk;
   PendTgt := Tg;
   PendL0 := Left;
@@ -2394,6 +2423,184 @@ begin
     Rest := DoAfter(g, W);
     Say(GName[g] + ' (server): ' + Who + ' (picked by ' + NtShow[k] + ')' + Rest);
   end;
+end;
+
+// ===================== gather =====================
+
+// gather_key pressed: the ones who follow me run to me, as near as gather_range. My place now goes to PvpPanel
+// (N|X|G|x|y|z|range): to the bots of this PC and through the relay to every other PC
+procedure GatherCall();
+var X, Y, Z: integer;
+begin
+  if not SrvOn then begin
+    Say('Gather team: no PvP server (PvpPanel) - nobody told');
+    exit;
+  end;
+  X := User.X;
+  Y := User.Y;
+  Z := User.Z;
+  SrvSend('N|X|G|' + IntToStr(X) + '|' + IntToStr(Y) + '|' + IntToStr(Z) + '|' + IntToStr(GatherRange));
+  if NetLink = 1 then Say('Gather team: called (within ' + IntToStr(GatherRange) + ')')
+  else Say('Gather team: called on this PC only - no link to the relay');
+end;
+
+// group g follows Lw (lower case) now: an assist group on whose assister he is (via the server: the one it takes; in
+// game: on its list above me, or the party leader when it has no list)
+function FollowsHim(g: integer; Lw: string): boolean;
+var s: integer;
+  L: TL2Char;
+  Nm: string;
+begin
+  result := false;
+  if (GMode[g] <> MODE_ASSIST) or (not GResOn[g]) then exit;
+  if GAsNet[g] then begin
+    result := NetCaller(g) = Lw;
+    exit;
+  end;
+  if GAsN[g] = 0 then begin
+    L := Party.Leader;
+    if L = nil then exit;
+    Nm := L.Name;
+    result := LowerCase(Nm) = Lw;
+    exit;
+  end;
+  for s := 0 to GAsN[g] - 1 do begin
+    Nm := GAsName[g * 3 + s];
+    if Nm = LowerCase(CharName) then exit;           // the ones below me on the list do not lead me
+    if (Nm = Lw) or ((Nm = '@lead') and (NetLead = Lw)) then begin
+      result := true;
+      exit;
+    end;
+  end;
+end;
+
+// gather: the leader's place now, if he is in sight (else the one his call brought)
+procedure GatherWhere();
+var i, X, Y, Z: integer;
+  Nm: string;
+begin
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    Nm := CharList(i).Name;
+    if LowerCase(Nm) = GaWho then begin
+      X := CharList(i).X;
+      Y := CharList(i).Y;
+      Z := CharList(i).Z;
+      if (X <> 0) or (Y <> 0) then begin
+        GaX := X;
+        GaY := Y;
+        GaZ := Z;
+      end;
+      exit;
+    end;
+  end;
+end;
+
+// gather: how far the leader is (flat)
+function GatherDist(): integer;
+var MX, MY: integer;
+  dx, dy: double;
+begin
+  MX := User.X;
+  MY := User.Y;
+  dx := GaX - MX;
+  dy := GaY - MY;
+  result := Round(Sqrt(dx * dx + dy * dy));
+end;
+
+// gather: running to the leader - the run put again every GATHER_STEP_MS to a point 70 % of the range short of him,
+// on our side. Ends within the range, at a new target of ours / a pick of his (the fight goes on), no nearer for
+// GATHER_STUCK_MS, after GATHER_MAX_MS, when we die
+procedure GatherTick();
+var D, k, MX, MY, TX, TY: integer;
+  F: double;
+begin
+  if not GaOn then exit;
+  if User.Dead then begin
+    GaOn := false;
+    exit;
+  end;
+  if TargetOID() <> GaTg0 then begin
+    GaOn := false;
+    Say('Gather: stopped - a new target');
+    exit;
+  end;
+  k := NetIdx(GaWho);
+  if k >= 0 then
+    if NtSeq[k] <> GaSeq then begin
+      GaOn := false;
+      Say('Gather: stopped - ' + GaShow + ' picked a target');
+      exit;
+    end;
+  GatherWhere();
+  D := GatherDist();
+  if D <= GaR then begin
+    GaOn := false;
+    Say('Gather: here (' + IntToStr(D) + ' from ' + GaShow + ')');
+    exit;
+  end;
+  if D < GaBest - 50 then begin
+    GaBest := D;
+    GaBestAt := GetTickCount;
+  end;
+  if (GetTickCount - GaBestAt > GATHER_STUCK_MS) or (GetTickCount - GaAt > GATHER_MAX_MS) then begin
+    GaOn := false;
+    Say('Gather: stuck ' + IntToStr(D) + ' from ' + GaShow);
+    exit;
+  end;
+  if GetTickCount - GaStepAt < GATHER_STEP_MS then exit;
+  GaStepAt := GetTickCount;
+  MX := User.X;
+  MY := User.Y;
+  F := (GaR * 0.7) / D;
+  TX := GaX + Round((MX - GaX) * F);
+  TY := GaY + Round((MY - GaY) * F);
+  Engine.DMoveTo(TX, TY, GaZ);
+end;
+
+// N|X|<leader>|G|x|y|z|range: a leader called the ones who follow him -> we run to him, if we follow him now
+procedure GatherFrom(Who: string; X, Y, Z, R: integer);
+var g, D, k: integer;
+  Lw: string;
+  Ok: boolean;
+begin
+  Lw := LowerCase(Trim(Who));
+  if (Lw = '') or (Lw = LowerCase(CharName)) then exit;
+  Ok := false;
+  for g := 0 to GroupN - 1 do
+    if FollowsHim(g, Lw) then Ok := true;
+  if not Ok then exit;                               // not one we follow now
+  if User.Dead then exit;
+  if R < 50 then R := 50;
+  GaWho := Lw;
+  GaShow := Trim(Who);
+  GaX := X;
+  GaY := Y;
+  GaZ := Z;
+  GaR := R;
+  GatherWhere();
+  D := GatherDist();
+  if D > GATHER_FAR then begin
+    GaOn := false;
+    Say('Gather: ' + GaShow + ' called - too far (' + IntToStr(D) + ')');
+    exit;
+  end;
+  if D <= R then begin
+    GaOn := false;
+    Say('Gather: ' + GaShow + ' called - here already (' + IntToStr(D) + ')');
+    exit;
+  end;
+  GaOn := true;
+  GaAt := GetTickCount;
+  GaStepAt := 0;
+  GaLookAt := GetTickCount;
+  GaBest := D;
+  GaBestAt := GetTickCount;
+  GaTg0 := TargetOID();
+  GaSeq := -1;
+  k := NetIdx(Lw);
+  if k >= 0 then GaSeq := NtSeq[k];
+  Say('Gather: to ' + GaShow + ', ' + IntToStr(D) + ' away');
+  GatherTick();
 end;
 
 // anti-aggro g: its aggro effect on me now - the most ms left of its effects (aa_effects=, none: its skills); 0 none
@@ -2769,6 +2976,10 @@ begin
   while NextG >= 0 do begin
     g := NextG;
     NextG := -1;
+    if g = KEY_GATHER then begin                   // gather_key: the ones who follow me run to me
+      GatherCall();
+      continue;
+    end;
     if g >= 16 then begin                          // the res-kill key of an auto group: its res-kill on / off
       g := g - 16;
       if g >= GroupN then continue;
@@ -3372,6 +3583,9 @@ begin
   CpGap := 150;
   CycleMs := 6000;
   ProfRange := 1200;
+  GatherKey := '';
+  GatherRange := 400;
+  GKey[KEY_GATHER] := 0;
   Clans := '';
   Players := '';
   n := -1;   // the group being read; -1: the general part
@@ -3403,6 +3617,8 @@ begin
       else if Fld = 'notify' then NotifyType := StrToIntDef(Val, 15)
       else if Fld = 'cp_item' then CpItem := StrToIntDef(Val, 0)
       else if Fld = 'range' then ProfRange := StrToIntDef(Val, 1200)
+      else if Fld = 'gather_key' then GatherKey := Val
+      else if Fld = 'gather_range' then GatherRange := StrToIntDef(Val, 400)
       else if Fld = 'cp_pct' then CpPct := StrToIntDef(Val, 95)
       else if Fld = 'cp_gap_ms' then CpGap := StrToIntDef(Val, 150)
       else if (Fld = 'chat_name') and (Val <> '') then ChatName := Val
@@ -3582,6 +3798,24 @@ begin
       for j := 0 to KeepN - 1 do
         if KeepName[j] = LowerCase(GName[k]) then GRkOn[k] := KeepOn[j];
     k := k + 1;
+  end;
+  // gather_key: the leader calls the ones who follow him (none / not read / taken: off)
+  if GatherRange < 50 then GatherRange := 50;
+  if GatherRange > 3000 then GatherRange := 3000;
+  GWas[KEY_GATHER] := true;
+  EvAt[KEY_GATHER] := 0;
+  if GatherKey <> '' then begin
+    Code := ParseKey(GatherKey);
+    Ok := Code <> 0;
+    if not Ok then CfgErr('Gather: cannot read the key "' + GatherKey + '" - off');
+    if Ok then
+      for j := 0 to k - 1 do
+        if (GKey[j] = Code) or (GKey[16 + j] = Code) then begin
+          CfgErr('Gather: the key ' + GatherKey + ' is taken by ' + GName[j] + ' - off');
+          Ok := false;
+          break;
+        end;
+    if Ok then GKey[KEY_GATHER] := Code;
   end;
   GroupN := k;
   BwAny := false;                                    // some auto group weighs buffs: casts / our target watched for them
@@ -3783,6 +4017,10 @@ begin
       end else Info := Info + ' (+res-kill by itself)';
     end;
   end;
+  if GKey[KEY_GATHER] <> 0 then begin
+    if Info <> '' then Info := Info + ', ';
+    Info := Info + GatherKey + ' gather team (within ' + IntToStr(GatherRange) + ')';
+  end;
   if Info = '' then Info := 'no keys';
   if First then Info := 'profile ' + ProfName + ': ' + Info
   else Info := 'profile ' + ProfName + ' read: ' + Info;
@@ -3834,7 +4072,7 @@ end;
 // N|RTT|<ms>
 procedure NetLine(Line: string);
 var P: TStringList;
-  k, j: integer;
+  k, j, GX, GY, GZ, GR: integer;
   Kind, Lw: string;
 begin
   P := TStringList.Create;
@@ -3874,6 +4112,16 @@ begin
       NtSeq[k] := NetCount;
       NetDirty := true;
     end else if (Kind = 'RTT') and (P.Count >= 3) then NetRtt := StrToIntDef(P[2], -1)
+    else if (Kind = 'X') and (P.Count >= 8) then begin   // N|X|<char>|G|x|y|z|range: a leader calls (gather)
+      if P[3] = 'G' then begin
+        Lw := P[2];                                  // copied first: no host call inside the arguments
+        GX := StrToIntDef(P[4], 0);
+        GY := StrToIntDef(P[5], 0);
+        GZ := StrToIntDef(P[6], 0);
+        GR := StrToIntDef(P[7], 400);
+        GatherFrom(Lw, GX, GY, GZ, GR);
+      end;
+    end
     else if Kind = 'LEAD' then begin               // the team leader of the room
       NetLeadShow := '';
       if P.Count >= 3 then NetLeadShow := Trim(P[2]);
@@ -3890,6 +4138,10 @@ procedure KeyByName(Nm: string);
 var g, p0, Off: integer;
   Tail: string;
 begin
+  if LowerCase(Trim(Nm)) = '@gather' then begin    // the page: 'Gather now' (as gather_key pressed)
+    if NextG < 0 then NextG := KEY_GATHER;
+    exit;
+  end;
   Off := 0;
   p0 := Pos('|', Nm);
   if p0 > 0 then begin
@@ -4282,6 +4534,10 @@ begin
   RevHead := 0;
   PendSk := 0;
   VolG := -1;
+  GaOn := false;
+  GaLookAt := 0;
+  GatherKey := '';
+  GatherRange := 400;
   ChatOn := true;
   ChatName := 'PvP';
   CycleMs := 6000;
@@ -4407,6 +4663,10 @@ begin
     PollKeys();
     HandleKeys();
     NetTick();                         // assist via the server: a new target of the one we follow -> taken
+    if GaOn and (GetTickCount - GaLookAt >= GATHER_LOOK_MS) then begin   // gather: running to the leader
+      GaLookAt := GetTickCount;
+      GatherTick();
+    end;
     if AaPhase <> 0 then AntiAggroTick();   // anti-aggro: his cast over -> back
     AfterTick();
     if GetTickCount - UsAt >= US_MS then begin

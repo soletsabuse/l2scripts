@@ -790,7 +790,7 @@ let curId = null;               // the profile edited
 let sel = { active: 'main' };   // the profile EVERY character uses (pvp.ini)
 let bots = {}, curBot = null;   // the bots linked to the server: { d (what it sees), mod }; the one looked through
 let equipKeys = {};             // keyNorm -> ['char «bind»'] (equip binds that are on)
-let saveT = 0, saving = false, saveAgain = null, savedAt = 0, saveErr = '', readAtSave = {};
+let saveT = 0, saving = false, saveAgain = new Set(), savedAt = 0, saveErr = '', readAtSave = {};
 const VIEWS = ['keys', 'auto', 'team', 'enemies', 'stats', 'profiles', 'settings', 'help'];
 let view = (() => { const h = location.hash.slice(1), t = store.get('view') || ({ foes: 'enemies' }[store.get('tab')] || store.get('tab'));
   return VIEWS.includes(h) ? h : VIEWS.includes(t) ? t : 'keys'; })();
@@ -831,14 +831,14 @@ function newGroup(o) {
 const clsMap = list => { const o = {}; for (const [id, t] of list) o[id] = t; return o; };
 function defaultProfile(name) {
   return { name: name || 'Main', clans: ['PLAYHARDGOPRO', 'GhostRiders', 'DeathSentence', 'HeavenSent', 'StayGrounded', 'Slayers'], players: [],
-    chat: true, notify: 15, chatName: 'PvP', cycleMs: 6000, range: 1200, cpItem: 5592, cpPct: 95, cpGap: 150, groups: [
+    chat: true, notify: 15, chatName: 'PvP', cycleMs: 6000, range: 1200, cpItem: 5592, cpPct: 95, cpGap: 150, gatherKey: '', gatherRange: 400, groups: [
       newGroup({ name: 'Healers', key: 'X', mark: 3, cls: clsMap([[16, 1], [30, 1], [43, 1], [97, 1], [105, 1], [112, 1]]) }),
       newGroup({ name: 'Mages', key: 'Z', mark: 3, cls: clsMap([[12, 2], [13, 1], [27, 1], [40, 2], [94, 2], [95, 1], [103, 1], [110, 2]]) }),
       newGroup({ name: 'Res-kill', key: 'C', mode: 'reskill', after: 'attack', resMin: 0, resMax: 3000 }),
       newGroup({ name: 'Forces', key: 'V', mode: 'cast', mark: 1, skills: [426, 427] })] };
 }
 function parseProfile(text) {
-  const p = { name: '', clans: [], players: [], chat: true, notify: 15, chatName: 'PvP', cycleMs: 6000, range: 1200, cpItem: 5592, cpPct: 95, cpGap: 150, groups: [] };
+  const p = { name: '', clans: [], players: [], chat: true, notify: 15, chatName: 'PvP', cycleMs: 6000, range: 1200, cpItem: 5592, cpPct: 95, cpGap: 150, gatherKey: '', gatherRange: 400, groups: [] };
   let g = null, hasRange = false;
   for (let line of text.split(/\r?\n/)) {
     line = line.trim();
@@ -857,6 +857,8 @@ function parseProfile(text) {
       else if (k === 'cp_item') p.cpItem = Math.max(0, parseInt(v, 10) || 0);
       else if (k === 'cp_pct') p.cpPct = Math.min(100, Math.max(1, parseInt(v, 10) || 95));
       else if (k === 'cp_gap_ms') p.cpGap = Math.max(50, parseInt(v, 10) || 150);
+      else if (k === 'gather_key') p.gatherKey = v;
+      else if (k === 'gather_range') p.gatherRange = Math.min(3000, Math.max(50, parseInt(v, 10) || 400));
       else if (k === 'cycle_ms') p.cycleMs = parseInt(v, 10) || 6000;
       else if (k === 'range') { p.range = Math.max(100, parseInt(v, 10) || 1200); hasRange = true; }
       continue;
@@ -934,7 +936,8 @@ function profileText(p) {
     'clans=' + p.clans.map(clean).filter(Boolean).join('|'),
     'players=' + p.players.filter(x => clean(x.name)).map(x => (x.tag === 'skip' ? '-' : '+') + clean(x.name)).join('|'),
     'chat=' + (p.notify ? 1 : 0), 'notify=' + (p.notify | 0), 'chat_name=' + (clean(p.chatName) || 'PvP'), 'cycle_ms=' + Math.max(1000, p.cycleMs | 0), 'range=' + Math.max(100, p.range | 0),
-    'cp_item=' + Math.max(0, p.cpItem | 0), 'cp_pct=' + Math.min(100, Math.max(1, p.cpPct | 0)), 'cp_gap_ms=' + Math.max(50, p.cpGap | 0), ''];
+    'cp_item=' + Math.max(0, p.cpItem | 0), 'cp_pct=' + Math.min(100, Math.max(1, p.cpPct | 0)), 'cp_gap_ms=' + Math.max(50, p.cpGap | 0),
+    'gather_key=' + (p.gatherKey || ''), 'gather_range=' + Math.min(3000, Math.max(50, p.gatherRange | 0 || 400)), ''];
   p.groups.forEach((g, i) => L.push('[group]', 'on=' + (g.on ? 1 : 0), 'name=' + (clean(g.name) || 'group ' + (i + 1)), 'mode=' + g.mode, 'key=' + g.key,
     'range=' + (g.range > 0 ? Math.max(100, g.range | 0) : 0), 'height=' + Math.max(50, g.height | 0), 'mark=' + (g.mark | 0),
     'after=' + (g.after === 'attack' ? 'attack' : g.after === 'skill' && g.afterSk > 0 ? 'skill:' + g.afterSk : ''),
@@ -1048,7 +1051,7 @@ function changed(full) {
 async function saveNow() { clearTimeout(saveT); saveT = 0; await saveProfile(curId); }
 async function saveProfile(id) {
   const pr = profs[id]; if (!pr) return;
-  if (saving) { saveAgain = id; return; }
+  if (saving) { saveAgain.add(id); return; }   // every one asked meanwhile (the team view saves several at once)
   const text = profileText(pr.p);
   if (text === pr.saved) { saveState(); return; }
   if (!online) { saveErr = 'offline'; saveState(); return; }
@@ -1058,7 +1061,7 @@ async function saveProfile(id) {
     readAtSave = {}; for (const [t, b] of Object.entries(bots)) if (b.d.profile && b.d.profile.id === id) readAtSave[t] = b.d.profile.read;
   } catch (e) { saveErr = e.message || String(e); }
   saving = false;
-  if (saveAgain) { const again = saveAgain; saveAgain = null; saveProfile(again); }
+  if (saveAgain.size) { const again = [...saveAgain]; saveAgain.clear(); for (const a of again) await saveProfile(a); }
   saveState(); renderStatus();
 }
 function saveState() {
@@ -1069,6 +1072,13 @@ function saveState() {
   if (saveT || saving) { s.className = 'warn'; s.title = ''; s.replaceChildren(el('span', { class: 'spin' }), el('span', { text: 'Saving…' })); return; }
   s.className = 'ok'; s.title = 'Every change is saved by itself and reaches the bots at once';
   s.replaceChildren(svgI('check', 's'), el('span', { text: 'All changes saved' }));
+}
+// every profile written now (before the server reads the files: the team send). false: something is not written
+async function flushSaves() {
+  if (saveT) await saveNow();
+  for (let n = 0; saving && n < 100; n++) await new Promise(r => setTimeout(r, 50));
+  for (const id of Object.keys(profs)) if (pending(id)) await saveProfile(id);
+  return !saving && !Object.keys(profs).some(pending);
 }
 window.addEventListener('beforeunload', e => { if (saveT || saving) { saveNow(); e.preventDefault(); e.returnValue = ''; } });
 
@@ -2133,7 +2143,7 @@ async function setLead(name) {
 }
 // the leader's whole profile to every PC (there: profile «Team», the active one)
 async function sendTeamProf(id, ch) {
-  if (saveT) await saveNow();
+  if (!await flushSaves()) { toast('Not sent: a profile is not saved yet' + (saveErr && saveErr !== 'offline' ? ' (' + saveErr + ')' : '') + '. Try again', { kind: 'bad' }); return; }
   try {
     const r = await api('PUT', '/api/cmd?c=teamprof&id=' + encodeURIComponent(id) + '&char=' + encodeURIComponent(ch));
     if (r === 'sent') toast('Sent: every PC on the server takes it now');
@@ -2182,7 +2192,7 @@ function renderTeam() {
         fr('Then', new Set(TG.map(thenOf)).size > 1 ? 'Differs (see above): a click sets all' : 'Right after taking his pick',
           seg([['', 'Nothing'], ['attack', 'Attack']], new Set(TG.map(thenOf)).size > 1 ? null : thenOf(tg0), v => teamAll(g => { g.after = v; }))),
         teamVolleyRow(TG, ids.filter(has)))];
-    })() : [])));
+    })() : []), gatherSec(ids)));
   // the team profile: who sends it (the leader, from his PC), what this PC has
   const t = teamData(), lk = t.lead ? t.here[lc(t.lead)] : null, lpr = lk && bots[lk].d.profile;
   const lpn = lpr ? (profs[lpr.id] ? profs[lpr.id].p.name || lpr.id : lpr.name || lpr.id) : '';
@@ -2222,7 +2232,33 @@ function teamVolleyRow(G, ids) {
     const v = s.value === 'id' ? parseInt(await dialog({ title: 'Skill ID', input: '' }) || '', 10) : +s.value;
     if (v > 0) teamAll(g => { if (!g.volley) g.volley = []; if (!g.volley.includes(v) && g.volley.length < 8) g.volley.push(v); }); else s.value = '';
   };
-  return frc('Volley', 'The leader casts one: the same skill at his target', chips, el('div', { class: 'fc' }, s));
+  return frc('Volley', 'The leader casts one: the same skill at his target (no enemy targeted: just cast, e.g. an escape). He must be in sight', chips, el('div', { class: 'fc' }, s));
+}
+// gather team (gather_key / gather_range, in every profile): the leader presses it -> everyone following him runs to him,
+// as near as the range (his bot sends his place: through PvpPanel and the relay)
+let gatherT = 0;
+function gatherSec(ids) {
+  if (!ids.length) return null;
+  const P0 = ids.map(id => profs[id].p), p0 = P0.find(p => p.gatherKey) || P0[0];
+  const proxy = { mode: 'gather', name: 'Gather team', auto: false };
+  Object.defineProperty(proxy, 'key', { get: () => p0.gatherKey || '', set: v => {
+    for (const id of ids) { profs[id].p.gatherKey = v; saveProfile(id); }
+    setTimeout(renderTeam, 0); } });
+  const kb = el('button', { class: 'keycap', onclick: e => capStart(e.currentTarget, proxy) }); keyBtnLook(kb, proxy);
+  const diff = new Set(P0.map(p => (p.gatherKey || '') + '/' + (p.gatherRange || 400))).size > 1;
+  const clash = [];   // the same key as a group / a res-kill key: the bot turns the gather off in that profile
+  for (const id of ids) { const p = profs[id].p, k = lc(p.gatherKey || ''); if (!k) continue;
+    for (const g of p.groups) if (g.on && (lc(g.key || '') === k || lc(g.resKey || '') === k)) clash.push('«' + (g.name || '?') + '» in ' + (p.name || id)); }
+  const t = teamData(), lk = t.lead ? t.here[lc(t.lead)] : null;
+  return el('div', { class: 'esec', style: 'margin-top:8px' }, el('h5', null, 'Gather team, in every profile'),
+    fr('Key', p0.gatherKey ? 'You press it: everyone following you runs to you' : 'None: set one to call your team to you', kb),
+    fr('Range', diff ? 'Differs between profiles: a change sets all' : 'They stop this near to you',
+      numU(p0.gatherRange || 400, 50, 50, v => { for (const id of ids) profs[id].p.gatherRange = v;
+        clearTimeout(gatherT); gatherT = setTimeout(() => { for (const id of ids) saveProfile(id); }, 400); }, '', 'How near to you they come (50 - 3000)', 3000)),
+    clash.length ? el('p', { class: 'tnote', style: 'color: var(--bad)', text: 'The same key as ' + clash.join(', ') + ': the bot turns the gather off there.' }) : null,
+    lk ? fr('Now', 'From here, as if ' + t.lead + ' pressed the key', el('button', { class: 'sm', id: 'gatherNow', onclick: () =>
+      api('PUT', '/api/cmd?c=key&char=' + encodeURIComponent(lk) + '&g=' + encodeURIComponent('@gather'))
+        .then(() => toast('Gather: ' + t.lead + ' calls the team'), e => toast('Not sent: ' + e.message, { kind: 'bad' })) }, 'Gather now')) : null);
 }
 function refreshTeam() {
   const list = $('teamList'); if (!list) return;

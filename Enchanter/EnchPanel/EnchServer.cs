@@ -49,6 +49,8 @@ namespace EnchPanel
 
         TcpListener? _web;
         CancellationTokenSource? _cts;
+        /// <summary>The tray's Exit (PUT /api/quit), set by the tray.</summary>
+        public static Action? Quit;
 
         public bool Running { get; private set; }
         public string LastError { get; private set; } = "";
@@ -135,7 +137,7 @@ namespace EnchPanel
 
         /// <summary>A temp file swapped in: the bot never reads half of it; held a moment by the bot: tried again,
         /// then written in place.</summary>
-        static void WriteSwap(string path, byte[] data)
+        public static void WriteSwap(string path, byte[] data)
         {
             var tmp = path + ".tmp";
             File.WriteAllBytes(tmp, data);
@@ -307,7 +309,54 @@ namespace EnchPanel
                             return;
                         }
                         if (path == "/api/status") { await Reply(s, 200, StatusJson(), "application/json; charset=utf-8"); return; }
+                        if (path == "/api/voice")
+                        {
+                            var hub = VoiceHub.Instance;
+                            await Reply(s, 200, hub != null ? hub.StateJson() : "{\"on\":false,\"none\":true}", "application/json; charset=utf-8");
+                            return;
+                        }
                         if (path == "/favicon.ico") { await Reply(s, 204, Array.Empty<byte>(), "image/x-icon"); return; }
+                    }
+                    if (method == "PUT" && path == "/api/quit")       // as the tray's Exit (an update swaps the exe, then starts it)
+                    {
+                        headers.TryGetValue("x-ench", out var xq);
+                        if (xq != "1" || Quit == null) { await Reply(s, 403, "forbidden"); return; }
+                        await Reply(s, 200, "bye");
+                        Quit();
+                        return;
+                    }
+                    if (method == "PUT" && path.StartsWith("/api/voice", StringComparison.Ordinal))
+                    {
+                        headers.TryGetValue("x-ench", out var xv);
+                        var hub = VoiceHub.Instance;
+                        if (xv != "1" || hub == null) { await Reply(s, 403, "forbidden"); return; }
+                        if (path == "/api/voice")              // ?on=1&key=RControl&mic=-1&llm=1
+                        {
+                            bool? on = q.TryGetValue("on", out var v1) ? v1 == "1" : null;
+                            q.TryGetValue("key", out var key);
+                            int? mic = q.TryGetValue("mic", out var v2) && int.TryParse(v2, out var m) ? m : null;
+                            bool? llm = q.TryGetValue("llm", out var v3) ? v3 == "1" : null;
+                            bool? beeps = q.TryGetValue("beeps", out var v4) ? v4 == "1" : null;
+                            hub.Set(on, key, mic, llm, beeps);
+                            await Reply(s, 200, hub.StateJson(), "application/json; charset=utf-8");
+                            return;
+                        }
+                        if (path == "/api/voice/text")         // ?text=...&char=<tag>: as if said
+                        {
+                            q.TryGetValue("text", out var text);
+                            q.TryGetValue("char", out var ch);
+                            if (string.IsNullOrWhiteSpace(text)) { await Reply(s, 400, "no text"); return; }
+                            var e = await hub.HandleText(text.Trim(), 0, 0, null, string.IsNullOrWhiteSpace(ch) ? null : ch);
+                            await Reply(s, 200, JsonSerializer.Serialize(new { e.Char, e.Text, e.Via, e.Acts, e.Result, e.Ok, e.LlmMs, e.AllMs }), "application/json; charset=utf-8");
+                            return;
+                        }
+                        if (path == "/api/voice/wav")          // the body: a .wav (a test without the microphone)
+                        {
+                            var e = await hub.HandleWav(body);
+                            if (e == null) { await Reply(s, 503, "speech recognition is not ready"); return; }
+                            await Reply(s, 200, JsonSerializer.Serialize(new { e.Char, e.Text, e.Via, e.Acts, e.Result, e.Ok, e.SttMs, e.LlmMs, e.AllMs }), "application/json; charset=utf-8");
+                            return;
+                        }
                     }
                     if (method == "PUT" && path == "/api/file")
                     {

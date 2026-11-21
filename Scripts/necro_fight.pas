@@ -63,6 +63,7 @@ const
 
 procedure SetBuff(WatchBuffID: integer; Bypasses: array of string);
 procedure SetSummonBuff(WatchBuffID: integer; Bypasses: array of string);
+procedure SetRebuffHold(Sec: integer);
 procedure SetSafePoint(X, Y, Z: integer);
 procedure AddSupply(ItemID: integer; MinCount, MaxCount: integer);
 procedure SetWeapon(ItemID: integer);
@@ -125,6 +126,7 @@ const
   SUMMON_APPEAR_MS  = 10000;   // rebuff: wait this long for the summon to appear before buffing
 
   REBUFF_TIME       = 600000;  // rebuff when the watched buff has less than this (ms)
+  REBUFF_HOLD_MS    = 30000;   // ... and it looked so this long IN A ROW (a glitch in the buff list is no rebuff)
   PATH_REACHED      = 150;     // "I am at the safe point"
 
   INVENTORY_PACKET  = '14';    // RequestItemList: the server resends the inventory
@@ -203,7 +205,11 @@ var
   BuffBypasses, SummonBuffBypasses: array of string;
   SummonBuffID: integer;                   // SetSummonBuff: buff watched on the summon (0 = same as ours)
   SummonBuffSkipUntil: cardinal;
-  ConfigName: string;                      // SetConfig: bot config loaded at start (Library\Configurations)
+  RebuffHoldMs: integer;                   // SetRebuffHold: the buff low this long in a row -> rebuff
+  RebuffHoldSet: boolean;
+  LowOn: boolean;                          // the buff looks low now, since LowSince (every loop step)
+  LowSince: cardinal;
+  ConfigName: string;                     // SetConfig: bot config loaded at start (Library\Configurations)
   BlessSkill: integer;                     // SetBlessing: a buff that survives the summon's death (Noblesse 1323)
   LastBlessTry: cardinal;           // gave up buffing the summon: its buff is not checked until then
   SbSkill, SbBuff, SbBefore: array of integer;   // AddSelfBuff: skill, its buff on us (0 = the skill's), recast s before its end
@@ -286,6 +292,14 @@ begin
   SummonBuffID := WatchBuffID;
   SetLength(SummonBuffBypasses, Length(Bypasses));
   for i := 0 to Length(Bypasses) - 1 do SummonBuffBypasses[i] := Bypasses[i];
+end;
+
+// rebuff only after the buff looked low (less than 10 min left / gone) Sec seconds in a row (default 30)
+procedure SetRebuffHold(Sec: integer);
+begin
+  if Sec < 0 then Sec := 0;
+  RebuffHoldMs := Sec * 1000;
+  RebuffHoldSet := true;
 end;
 
 procedure SetSafePoint(X, Y, Z: integer);
@@ -2364,6 +2378,8 @@ begin
   if not PlayerRangeSet then PlayerRange := PLAYER_ALERT_RANGE;
   if PatrolRange <= 0 then PatrolRange := 200;
   if not PetAttackSet then PetAttackMinMaxHP := -1;   // summon melee off unless SetPetAttack
+  if not RebuffHoldSet then RebuffHoldMs := REBUFF_HOLD_MS;
+  LowOn := false;
   AddDefaultIgnoreNames();
 
   UX := User.X;
@@ -2417,8 +2433,22 @@ begin
       Alert('[Death]', 'Character died, waiting for a resurrection', DEATH_SOUND);
       while User.Dead do Delay(1000);
       CurTarget := 0;
+      LowOn := false;
       Delay(3000);
       continue;
+    end;
+
+    // the buff low: looked at every step (the rebuff below waits till it stays low RebuffHoldMs in a row)
+    if BuffLow() then begin
+      if not LowOn then begin
+        LowOn := true;
+        LowSince := GetTickCount;
+      end;
+    end else if LowOn then begin
+      LowOn := false;
+      if GetTickCount - LowSince >= 1000 then
+        Engine.Msg('[Rebuff]', 'The buff is there again after ' + IntToStr((GetTickCount - LowSince) div 1000) +
+          ' s - no rebuff', 0);
     end;
 
     CheckWeapon();     // anti-disarm
@@ -2455,8 +2485,10 @@ begin
         continue;
       end;
     end;
-    // buff running out -> rebuff (it does not come back until the buff is on)
-    if BuffLow() then begin
+    // buff running out RebuffHoldMs in a row -> rebuff (it does not come back until the buff is on)
+    if LowOn and (GetTickCount - LowSince >= RebuffHoldMs) then begin
+      LowOn := false;
+      Engine.Msg('[Rebuff]', 'The buff looked low ' + IntToStr(RebuffHoldMs div 1000) + ' s in a row', 0);
       Rebuff();
       continue;
     end;

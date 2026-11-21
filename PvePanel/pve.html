@@ -1,0 +1,1287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PvE Panel</title>
+<style>
+  :root { --bg: #0a0d12; --panel: #11151c; --panel2: #171c25; --panel3: #1e2431; --line: #222936; --line2: #2e3746;
+    --text: #e6ebf2; --muted: #8893a4; --dim: #5d6878; --accent: #5aa9ff; --accent2: #3d8bea; --ok: #4dd4ac; --warn: #ffbf5a;
+    --bad: #ff6b7a; --pur: #b18cff; --shadow: 0 12px 40px rgba(0, 0, 0, .5); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--text);
+    font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+  svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 7px; padding: 5px 10px; font: inherit; cursor: pointer; white-space: nowrap;
+    transition: background .12s, border-color .12s, color .12s; }
+  button:hover { border-color: #46536a; background: var(--panel3); }
+  button.primary { background: linear-gradient(180deg, #4a97f0, #2f73c6); border-color: #5aa3f5; color: #fff; }
+  button.primary:hover { background: linear-gradient(180deg, #5aa3f5, #357bd0); }
+  button.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  button.ghost:hover { background: var(--panel3); color: var(--text); }
+  button.danger:hover { background: #3a1d22; border-color: #ff5d6c; color: #ff8a95; }
+  button.icon { padding: 4px 6px; }
+  button:disabled { opacity: .35; cursor: default; }
+  input, select, textarea { background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 7px;
+    padding: 5px 8px; font: inherit; min-width: 0; }
+  input[type=number] { width: 76px; }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); margin: 0; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+  textarea { resize: vertical; width: 100%; font: 12px/1.5 Consolas, monospace; }
+  option { background: var(--panel2); }
+  .muted { color: var(--muted); }
+  .dim { color: var(--dim); }
+  .warn { color: var(--warn); }
+  .bad { color: var(--bad); }
+  .ok { color: var(--ok); }
+  .mono { font-family: Consolas, monospace; }
+  .sp { flex: 1; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .lbl { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+  label.ck { display: inline-flex; align-items: center; gap: 7px; cursor: pointer; user-select: none; }
+
+  /* ===== the frame: header, sidebar, page ===== */
+  #app { display: grid; grid-template-rows: auto 1fr; grid-template-columns: 196px 1fr; height: 100%; }
+  #top { grid-column: 1 / 3; display: flex; align-items: center; gap: 12px; padding: 8px 14px; min-height: 58px;
+    background: linear-gradient(180deg, #141922, #0f131a); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand .logo { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #06121f;
+    background: linear-gradient(135deg, #5aa9ff, #4dd4ac); box-shadow: 0 2px 10px rgba(90, 169, 255, .3); }
+  .brand .logo svg { stroke-width: 2.3; }
+  .brand b { font-size: 15px; font-weight: 650; }
+  .charpick { display: flex; align-items: center; gap: 6px; padding: 2px 4px 2px 10px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line2); }
+  .charpick select { border: 0; background: transparent; font-weight: 600; max-width: 200px; }
+  .charpick select:focus { box-shadow: none; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 99px; font-size: 12px; white-space: nowrap;
+    background: var(--panel2); border: 1px solid var(--line); color: var(--muted); }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+  .pill.ok { color: var(--ok); } .pill.ok .dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .pill.warn { color: var(--warn); } .pill.warn .dot { background: var(--warn); }
+  .pill.bad { color: var(--bad); } .pill.bad .dot { background: var(--bad); }
+  #livebox { display: flex; align-items: center; gap: 14px; min-width: 0; flex: 1; padding: 4px 12px; border-left: 1px solid var(--line); }
+  .phase { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: 2px 8px; border-radius: 6px;
+    background: var(--panel3); color: var(--muted); white-space: nowrap; }
+  .phase.farm { background: rgba(90, 169, 255, .15); color: var(--accent); }
+  .phase.rebuff { background: rgba(177, 140, 255, .15); color: var(--pur); }
+  .phase.dead { background: rgba(255, 107, 122, .15); color: var(--bad); }
+  .phase.paused { background: rgba(255, 191, 90, .12); color: var(--warn); }
+  .phase.afk { background: rgba(160, 170, 190, .14); color: var(--muted); }
+  .phase.return { background: rgba(177, 140, 255, .15); color: var(--pur); }
+  .human-off { opacity: .45; }
+  /* human: distribution / chance editors */
+  .dist, .chance { padding: 7px 0 8px; border-top: 1px solid var(--line); }
+  .dh { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .dh > label { color: var(--muted); min-width: 150px; }
+  .dseg { display: inline-flex; border: 1px solid var(--line2); border-radius: 7px; overflow: hidden; }
+  .dseg button { border: 0; border-radius: 0; padding: 2px 9px; font-size: 11.5px; background: transparent; color: var(--muted); min-height: 0; }
+  .dseg button.on { background: rgba(90, 169, 255, .18); color: var(--accent); }
+  .dnum { width: 66px; padding: 3px 6px; }
+  .dchart { display: block; width: 100%; height: 78px; margin-top: 4px; touch-action: none; user-select: none; }
+  .chance .dchart { height: 30px; }
+  .dinfo { font-size: 11.5px; color: var(--muted); }
+  .dist > .h { color: var(--dim); font-size: 11.5px; }
+  .dchart .dgrid { stroke: var(--line); stroke-width: 1; }
+  .dchart .daxis { stroke: var(--line2); stroke-width: 1; }
+  .dchart .dtick { fill: var(--dim); font-size: 10px; }
+  .dchart .dref { stroke: var(--warn); stroke-width: 1.2; stroke-dasharray: 4 3; opacity: .8; }
+  .dchart .darea { fill: rgba(90, 169, 255, .16); }
+  .dchart .dline { fill: none; stroke: var(--accent); stroke-width: 2; }
+  .dchart .dedge { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 3; }
+  .dchart .dgrip { fill: var(--accent); }
+  .dchart .dmean { stroke: var(--pur); stroke-width: 1; stroke-dasharray: 2 3; }
+  .dchart .dknob { fill: var(--pur); stroke: var(--bg); stroke-width: 2; }
+  .dchart .dknob2 { fill: var(--panel); stroke: var(--pur); stroke-width: 2; }
+  .dchart .dsig { stroke: var(--pur); stroke-width: 3; stroke-linecap: round; opacity: .55; }
+  .dchart .dhit { fill: transparent; cursor: ew-resize; }
+  .dchart .dtrack { fill: var(--panel3); }
+  .dchart .dfill { fill: rgba(90, 169, 255, .55); }
+  .dchart .dlabel { fill: var(--text); font-size: 11px; font-weight: 600; }
+  .pair { width: 64px; }
+  #what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); max-width: 420px; }
+  .bars { display: grid; grid-template-columns: auto 90px; gap: 2px 6px; align-items: center; font-size: 10.5px; color: var(--dim); }
+  .bar { height: 6px; border-radius: 3px; background: var(--panel3); overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 3px; transition: width .3s; }
+  .tgtchip { display: flex; flex-direction: column; gap: 3px; min-width: 150px; max-width: 220px; }
+  .tgtchip b { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stat { display: flex; flex-direction: column; align-items: center; line-height: 1.2; }
+  .stat b { font-size: 15px; }
+  .stat span { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  #go { min-width: 128px; height: 40px; font-size: 14px; font-weight: 700; border-radius: 10px; }
+  #go.start { background: linear-gradient(180deg, #3fcf9f, #23a57b); border-color: #4dd4ac; color: #04150f; }
+  #go.start:hover { background: linear-gradient(180deg, #52dcae, #2bb387); }
+  #go.pause { background: linear-gradient(180deg, #ffc86b, #f0a232); border-color: #ffbf5a; color: #1d1203; }
+  #go.pause:hover { background: linear-gradient(180deg, #ffd27f, #f5ad45); }
+  #go .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #side { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; padding: 10px 8px; gap: 2px; min-height: 0; }
+  #side .nav { display: flex; align-items: center; gap: 10px; width: 100%; justify-content: flex-start; padding: 9px 12px; border-radius: 9px;
+    border: 1px solid transparent; background: transparent; color: var(--muted); font-weight: 600; }
+  #side .nav:hover { background: var(--panel2); color: var(--text); }
+  #side .nav.on { background: #172a42; border-color: #24476e; color: #fff; }
+  #side .nav .n { margin-left: auto; font-size: 11px; color: var(--dim); font-weight: 600; }
+  #side .foot { margin-top: auto; display: grid; gap: 8px; padding: 10px 6px 2px; border-top: 1px solid var(--line); }
+  #side .foot select { width: 100%; }
+  #side .foot .small { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+  main { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+  .page { position: absolute; inset: 0; display: flex; flex-direction: column; min-height: 0; padding: 14px 16px; gap: 12px; }
+  .ph { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ph h2 { margin: 0; font-size: 16px; font-weight: 650; }
+  .ph .sub { color: var(--muted); font-size: 12.5px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+  .card > h3 { margin: 0 0 10px; font-size: 13px; font-weight: 650; display: flex; align-items: baseline; gap: 4px 8px; flex-wrap: wrap; }
+  .card > h3 .sub { font-weight: 400; color: var(--muted); font-size: 12px; }
+  .scroll { overflow: auto; min-height: 0; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(470px, 1fr)); gap: 12px; align-content: start; }
+  .f { display: grid; grid-template-columns: 170px minmax(0, 1fr); align-items: center; gap: 6px 12px; padding: 5px 0; }
+  .f select { max-width: 100%; }
+  .f > label:first-child { color: var(--muted); }
+  .f .h { grid-column: 2; color: var(--dim); font-size: 11.5px; margin-top: -2px; }
+  .empty { color: var(--dim); padding: 18px; text-align: center; }
+
+  /* ===== fight rules ===== */
+  #rulesWrap { flex: 1 1 auto; min-height: 120px; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); overflow: hidden; }
+  .addbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); background: var(--panel2); flex-wrap: wrap; }
+  table.rules { width: 100%; border-collapse: collapse; }
+  table.rules th { position: sticky; top: 0; z-index: 1; background: var(--panel); text-align: left; font-size: 10.5px; font-weight: 600; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .07em; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  table.rules td { padding: 5px 8px; border-bottom: 1px solid #1a1f29; vertical-align: middle; }
+  table.rules tr.r { cursor: pointer; }
+  table.rules tr.r:hover td { background: #141a23; }
+  table.rules tr.r.sel td { background: #15263b; }
+  table.rules tr.r.off td { opacity: .45; }
+  table.rules tr.r.off td:first-child { opacity: 1; }
+  .nm { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .nm b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .nm small { color: var(--dim); font-size: 11px; white-space: nowrap; }
+  .ico { width: 26px; height: 26px; flex: none; border-radius: 6px; background: var(--panel3) center / cover no-repeat; display: grid; place-items: center;
+    image-rendering: pixelated; border: 1px solid #2a3242; color: var(--muted); font-size: 11px; font-weight: 700; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--panel3); color: var(--muted); white-space: nowrap; border: 1px solid #283041; }
+  .chip.c { color: #9fd0ff; border-color: #24476e; background: #142336; }
+  .chip.m { color: #ffd38a; border-color: #5a4521; background: #2a2114; }
+  .chip.x { cursor: pointer; }
+  .chip.x:hover { border-color: var(--bad); color: var(--bad); }
+  .prio { display: inline-flex; align-items: center; gap: 2px; }
+  .prio b { min-width: 20px; text-align: center; }
+  .tg { font-size: 11.5px; padding: 1px 8px; border-radius: 6px; background: var(--panel3); white-space: nowrap; }
+  .tg.mob { color: #ff9aa5; } .tg.self { color: #7ee7c0; } .tg.pet { color: #c9a8ff; } .tg.player { color: #ffbf5a; }
+  .uses { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+
+  #editor { flex: 0 0 auto; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); padding: 10px 12px; max-height: 46%; overflow: auto; }
+  #editor .head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  #editor .head b { font-size: 14px; }
+  .eg { display: grid; grid-template-columns: 1.05fr 1fr 1.05fr 1.5fr; gap: 10px; }
+  fieldset { border: 1px solid var(--line2); border-radius: 10px; margin: 0; padding: 8px 10px 10px; min-width: 0; display: grid; gap: 7px; align-content: start; }
+  legend { padding: 0 6px; color: var(--muted); font-size: 11.5px; font-weight: 600; }
+  fieldset .row { gap: 6px; }
+  fieldset input[type=number] { width: 66px; }
+  .seg { display: inline-flex; background: var(--panel2); border: 1px solid var(--line2); border-radius: 8px; padding: 2px; gap: 2px; }
+  .seg button { border: 1px solid transparent; background: transparent; padding: 3px 9px; font-size: 12px; color: var(--muted); }
+  .seg button:hover { background: var(--panel3); color: var(--text); border-color: transparent; }
+  .seg button.on { background: #1d3b5f; border-color: #2f6299; color: #fff; }
+  .seg.prio5 button.on.p1 { background: #1f4a37; border-color: #3b9b70; }
+  .seg.prio5 button.on.p2 { background: #24403a; border-color: #3c8574; }
+  .seg.prio5 button.on.p4 { background: #3a3220; border-color: #7d6430; }
+  .seg.prio5 button.on.p9 { background: #48202a; border-color: #a5404f; }
+  .cond { display: grid; grid-template-columns: 1fr 86px; gap: 6px; }
+  .cond input { width: 100%; }
+  .hint { color: var(--dim); font-size: 11.5px; }
+
+  /* the picker: an input with a list under it (skills with icons, items, actions) */
+  .pick { position: relative; width: 320px; }
+  .pick input { width: 100%; }
+  .pick .list { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 320px; overflow: auto; z-index: 20; background: var(--panel2);
+    border: 1px solid var(--line2); border-radius: 10px; box-shadow: var(--shadow); padding: 4px; display: none; }
+  .pick.open .list { display: block; }
+  .pick .it { display: flex; align-items: center; gap: 8px; padding: 5px 7px; border-radius: 7px; cursor: pointer; }
+  .pick .it:hover, .pick .it.hl { background: #1d3b5f; }
+  .pick .it .ico { width: 22px; height: 22px; }
+  .pick .it span { color: var(--dim); font-size: 11px; margin-left: auto; white-space: nowrap; }
+  .pick .none { color: var(--dim); padding: 8px; font-size: 12px; }
+
+  /* ===== mobs ===== */
+  table.mobs { width: 100%; border-collapse: collapse; }
+  table.mobs th { position: sticky; top: 0; background: var(--panel); text-align: left; font-size: 10.5px; color: var(--dim); text-transform: uppercase;
+    letter-spacing: .07em; padding: 6px 8px; border-bottom: 1px solid var(--line); font-weight: 600; }
+  table.mobs td { padding: 5px 8px; border-bottom: 1px solid #1a1f29; }
+  table.mobs tr.gone td { opacity: .55; }
+  .onme { color: var(--bad); font-weight: 600; }
+
+  /* ===== map ===== */
+  #pgMap { flex-direction: row; padding: 0; gap: 0; }
+  #mapSide { width: 330px; flex: none; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+  #mapSide .sec { padding: 12px 14px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+  #mapSide .sec h4 { margin: 0; font-size: 12.5px; font-weight: 650; display: flex; align-items: center; gap: 8px; }
+  #mapList { flex: 1; overflow: auto; padding: 8px 10px; display: grid; gap: 4px; align-content: start; }
+  .mrow { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 7px 9px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel2); }
+  .mrow.use { border-color: #2f6299; background: #142336; }
+  .mrow b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mrow small { color: var(--dim); font-size: 11px; grid-column: 1; }
+  .mrow .acts { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 4px; align-items: center; }
+  #mapFrame { flex: 1; border: 0; min-width: 0; background: #0a0d12; }
+  .mapstat { font-size: 12px; padding: 6px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); }
+
+  /* ===== log ===== */
+  .log { font: 12px/1.6 Consolas, monospace; }
+  .log div { white-space: pre-wrap; word-break: break-word; padding: 1px 0; border-bottom: 1px solid #151a22; }
+  .log span { color: var(--dim); margin-right: 8px; }
+
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%) translateY(20px); opacity: 0; pointer-events: none; transition: .2s;
+    background: #0e1a2a; border: 1px solid #2f6299; color: #fff; padding: 9px 16px; border-radius: 10px; box-shadow: var(--shadow); z-index: 50; max-width: 70vw; }
+  #toast.show { opacity: 1; transform: translateX(-50%); }
+  @media (max-width: 1250px) { .eg { grid-template-columns: 1fr 1fr; } #what { max-width: 240px; } }
+</style>
+</head>
+<body>
+<div id="app">
+  <header id="top">
+    <div class="brand"><span class="logo"><svg class="i" viewBox="0 0 24 24"><path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6"/><path d="m16 16 4 4"/><path d="m19 21 2-2"/></svg></span><b>PvE Panel</b></div>
+    <div class="charpick"><span class="lbl">Character</span><select id="charSel" title="Whose farm this is"></select></div>
+    <span id="botPill" class="pill"></span>
+    <div id="livebox">
+      <span id="phase" class="phase">—</span>
+      <span id="what" class="muted">—</span>
+      <div class="tgtchip" id="tgtBox" hidden><b id="tgtName"></b><div class="bar"><i id="tgtHp" style="background:#ff6b7a"></i></div></div>
+      <div class="bars" id="meBars">
+        <span>HP</span><div class="bar"><i id="bHp" style="background:#ff6b7a"></i></div>
+        <span>MP</span><div class="bar"><i id="bMp" style="background:#5aa9ff"></i></div>
+        <span>CP</span><div class="bar"><i id="bCp" style="background:#ffbf5a"></i></div>
+      </div>
+      <div class="stat"><b id="kills">0</b><span>kills</span></div>
+      <div class="stat"><b id="runTime">—</b><span>running</span></div>
+    </div>
+    <span id="saveState" class="pill"></span>
+    <button id="go" class="start">Start</button>
+  </header>
+
+  <nav id="side">
+    <button class="nav" data-page="fight"><svg class="i" viewBox="0 0 24 24"><path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6"/><path d="m16 16 4 4"/></svg>Fight<span class="n" id="nRules"></span></button>
+    <button class="nav" data-page="mobs"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg>Targets<span class="n" id="nMobs"></span></button>
+    <button class="nav" data-page="map"><svg class="i" viewBox="0 0 24 24"><path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/></svg>Map</button>
+    <button class="nav" data-page="buffs"><svg class="i" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M5.6 5.6l2.8 2.8M15.6 15.6l2.8 2.8M5.6 18.4l2.8-2.8M15.6 8.4l2.8-2.8"/></svg>Buffs &amp; shop</button>
+    <button class="nav" data-page="human"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></svg>Human<span class="n" id="nHuman"></span></button>
+    <button class="nav" data-page="alerts"><svg class="i" viewBox="0 0 24 24"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 8 3 8H3s3-1 3-8"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>Alerts &amp; misc</button>
+    <button class="nav" data-page="log"><svg class="i" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg>Log</button>
+    <div class="foot">
+      <div class="small" id="mapNote">Map: —</div>
+      <select id="copyFrom" title="Take every setting of another character (its fight rules, targets, map, buffs) - not its start / pause"><option value="">Copy settings from…</option></select>
+    </div>
+  </nav>
+
+  <main>
+    <!-- ===== fight ===== -->
+    <section class="page" id="pgFight" data-page="fight">
+      <div class="ph"><h2>Fight rules</h2><span class="sub">by priority: every moment the highest rule that may go is used — skills, items, actions, like the bot's Fight settings</span></div>
+      <div id="rulesWrap">
+        <div class="addbar">
+          <div class="seg" id="addType"><button data-t="S" class="on">Skills</button><button data-t="I">Items</button><button data-t="A">Actions</button></div>
+          <div class="pick" id="addPick"><input id="addName" placeholder="Name or ID…" autocomplete="off"><div class="list"></div></div>
+          <button id="addBtn" class="primary">Add</button>
+          <span class="sp"></span>
+          <label class="ck" title="No rule at a mob at all: the plain auto attack"><input type="checkbox" id="optAuto"> Auto attack when there is no rule</label>
+          <span class="muted">Spam</span><input type="number" id="optSpam" min="30" max="1000" step="10" title="How often a skill packet goes (ms). A Repeat rule is sent this often while it reloads - it goes the moment it can"><span class="muted">ms</span>
+        </div>
+        <div class="scroll" style="flex:1"><table class="rules"><thead><tr>
+          <th style="width:34px"></th><th>Skill / item / action</th><th style="width:70px">Type</th><th style="width:86px">Target</th><th>Settings</th>
+          <th style="width:88px">Priority</th><th style="width:66px" title="Repeat: its packet goes all the time while it reloads (nukes); off - only when ready (debuffs, buffs, heals)">Repeat</th><th style="width:90px">Used</th><th style="width:34px"></th>
+        </tr></thead><tbody id="rulesBody"></tbody></table>
+        <div class="empty" id="rulesEmpty" hidden>No rules yet. Pick <b>Skills</b>, type a name and press <b>Add</b>.</div></div>
+      </div>
+      <div id="editor" hidden></div>
+    </section>
+
+    <!-- ===== targets / mob priority ===== -->
+    <section class="page" id="pgMobs" data-page="mobs" hidden>
+      <div class="ph"><h2>Targets</h2><span class="sub">which mobs are taken and which go first</span></div>
+      <div style="display:grid; grid-template-columns: 450px 1fr; gap: 12px; min-height: 0; flex: 1">
+        <div class="card scroll">
+          <h3>Target choice</h3>
+          <div class="f"><label>New targets within</label><div class="row"><input type="number" data-k="target_range" min="100" step="50"><span class="muted">units</span></div></div>
+          <div class="f"><label>In sight only</label><label class="ck"><input type="checkbox" data-k="see_first"> a new target only once the map sees it</label><div class="h">no wall of the map between me and it (Walk / Sight cells); behind a wall it is not targeted - taken when it shows up. Mobs on me: at once</div></div>
+          <div class="f"><label>Whole map</label><label class="ck"><input type="checkbox" data-k="map_hunt"> search the whole map too</label><div class="h">beyond that range: any mob the game shows on the map's cells, the bot runs to it along the map. Near ones first, then far ones by the shortest run. No map: only the range</div></div>
+          <div class="f"><label>Mobs on me within</label><div class="row"><input type="number" data-k="aggro_range" min="100" step="50"><span class="muted">units</span></div><div class="h">a mob that hits me / my summon is fought wherever it stands</div></div>
+          <div class="f"><label>Height difference up to</label><div class="row"><input type="number" data-k="height" min="0" step="50"><span class="muted">0 = any</span></div></div>
+          <div class="f"><label>Pick</label><select data-k="pick"><option value="hp">the lowest HP first</option><option value="near">the nearest first</option></select><div class="h">inside a priority class</div></div>
+          <div class="f"><label>Mobs on me first</label><label class="ck"><input type="checkbox" data-k="onus_first"> always before the others</label></div>
+          <div class="f"><label>Switch</label><label class="ck"><input type="checkbox" data-k="switch"> to a mob of a better class when it shows up</label></div>
+          <div class="f"><label>Champions</label><label class="ck"><input type="checkbox" data-k="skip_champ"> never taken (only when on me)</label></div>
+          <div class="f"><label>Champion from MaxHP</label><input type="number" data-k="champ_hp" min="1000" step="10000"></div>
+        </div>
+        <div class="card" style="display:flex; flex-direction:column; min-height:0">
+          <h3>Mob priority <span class="sub">First → High → Normal → Low; Never = not taken (still fought when it hits me). Not listed = Normal</span></h3>
+          <div class="row" style="margin-bottom:8px"><input type="search" id="mobFilter" placeholder="Filter…" style="width:220px"><label class="ck"><input type="checkbox" id="mobListed"> only the listed ones</label>
+            <span class="sp"></span><input type="number" id="mobAddId" placeholder="NPC ID" style="width:96px"><input id="mobAddName" placeholder="name" style="width:160px"><button id="mobAddBtn">Add</button></div>
+          <div class="scroll" style="flex:1"><table class="mobs"><thead><tr><th>Mob</th><th style="width:80px">ID</th><th style="width:150px">Around now</th><th style="width:330px">Priority</th></tr></thead><tbody id="mobsBody"></tbody></table>
+          <div class="empty" id="mobsEmpty" hidden>No mobs around the character yet (the bot reports the mobs within 2500).</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== map ===== -->
+    <section class="page" id="pgMap" data-page="map" hidden>
+      <div id="mapSide">
+        <div class="sec">
+          <h4>Map of this character</h4>
+          <select id="gridSel"></select>
+          <div class="mapstat" id="mapStat">—</div>
+          <div class="row"><button id="gridEdit">Open in the editor</button><button id="gridReload" title="The bot loads the map file again (after you saved it in the editor this happens by itself)">Reload in the bot</button></div>
+        </div>
+        <div class="sec">
+          <h4>No target</h4>
+          <label class="ck"><input type="checkbox" data-k="roam"> run over the map's farm spots (★), else over the whole map</label>
+          <div class="row"><span class="muted">wait at a point</span><input type="number" id="roamMin" min="0" step="1" style="width:56px"><span class="muted">–</span><input type="number" id="roamMax" min="0" step="1" style="width:56px"><span class="muted">s</span></div>
+          <div class="row"><span class="muted">no map: farm within</span><input type="number" data-k="radius" min="100" step="50"><span class="muted">of the start</span></div>
+        </div>
+        <div class="sec">
+          <h4>Way back to the spot</h4>
+          <input data-k="teleport" placeholder="teleport bypass: _bbs_teleport?id=…" title="After a death (Alerts & misc: When I die = to the village and back to the spot), or started far from the map: Aden → the buffer, supplies → the gatekeeper → this teleport → the map's rail from the landing point → the spot (★, else Safe). Empty = the map's own (K teleport)" style="width:100%">
+          <div class="mapstat" id="wayStat">—</div>
+        </div>
+        <div class="sec" style="border-bottom:0; padding-bottom:4px"><h4>Maps <span class="sp"></span><button id="mapNew" class="ghost" title="A new empty map in the editor">+ New</button><button id="mapOpenOld" class="ghost" title="Open an old map (Library\Nav), a bot zone or a run in the editor">Open…</button></h4></div>
+        <div id="mapList"></div>
+      </div>
+      <iframe id="mapFrame" title="Map editor"></iframe>
+    </section>
+
+    <!-- ===== buffs & shop ===== -->
+    <section class="page" id="pgBuffs" data-page="buffs" hidden>
+      <div class="ph"><h2>Buffs &amp; shop</h2><span class="sub">own buffs, potions and elixirs are Fight rules (target Me, condition «I have no buff»)</span></div>
+      <div class="grid2 scroll">
+        <div class="card">
+          <h3>Rebuff at the buffer</h3>
+          <div class="f"><label>Watched buff ID</label><div class="row"><input type="number" data-k="rebuff_id" min="0"><span class="muted" id="rebuffName"></span></div><div class="h">0 = no rebuff. 1204 = Wind Walk of the buffer</div></div>
+          <div class="f"><label>Rebuff when less than</label><div class="row"><input type="number" id="rebuffMin" min="0" step="1"><span class="muted">min left</span></div></div>
+          <div class="f"><label>…for at least</label><div class="row"><input type="number" data-k="rebuff_hold" min="0" step="5"><span class="muted">s in a row</span></div><div class="h">a moment without the buff in the list is not a rebuff</div></div>
+          <div class="f"><label>Buffer bypasses</label><textarea id="rebuffBp" rows="3" placeholder="_bbs_buffer_show&#10;book_use?name=s&amp;pre=0&amp;target=Player"></textarea><div class="h">one per line, in order. Kill the mobs on me → the map's safe point (Safe) → out of combat → these → supplies</div></div>
+          <div class="f"><label></label><div class="row"><button id="rebuffUsual">Use the usual (1204 + our buffer)</button></div></div>
+        </div>
+        <div class="card">
+          <h3>Supplies <span class="sub">checked on every rebuff: below the minimum → bought up to the maximum</span></h3>
+          <div id="supRows" style="display:grid; gap:6px"></div>
+          <div class="row" style="margin-top:8px"><button id="supAdd">+ Add</button></div>
+        </div>
+        <div class="card">
+          <h3>Weapon <span class="sub">anti-disarm</span></h3>
+          <div class="f"><label>Keep on</label><select id="weapSel"><option value="0">the weapon in hands at start</option><option value="id">this item ID</option><option value="-1">off</option></select></div>
+          <div class="f" id="weapIdRow"><label>Item ID</label><input type="number" id="weapId" min="1"></div>
+        </div>
+        <div class="card">
+          <h3>Bot profile <span class="sub">its alarms / pickup / potions work; its fight must be off - the script fights</span></h3>
+          <div class="f"><label>Profile (.xml)</label><select data-k="profile" id="profSel"></select><div class="h">Library\Configurations. None: the bot's interface is turned off at start</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== alerts & misc ===== -->
+    <!-- ===== human: runs by the mouse, reaction times, AFK breaks ===== -->
+    <section class="page" id="pgHuman" data-page="human" hidden>
+      <div class="ph"><h2>Human</h2><span class="sub">play like a player: mouse runs, reaction times, breaks</span>
+        <span class="sp"></span><label class="ck"><input type="checkbox" data-k="human"> <b>Human mode</b></label></div>
+      <div class="grid2 scroll" id="humanCards">
+        <div class="card">
+          <h3>Runs <span class="sub">drag the edges, the peak and its width; Uniform / Normal</span></h3>
+          <div class="f"><label>Mouse clicks</label><label class="ck"><input type="checkbox" data-k="h_clicks"> run by clicks a piece ahead, not one click to the goal</label></div>
+          <div class="dist" data-dist="h_piece" data-label="A click ahead" data-unit="units" data-axis="100 1500" data-step="10" data-lo="100" data-hi="3000" data-hint="the next click before the character gets there, or after a second or two"></div>
+          <div class="chance" data-chance="h_multi" data-label="Double / triple" data-max="100" data-text="of the clicks sent 2–3 times to the same point"></div>
+          <div class="chance" data-chance="h_side" data-label="To the side" data-max="45" data-text="of a click at most (the way is not a straight line)"></div>
+          <div class="dist" data-dist="h_stop" data-label="Melee: stop at" data-unit="from the mob" data-axis="0 600" data-step="10" data-lo="0" data-hi="1000" data-hint="then the attack / the skill runs the rest itself, as a player clicks the mob from close by"></div>
+          <div class="dist" data-dist="h_closer" data-label="Ranged: run in" data-unit="%" data-axis="80 170" data-step="1" data-lo="80" data-hi="170" data-ref="100" data-reflabel="the reach" data-hint="100 % = just into the skill's reach (cast from its edge); more = that share of the reach closer than needed; less = the skill clicked a bit early, the character runs in itself (rules with «Run closer»)"></div>
+        </div>
+        <div class="card">
+          <h3>Reactions</h3>
+          <div class="dist" data-dist="h_pick" data-label="A new target" data-unit="s" data-mul="1000" data-axis="0 4" data-step="0.05" data-lo="0" data-hi="10000" data-hint="before a mob that does not hit me is taken (after a kill too); a mob on me - at once"></div>
+          <div class="dist" data-dist="h_spawn" data-label="A new mob" data-unit="s" data-mul="1000" data-axis="0 15" data-step="0.1" data-lo="0" data-hi="60000" data-hint="a mob that just showed up (a respawn, came into sight) is not taken this long"></div>
+          <div class="dist" data-dist="h_press" data-label="Key presses: + " data-unit="ms" data-axis="0 400" data-step="5" data-lo="0" data-hi="1000" data-hint="a random bit more between the presses: no clockwork spam"></div>
+        </div>
+        <div class="card">
+          <h3>Buffs</h3>
+          <div class="dist" data-dist="h_rebuff" data-label="Rebuff later by" data-unit="%" data-axis="0 90" data-step="1" data-lo="0" data-hi="90" data-hint="than «Rebuff when less than» - a new moment every time, never earlier; the «…for at least» hold 50–150 %"></div>
+          <div class="dist" data-dist="h_selfbuff" data-label="Self buffs again after" data-unit="s" data-mul="1000" data-axis="0 15" data-step="0.1" data-lo="0" data-hi="60000" data-hint="Fight rules on me: a toggle, or «I have no buff»"></div>
+          <div class="chance" data-chance="h_forget" data-label="Forget a self buff" data-max="100" data-text="of the times - then it waits:"></div>
+          <div class="dist" data-dist="h_forget_s" data-label="Forgotten for" data-unit="s" data-axis="0 300" data-step="1" data-lo="1" data-hi="3600"></div>
+        </div>
+        <div class="card">
+          <h3>AFK breaks</h3>
+          <div class="f"><label>Breaks</label><label class="ck"><input type="checkbox" data-k="afk"> stop farming now and then</label></div>
+          <div class="dist" data-dist="afk_every" data-label="Every" data-unit="min" data-hint="of farming" data-axis="5 180" data-step="1" data-lo="1" data-hi="1440"></div>
+          <div class="dist" data-dist="afk_for" data-label="For" data-unit="min" data-axis="1 40" data-step="1" data-lo="1" data-hi="600"></div>
+          <div class="f"><label>Sit down</label><label class="ck"><input type="checkbox" data-k="afk_sit"> sit during the break</label><div class="h">the break starts after the fight; a mob that hits me is still fought; no buffs and no runs meanwhile</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="page" id="pgAlerts" data-page="alerts" hidden>
+      <div class="ph"><h2>Alerts &amp; misc</h2></div>
+      <div class="grid2 scroll">
+        <div class="card">
+          <h3>Players</h3>
+          <div class="f"><label>Alert: a player closer than</label><div class="row"><input type="number" data-k="player_alert" min="0" step="100"><span class="muted">0 = off</span></div></div>
+          <div class="f"><label>Never alert / answer</label><textarea id="noAlert" rows="4" placeholder="own chars, friends: one nick per line"></textarea></div>
+        </div>
+        <div class="card">
+          <h3>PvP answer</h3>
+          <div class="f"><label>A player hits me</label><label class="ck"><input type="checkbox" data-k="pvp"> answer him</label><div class="h">with the Fight rules of target «Player»; no Ctrl - only a flagged player can be hit</div></div>
+          <div class="f"><label>Reaction</label><div class="row"><input type="number" id="pvpMin" min="0" step="100"><span class="muted">–</span><input type="number" id="pvpMax" min="0" step="100"><span class="muted">ms</span></div></div>
+        </div>
+        <div class="card">
+          <h3>Champions &amp; death</h3>
+          <div class="f"><label>Champion in the farm area</label><label class="ck"><input type="checkbox" data-k="champ_alert"> alert (sound, blink)</label></div>
+          <div class="f"><label>When I die</label><select data-k="death"><option value="wait">alert, wait for a resurrection</option><option value="pause">alert and pause the farm</option><option value="return">to the village and back to the spot</option></select><div class="h">back to the spot: Aden → buffer, supplies → gatekeeper → the teleport (page Map) → the map's rail from the landing point → the spot</div></div>
+        </div>
+        <div class="card">
+          <h3>Debug</h3>
+          <div class="f"><label>Debug log</label><label class="ck"><input type="checkbox" data-k="debug"> Library\PvePanel\Logs\pve_&lt;nick&gt;_*.log</label><div class="h">every target, cast and run step - to look into a problem</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== log ===== -->
+    <section class="page" id="pgLog" data-page="log" hidden>
+      <div class="ph"><h2>Log</h2><span class="sub">the bot's last lines (also in the bot window)</span></div>
+      <div style="display:grid; grid-template-columns: 1fr 340px; gap: 12px; flex: 1; min-height: 0">
+        <div class="card scroll log" id="logBox"></div>
+        <div class="card scroll"><h3>Buffs on me</h3><div id="buffsBox" class="log"></div></div>
+      </div>
+    </section>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+// ===================================================================================================================
+// PvE Panel - the page of PvePanel.exe (Library\PvePanel). The bot (pve.txt) reads <char>.pve (written here) and
+// writes <char>.pve.json (its state). Start = run=1 + a new run_id; Pause = run=0. All files go through the panel.
+// ===================================================================================================================
+const $ = id => document.getElementById(id);
+function el(tag, a, ...kids) {
+  const e = document.createElement(tag);
+  if (a) for (const [k, v] of Object.entries(a)) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v; else if (k === 'html') e.innerHTML = v;
+    else if (k.startsWith('on')) e[k] = v; else if (k === 'style') e.style.cssText = v; else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c != null && c !== false) e.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return e;
+}
+let toastT = 0;
+function toast(t) { const b = $('toast'); b.textContent = t; b.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => b.classList.remove('show'), 3800); }
+const store = { get(k) { try { return localStorage.getItem('pve.' + k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem('pve.' + k, v); } catch (e) {} } };
+const clean = s => String(s == null ? '' : s).replace(/[\r\n|]/g, ' ').trim();   // (the bot cuts a line at its first "=": "=" in a value is fine)
+const num = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+const HDR = { 'X-Pve': '1' };
+async function apiGet(u) { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok && r.status !== 204) throw new Error(r.status + ' ' + await r.text()); return r; }
+async function apiJson(u) { return (await apiGet(u)).json(); }
+
+// ===== the settings model (<char>.pve) =====
+const DEF = { run: '0', run_id: '', grid: '', grid_ver: '', spam_ms: 100, target_range: 900, see_first: 1, map_hunt: 1, aggro_range: 900, height: 400, radius: 900,
+  pick: 'hp', onus_first: 1, switch: 1, skip_champ: 1, champ_hp: 100000, roam: 1, roam_wait: '3000 5000', auto_attack: 1,
+  rebuff_id: 0, rebuff_left: 600, rebuff_hold: 30, player_alert: 0, champ_alert: 1, pvp: 0, pvp_delay: '700 1500',
+  profile: '', weapon: 0, death: 'wait', debug: 0,
+  human: 0, h_clicks: 1, h_piece: '350 800', h_side: 15, h_stop: '120 300', h_closer: '100 120', h_press: '0 120', h_pick: '400 1200', h_spawn: '2000 5000',
+  afk: 1, afk_sit: 1, afk_every: '40 80', afk_for: '3 10',
+  h_multi: 25, h_rebuff: '0 40', h_selfbuff: '500 4000', h_forget: 10, h_forget_s: '20 120', teleport: '' };
+const KEYS = Object.keys(DEF);
+function defaultCfg() { return { ...DEF, rebuff_bypass: [], noalert: [], supply: [], rules: [], mobs: [] }; }
+function newRule(p) {
+  return { on: true, type: 'S', id: 0, name: '', target: 'mob', dmin: 0, dmax: 900, move: true, reuse: 0, iffail: false, toggle: false, repeat: true,
+    around: 0, ar: 200, aggro: false, cmp: 0, n: 3, mobReuse: 0, mobMode: 0, mobIds: [], conds: [{ k: '', v: '' }, { k: '', v: '' }, { k: '', v: '' }, { k: '', v: '' }], ...p };
+}
+function parseRule(v) {
+  const f = v.split('|'), c = k => { const s = (f[k] || '').trim(), p = s.indexOf(':'); return p < 0 ? { k: s, v: '' } : { k: s.slice(0, p), v: s.slice(p + 1) }; };
+  return newRule({ on: f[0] === '1', type: ['S', 'I', 'A'].includes(f[1]) ? f[1] : 'S', id: num(f[2], 0), target: ['mob', 'self', 'pet', 'player'].includes(f[3]) ? f[3] : 'mob',
+    dmin: num(f[4], 0), dmax: num(f[5], 0), move: f[6] === '1', reuse: num(f[7], 0) / 1000, iffail: f[8] === '1', toggle: f[9] === '1', repeat: f[10] === '1',
+    around: num(f[12], 0), ar: num(f[13], 200), aggro: f[14] === '1', cmp: num(f[15], 0), n: num(f[16], 3), mobReuse: num(f[17], 0) / 1000,
+    mobMode: num(f[18], 0), mobIds: (f[19] || '').split(',').map(Number).filter(x => x > 0), conds: [c(20), c(21), c(22), c(23)], name: f.slice(24).join(' ').trim() });
+}
+function parseCfg(text) {
+  const c = defaultCfg();
+  let oldRange = null, hasCloser = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const s = raw.trim(); if (!s || s[0] === '#' || s[0] === ';') continue;
+    const p = s.indexOf('='); if (p < 1) continue;
+    const k = s.slice(0, p).trim().toLowerCase(), v = s.slice(p + 1).trim();
+    if (k === 'h_range') oldRange = v;
+    if (k === 'h_closer') hasCloser = true;
+    if (k === 'rule') { const r = parseRule(v); if (r.id > 0) c.rules.push(r); }
+    else if (k === 'mob') { const f = v.split('|'); const id = num(f[0], 0); if (id > 0) c.mobs.push({ id, prio: num(f[1], 3), name: (f[2] || '').trim() }); }
+    else if (k === 'supply') { const f = v.split('|'); const id = num(f[0], 0); if (id > 0) c.supply.push({ id, min: num(f[1], 0), max: num(f[2], 0) }); }
+    else if (k === 'rebuff_bypass') c.rebuff_bypass = v.split('|').map(x => x.trim()).filter(Boolean);
+    else if (k === 'noalert') c.noalert = v.split('|').map(x => x.trim()).filter(Boolean);
+    else if (k in DEF) c[k] = typeof DEF[k] === 'number' ? num(v, DEF[k]) : v;
+  }
+  // the older "cast from % of the reach" (h_range): now how far in - 200 minus it
+  if (oldRange != null && !hasCloser) {
+    const f = oldRange.split(/\s+/), a = num(f[0], 80), b = f.length > 1 ? num(f[1], 100) : 100;
+    c.h_closer = (200 - b) + ' ' + (200 - a) + (f[2] === 'n' ? ' n ' + (200 - num(f[3], (a + b) / 2)) + ' ' + num(f[4], 5) : '');
+  }
+  return c;
+}
+function ruleText(r, i) {
+  const cond = r.conds.map(x => x.k ? x.k + (String(x.v).trim() !== '' ? ':' + clean(x.v).replace(/:/g, '') : '') : '');
+  return 'rule=' + [r.on ? 1 : 0, r.type, r.id, r.target, Math.round(num(r.dmin, 0)), Math.round(num(r.dmax, 0)), r.move ? 1 : 0, Math.round(num(r.reuse, 0) * 1000),
+    r.iffail ? 1 : 0, r.toggle ? 1 : 0, r.repeat ? 1 : 0, i + 1, r.around, Math.round(num(r.ar, 200)), r.aggro ? 1 : 0, r.cmp, Math.round(num(r.n, 0)),
+    Math.round(num(r.mobReuse, 0) * 1000), r.mobMode, r.mobIds.join(','), ...cond, clean(r.name)].join('|');
+}
+function cfgText(c) {
+  const L = ['# PvePanel settings of ' + (charLabel(cur) || cur) + ' - written by the panel (pve.html); pve.txt reads them all the time'];
+  for (const k of KEYS) L.push(k + '=' + clean(c[k]));
+  L.push('rebuff_bypass=' + c.rebuff_bypass.map(clean).join('|'));
+  L.push('noalert=' + c.noalert.map(clean).join('|'));
+  c.rules.forEach((r, i) => { if (r.id > 0) L.push(ruleText(r, i)); });
+  for (const m of c.mobs) L.push('mob=' + m.id + '|' + m.prio + '|' + clean(m.name));
+  for (const s of c.supply) L.push('supply=' + s.id + '|' + Math.round(num(s.min, 0)) + '|' + Math.round(num(s.max, 0)));
+  return L.join('\r\n') + '\r\n';
+}
+
+// ===== state =====
+const FRESH_MS = 5000;
+let chars = {};                  // tag -> { stMod, st, stAt, hasCfg }
+let cur = null, cfg = defaultCfg(), cfgSaved = '', cfgMod = 0;
+let saveT = 0, saving = false, saveAgain = false, saveErr = '';
+let runWant = null;              // { on, at }: asked the bot to start / pause, waiting for it
+let page = store.get('page') || 'fight';
+let selRule = -1;
+const C = () => chars[cur] || null;
+const ST = () => (C() && C().st) || null;
+const live = () => { const c = C(); return !!(c && c.st && Date.now() - c.stMod < FRESH_MS); };
+const charLabel = t => (chars[t] && chars[t].st && chars[t].st.char) || t || '';
+const skillInfo = new Map();     // id -> { oper, magic, range, name, icon } (data\skilldb.txt)
+let skillAsked = new Set();
+
+// ===== saving =====
+function scheduleSave() { clearTimeout(saveT); saveT = setTimeout(saveNow, 400); renderSave(); }
+async function saveNow() {
+  clearTimeout(saveT); saveT = 0;
+  if (!cur) return;
+  if (saving) { saveAgain = true; return; }
+  const text = cfgText(cfg);
+  if (text === cfgSaved) { renderSave(); return; }
+  saving = true; renderSave();
+  try {
+    const r = await fetch('/api/file?name=' + encodeURIComponent(cur + '.pve'), { method: 'PUT', headers: HDR, body: text });
+    if (!r.ok) throw new Error(await r.text());
+    cfgSaved = text; cfgMod = Number(await r.text()) || Date.now(); saveErr = '';
+  } catch (e) { saveErr = e.message; }
+  saving = false;
+  if (saveAgain) { saveAgain = false; await saveNow(); }
+  renderSave();
+}
+function flushAll() { if (saveT || saveAgain) saveNow(); }
+function pendingSaves() { return !!(saveT || saving || saveAgain); }
+function renderSave() {
+  const b = $('saveState');
+  b.className = 'pill' + (saveErr ? ' bad' : saveT || saving ? ' warn' : '');
+  b.textContent = !cur ? '' : saveErr ? 'not saved: ' + saveErr : saveT || saving ? 'saving…' : 'saved';
+}
+
+// ===== the characters and their files =====
+async function pollList() {
+  let list; try { list = await apiJson('/api/list'); } catch (e) { return; }
+  const seen = new Set();
+  for (const f of list) {
+    const m = /^(.+)\.pve(\.json)?$/i.exec(f.name); if (!m) continue;
+    const t = m[1]; seen.add(t);
+    const c = chars[t] || (chars[t] = { stMod: 0, st: null, stAt: 0, hasCfg: false });
+    if (m[2]) { if (f.mod !== c.stMod) { c.stMod = f.mod; if (t !== cur && !c.st) readState(t); } } else c.hasCfg = true;
+  }
+  for (const t of Object.keys(chars)) if (!seen.has(t)) delete chars[t];
+  renderChars();
+  if (!cur || !chars[cur]) { const want = store.get('char'); const tags = Object.keys(chars); if (tags.length) await pickChar(chars[want] ? want : tags[0]); }
+}
+async function readState(t) {
+  try {
+    const r = await apiGet('/api/file?name=' + encodeURIComponent(t + '.pve.json'));
+    if (r.status === 204) return false;
+    const mod = Number(r.headers.get('X-Mod')) || 0, c = chars[t]; if (!c) return false;
+    if (c.st && mod === c.stAt) return false;
+    const txt = await r.text();
+    try { c.st = JSON.parse(txt); } catch (e) { return false; }
+    c.stAt = mod; c.stMod = Math.max(c.stMod, mod);
+    return true;
+  } catch (e) { return false; }
+}
+function renderChars() {
+  const sel = $('charSel'), tags = Object.keys(chars).sort((a, b) => charLabel(a).localeCompare(charLabel(b)));
+  const on = t => chars[t].st && Date.now() - chars[t].stMod < FRESH_MS;
+  const sig = tags.map(t => t + (on(t) ? 1 : 0)).join('|') + '#' + cur;
+  if (sel.dataset.sig !== sig && document.activeElement !== sel) {
+    sel.dataset.sig = sig; sel.textContent = '';
+    if (!tags.length) sel.append(el('option', { value: '', text: 'no character yet' }));
+    for (const t of tags) sel.append(el('option', { value: t, text: (on(t) ? '● ' : '○ ') + charLabel(t) }));
+    if (cur) sel.value = cur;
+  }
+  const cf = $('copyFrom'), others = tags.filter(t => t !== cur && chars[t].hasCfg);
+  const csig = others.join('|');
+  if (cf.dataset.sig !== csig) { cf.dataset.sig = csig; cf.textContent = ''; cf.append(el('option', { value: '', text: others.length ? 'Copy settings from…' : 'no other character' }));
+    for (const t of others) cf.append(el('option', { value: t, text: charLabel(t) })); }
+}
+$('charSel').onchange = async e => { await saveNow(); if (e.target.value) await pickChar(e.target.value); };
+async function pickChar(t) {
+  cur = t; store.set('char', t); runWant = null; selRule = -1;
+  cfg = defaultCfg(); cfgSaved = ''; cfgMod = 0;
+  await readState(t);
+  try {
+    const r = await apiGet('/api/file?name=' + encodeURIComponent(t + '.pve'));
+    if (r.status !== 204) { const txt = await r.text(); cfg = parseCfg(txt); cfgSaved = cfgText(cfg); cfgMod = Number(r.headers.get('X-Mod')) || 0; }
+    else { cfgSaved = ''; scheduleSave(); }               // a new character: its file with the defaults (the bot shows "paused")
+  } catch (e) {}
+  renderChars(); renderAll(); askSkillInfo();
+  if (page === 'map') mapFollow();
+}
+$('copyFrom').onchange = async e => {
+  const t = e.target.value; e.target.value = ''; if (!t || !cur) return;
+  if (!confirm('Take every setting of ' + charLabel(t) + ' for ' + charLabel(cur) + '? (fight rules, targets, map, buffs; not start / pause)')) return;
+  try {
+    const r = await apiGet('/api/file?name=' + encodeURIComponent(t + '.pve')); if (r.status === 204) { toast('No settings there'); return; }
+    const o = parseCfg(await r.text()); o.run = cfg.run; o.run_id = cfg.run_id; cfg = o; scheduleSave(); renderAll(); toast('Settings of ' + charLabel(t) + ' taken');
+  } catch (x) { toast('Not taken: ' + x.message); }
+};
+async function pollState() {
+  if (!cur) return;
+  const changed = await readState(cur);
+  renderTop();
+  if (changed) {
+    renderChars(); askSkillInfo();
+    if (page === 'fight') renderRuleStats();
+    if (page === 'mobs') renderMobs(true);
+    if (page === 'log') renderLog();
+    if (page === 'map') renderMapSide();
+  }
+}
+// the settings changed outside (another window): taken when nothing waits to be saved here
+async function pollCfg() {
+  if (!cur || saveT || saving) return;
+  try {
+    const r = await apiGet('/api/file?name=' + encodeURIComponent(cur + '.pve')); if (r.status === 204) return;
+    const mod = Number(r.headers.get('X-Mod')) || 0; if (!mod || mod === cfgMod) return;
+    const txt = await r.text(); if (txt === cfgSaved) { cfgMod = mod; return; }
+    if (saveT || saving) return;
+    cfg = parseCfg(txt); cfgSaved = cfgText(cfg); cfgMod = mod; renderAll();
+  } catch (e) {}
+}
+
+// ===== skill data (icons, cast range, kind) =====
+async function askSkillInfo(extra) {
+  const s = ST(), ids = new Set(extra || []);
+  if (s && s.skills) for (const k of s.skills) ids.add(k[0]);
+  for (const r of cfg.rules) if (r.type === 'S') ids.add(r.id);
+  const want = [...ids].filter(i => i > 0 && !skillAsked.has(i)); if (!want.length) return;
+  want.forEach(i => skillAsked.add(i));
+  try {
+    for (let i = 0; i < want.length; i += 300) {
+      const list = await apiJson('/api/skills?ids=' + want.slice(i, i + 300).join(','));
+      for (const x of list) skillInfo.set(x.id, x);
+    }
+  } catch (e) { want.forEach(i => skillAsked.delete(i)); return; }
+  if (page === 'fight') renderRules();
+}
+const iconUrl = id => { const s = skillInfo.get(id); return s && s.icon ? 'url(data:image/png;base64,' + s.icon + ')' : ''; };
+function icoFor(r) {
+  const d = el('span', { class: 'ico' });
+  if (r.type === 'S') { const u = iconUrl(r.id); if (u) d.style.backgroundImage = u; else d.textContent = 'S'; }
+  else d.textContent = r.type === 'I' ? 'IT' : 'AC';
+  return d;
+}
+
+// ===== the header: who, what, start / pause =====
+function bar(id, v) { $(id).style.width = Math.max(0, Math.min(100, num(v, 0))) + '%'; }
+function fmtTime(s) { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? h + 'h ' + String(m).padStart(2, '0') + 'm' : m + 'm ' + String(s % 60).padStart(2, '0') + 's'; }
+function renderTop() {
+  const s = ST(), c = C(), on = live();
+  const b = $('botPill'); b.textContent = '';
+  if (!cur) { b.className = 'pill warn'; b.append(el('span', { class: 'dot' }), 'start pve.txt in the bot'); }
+  else if (!c || !c.st) { b.className = 'pill warn'; b.append(el('span', { class: 'dot' }), 'no bot yet'); }
+  else if (on) { b.className = 'pill ok'; b.append(el('span', { class: 'dot' }), 'bot on'); }
+  else { const a = Math.round((Date.now() - c.stMod) / 1000); b.className = 'pill bad'; b.append(el('span', { class: 'dot' }), 'bot silent ' + (a < 120 ? a + ' s' : Math.round(a / 60) + ' min')); }
+  const run = s && s.run, ph = !s ? '' : !on ? 'off' : run.phase || (run.on ? 'farm' : 'paused');
+  const P = $('phase'); P.className = 'phase ' + ph; P.textContent = { farm: 'Farming', paused: 'Paused', rebuff: 'Rebuff', dead: 'Dead', afk: 'AFK', return: 'Going back', off: 'Bot off' }[ph] || ph || '—';
+  $('what').textContent = s ? (run.what || '') : 'Start Library\\PvePanel\\pve.txt on the character in the bot';
+  const t = s && s.tgt; $('tgtBox').hidden = !(on && t);
+  if (on && t) { $('tgtName').textContent = t.name + ' · ' + t.dist; bar('tgtHp', t.hp); }
+  $('meBars').style.opacity = on ? 1 : .35;
+  if (s && s.me) { bar('bHp', s.me.hp); bar('bMp', s.me.mp); bar('bCp', s.me.cp); }
+  $('kills').textContent = s && run ? run.kills : 0;
+  $('runTime').textContent = s && run && run.on ? fmtTime(run.secs + (on ? (Date.now() - c.stMod) / 1000 : 0)) : '—';
+  // the button: what the bot does (its state), a spinner while it takes our ask
+  const go = $('go'), running = !!(on && run && run.on);
+  if (runWant && (running === runWant.on || Date.now() - runWant.at > 6000)) { if (running !== runWant.on && on) toast('The bot did not take it - is pve.txt running?'); runWant = null; }
+  go.className = running ? 'pause' : 'start'; go.textContent = '';
+  if (runWant) go.append(el('span', { class: 'spin' }), runWant.on ? 'Starting…' : 'Pausing…');
+  else go.append(running ? 'Pause' : 'Start');
+  go.disabled = !cur;
+  $('mapNote').textContent = 'Map: ' + (cfg.grid || 'none (circle round the start)');
+  $('nRules').textContent = cfg.rules.length || '';
+  $('nMobs').textContent = cfg.mobs.filter(m => m.prio !== 3).length || '';
+  $('nHuman').textContent = num(cfg.human, 0) ? 'on' : '';
+}
+$('go').onclick = async () => {
+  if (!cur) return;
+  const s = ST(), running = !!(live() && s && s.run && s.run.on);
+  if (!running) {
+    if (!live()) { toast('The bot is not running pve.txt on ' + charLabel(cur)); return; }
+    if (!cfg.rules.some(r => r.on) && !num(cfg.auto_attack, 1)) toast('No fight rule is on and auto attack is off - it will only run around');
+    cfg.run = '1'; cfg.run_id = String(Date.now()); runWant = { on: true, at: Date.now() };
+  } else { cfg.run = '0'; runWant = { on: false, at: Date.now() }; }
+  await saveNow(); renderTop();
+};
+
+// ===== pages =====
+function showPage(p) {
+  page = p; store.set('page', p);
+  document.querySelectorAll('#side .nav').forEach(b => b.classList.toggle('on', b.dataset.page === p));
+  document.querySelectorAll('main .page').forEach(s => s.hidden = s.dataset.page !== p);
+  renderPage();
+}
+document.querySelectorAll('#side .nav').forEach(b => b.onclick = () => showPage(b.dataset.page));
+function renderPage() {
+  if (page === 'fight') renderRules();
+  else if (page === 'mobs') { bindAll($('pgMobs')); renderMobs(); }
+  else if (page === 'map') { mapInit(); bindAll($('pgMap')); renderMapSide(); }
+  else if (page === 'buffs') renderBuffs();
+  else if (page === 'human') renderHuman();
+  else if (page === 'alerts') renderAlerts();
+  else if (page === 'log') renderLog();
+}
+function renderAll() { renderTop(); renderSave(); renderPage(); }
+// inputs with data-k bound to the settings key
+function bindAll(root) {
+  root.querySelectorAll('[data-k]').forEach(i => {
+    const k = i.dataset.k;
+    if (i.type === 'checkbox') { i.checked = !!num(cfg[k], 0); i.onchange = () => { cfg[k] = i.checked ? 1 : 0; scheduleSave(); renderTop(); }; }
+    else {
+      if (document.activeElement !== i) i.value = cfg[k];
+      i.onchange = i.oninput = () => { cfg[k] = typeof DEF[k] === 'number' ? num(i.value, DEF[k]) : i.value; scheduleSave(); renderTop(); };
+    }
+  });
+  // "min max" pairs: two inputs with the same data-pair (data-mul: the shown unit, e.g. s for a value kept in ms)
+  root.querySelectorAll('[data-pair]').forEach(i => {
+    const k = i.dataset.pair, mul = +(i.dataset.mul || 1), box = [...root.querySelectorAll('[data-pair="' + k + '"]')], j = box.indexOf(i);
+    const v = String(cfg[k] ?? DEF[k]).split(/\s+/).map(Number), d = String(DEF[k]).split(/\s+/).map(Number);
+    if (document.activeElement !== i) i.value = +(((j ? v[1] ?? v[0] : v[0]) || 0) / mul).toFixed(2);
+    i.onchange = () => {
+      const a = Math.max(0, Math.round(num(box[0].value, d[0] / mul) * mul)), b = Math.max(a, Math.round(num(box[1].value, d[1] / mul) * mul));
+      cfg[k] = a + ' ' + b; scheduleSave(); bindAll(root);
+    };
+  });
+}
+
+// ===================== FIGHT =====================
+const COND = [['', '— no condition —', ''], ['mhp<', 'My HP % below', '%'], ['mhp>', 'My HP % above', '%'], ['mmp<', 'My MP % below', '%'],
+  ['mmp>', 'My MP % above', '%'], ['mcp<', 'My CP % below', '%'], ['thp<', 'Target HP % below', '%'], ['thp>', 'Target HP % above', '%'],
+  ['tmax>', 'Target max HP above', 'HP'], ['teff-', 'Target has no effect', 'ID'], ['teff+', 'Target has the effect', 'ID'],
+  ['mbuf-', 'I have no buff (or ends in s)', 'ID/s'], ['mbuf+', 'I have the buff', 'ID'], ['php<', 'Summon HP % below', '%'],
+  ['pet-', 'No summon (no corpse)', ''], ['pet+', 'Summon is out', ''], ['ton+', 'Target hits me / summon', ''], ['ton-', 'Target does not hit me', ''],
+  ['cmb+', 'I am in combat', ''], ['cmb-', 'I am out of combat', '']];
+const CONDN = Object.fromEntries(COND.map(c => [c[0], c[1]]));
+const ACTIONS = [[22, 'Summon: attack'], [21, 'Summon: follow / stop'], [23, 'Summon: stop'], [16, 'Pet: attack'], [15, 'Pet: follow / stop'], [17, 'Pet: stop']];
+const TGT = { mob: 'Mob', self: 'Me', pet: 'Summon', player: 'Player' };
+let addType = 'S', addSel = null;
+document.querySelectorAll('#addType button').forEach(b => b.onclick = () => { addType = b.dataset.t; document.querySelectorAll('#addType button').forEach(x => x.classList.toggle('on', x === b)); addSel = null; $('addName').value = ''; pickFill(); });
+function pickItems(q) {
+  const s = ST(), out = [], f = q.trim().toLowerCase(), byId = /^\d+$/.test(f) ? +f : 0;
+  if (addType === 'S') {
+    for (const k of (s && s.skills) || []) { if (k[3]) continue; const inf = skillInfo.get(k[0]);
+      const n = k[1] || (inf && inf.name) || ('Skill ' + k[0]); if (f && !n.toLowerCase().includes(f) && String(k[0]) !== f) continue;
+      out.push({ id: k[0], name: n, sub: 'lv ' + k[2] + (inf ? ' · ' + (inf.range > 0 ? inf.range : inf.range === -2 ? 'round me' : 'on me') : ''), icon: iconUrl(k[0]) }); }
+    if (byId && !out.some(x => x.id === byId)) out.push({ id: byId, name: (skillInfo.get(byId) || {}).name || 'Skill ' + byId, sub: 'by ID', icon: iconUrl(byId) });
+  } else if (addType === 'I') {
+    for (const k of (s && s.items) || []) { if (f && !k[1].toLowerCase().includes(f) && String(k[0]) !== f) continue; out.push({ id: k[0], name: k[1], sub: '×' + k[2] }); }
+    if (byId && !out.some(x => x.id === byId)) out.push({ id: byId, name: 'Item ' + byId, sub: 'by ID' });
+  } else {
+    for (const [id, n] of ACTIONS) { if (f && !n.toLowerCase().includes(f) && String(id) !== f) continue; out.push({ id, name: n, sub: 'action ' + id }); }
+    if (byId && !out.some(x => x.id === byId)) out.push({ id: byId, name: 'Action ' + byId, sub: 'by ID' });
+  }
+  return out.slice(0, 300);
+}
+function pickFill() {
+  const box = $('addPick').querySelector('.list'), items = pickItems($('addName').value); box.textContent = '';
+  if (!items.length) { const s = ST(); box.append(el('div', { class: 'none', text: addType === 'S' && !(s && s.skills && s.skills.length) ? 'The skills come from the bot: start pve.txt on the character (or type a skill ID)' : addType === 'I' && !(s && s.items && s.items.length) ? 'The bag comes from the bot (or type an item ID)' : 'Nothing matches — type an ID' })); return; }
+  for (const it of items) {
+    const ic = el('span', { class: 'ico' }); if (it.icon) ic.style.backgroundImage = it.icon; else ic.textContent = addType === 'S' ? 'S' : addType === 'I' ? 'IT' : 'AC';
+    box.append(el('div', { class: 'it', onmousedown: e => { e.preventDefault(); addSel = it; $('addName').value = it.name; $('addPick').classList.remove('open'); } }, ic, el('b', { text: it.name }), el('span', { text: it.sub })));
+  }
+}
+$('addName').onfocus = () => { $('addPick').classList.add('open'); pickFill(); };
+$('addName').oninput = () => { addSel = null; $('addPick').classList.add('open'); pickFill(); };
+$('addName').onblur = () => setTimeout(() => $('addPick').classList.remove('open'), 120);
+$('addName').onkeydown = e => { if (e.key === 'Enter') { const it = pickItems($('addName').value)[0]; if (it) { addSel = it; $('addName').value = it.name; } $('addPick').classList.remove('open'); addRule(); } };
+$('addBtn').onclick = addRule;
+// a new rule with what its skill is (skilldb): a buff -> on me when it is not on me; a toggle; a debuff -> not while on the mob
+function addRule() {
+  if (!cur) return;
+  let it = addSel; if (!it) { const f = pickItems($('addName').value); if (f.length === 1 || (f.length && /^\d+$/.test($('addName').value.trim()))) it = f[0]; }
+  if (!it) { toast('Pick a name from the list (or type an ID)'); $('addName').focus(); return; }
+  const r = newRule({ type: addType, id: it.id, name: it.name });
+  if (addType === 'S') {
+    const inf = skillInfo.get(it.id);
+    if (inf) {
+      if (inf.oper === 3) Object.assign(r, { target: 'self', toggle: true, repeat: false, dmax: 0, move: false });
+      else if (inf.oper === 1 && inf.range < 0) Object.assign(r, { target: 'self', repeat: false, dmax: 0, move: false, iffail: true, conds: [{ k: 'mbuf-', v: String(it.id) }, ...r.conds.slice(1)] });
+      else if (inf.oper === 1) Object.assign(r, { dmax: inf.range, repeat: false, iffail: true, conds: [{ k: 'teff-', v: String(it.id) }, ...r.conds.slice(1)] });
+      else if (inf.range < 0) Object.assign(r, { dmax: 0, move: false, around: 1, ar: 200, aggro: true, n: 2 });   // round me (a PB AoE)
+      else if (inf.range > 0) r.dmax = inf.range;
+    }
+  } else if (addType === 'I') Object.assign(r, { target: 'self', repeat: false, dmax: 0, move: false, reuse: 1 });
+  else Object.assign(r, { repeat: false, reuse: 2, dmax: 0, move: false });
+  cfg.rules.push(r); selRule = cfg.rules.length - 1;
+  $('addName').value = ''; addSel = null;
+  scheduleSave(); renderRules(); renderTop();
+  toast('Added ' + r.name + ' — check its settings below');
+}
+function summary(r) {
+  const c = [];
+  if (r.target === 'mob' || r.target === 'player') c.push([(r.dmin > 0 ? r.dmin + '–' : '≤ ') + (r.dmax > 0 ? r.dmax : 'any') + (r.move ? ' · run closer' : ''), '']);
+  if (r.reuse > 0) c.push(['every ' + r.reuse + ' s', '']);
+  if (r.mobReuse > 0) c.push(['same mob ' + r.mobReuse + ' s', '']);
+  if (r.toggle) c.push(['toggle', '']);
+  if (r.iffail) c.push(['if fail', '']);
+  if (r.around) c.push([(r.aggro ? 'on me ' : 'mobs ') + (r.cmp ? '≤ ' : '≥ ') + r.n + ' in ' + r.ar + (r.around === 1 ? ' of me' : ' of target'), 'c']);
+  for (const x of r.conds) if (x.k) c.push([CONDN[x.k] + (x.v !== '' ? ' ' + x.v : ''), 'c']);
+  if (r.mobMode) c.push([(r.mobMode === 1 ? 'only: ' : 'except: ') + (r.mobIds.map(mobName).join(', ') || '—'), 'm']);
+  return c;
+}
+const mobName = id => { const m = cfg.mobs.find(x => x.id === id); if (m && m.name) return m.name; const s = ST(); const k = s && s.mobs && s.mobs.find(x => x[0] === id); return k ? k[1] : '#' + id; };
+function renderRules() {
+  bindFightOpts();
+  const tb = $('rulesBody'); tb.textContent = '';
+  $('rulesEmpty').hidden = cfg.rules.length > 0;
+  cfg.rules.forEach((r, i) => {
+    const tr = el('tr', { class: 'r' + (i === selRule ? ' sel' : '') + (r.on ? '' : ' off'), onclick: () => { selRule = i; renderRules(); } });
+    const on = el('input', { type: 'checkbox', title: 'On / off', onclick: e => e.stopPropagation(), onchange: e => { r.on = e.target.checked; scheduleSave(); renderRules(); } }); on.checked = r.on;
+    const rep = el('input', { type: 'checkbox', onclick: e => e.stopPropagation(), onchange: e => { r.repeat = e.target.checked; scheduleSave(); renderRules(); } }); rep.checked = r.repeat;
+    const up = el('button', { class: 'icon ghost', title: 'Higher priority', text: '▲', disabled: i === 0, onclick: e => { e.stopPropagation(); moveRule(i, -1); } });
+    const dn = el('button', { class: 'icon ghost', title: 'Lower priority', text: '▼', disabled: i === cfg.rules.length - 1, onclick: e => { e.stopPropagation(); moveRule(i, 1); } });
+    const del = el('button', { class: 'icon ghost danger', title: 'Remove', text: '✕', onclick: e => { e.stopPropagation(); if (!confirm('Remove ' + r.name + '?')) return; cfg.rules.splice(i, 1); if (selRule >= cfg.rules.length) selRule = cfg.rules.length - 1; scheduleSave(); renderRules(); renderTop(); } });
+    const sub = r.type === 'S' ? (skillInfo.get(r.id) ? 'skill ' + r.id : 'skill ' + r.id) : r.type === 'I' ? 'item ' + r.id : 'action ' + r.id;
+    tr.append(
+      el('td', null, on),
+      el('td', null, el('div', { class: 'nm' }, icoFor(r), el('b', { text: r.name || '#' + r.id }), el('small', { text: sub }))),
+      el('td', { class: 'muted', text: r.type === 'S' ? 'Skill' : r.type === 'I' ? 'Item' : 'Action' }),
+      el('td', null, el('span', { class: 'tg ' + r.target, text: TGT[r.target] })),
+      el('td', null, el('div', { class: 'chips' }, summary(r).map(([t, k]) => el('span', { class: 'chip ' + k, text: t })))),
+      el('td', null, el('span', { class: 'prio' }, up, el('b', { text: i + 1 }), dn)),
+      el('td', null, rep),
+      el('td', { class: 'uses', 'data-i': i }),
+      el('td', null, del));
+    tb.append(tr);
+  });
+  renderRuleStats();
+  renderEditor();
+}
+function renderRuleStats() {
+  const s = ST(), st = (s && s.rules) || [];
+  let k = 0;
+  cfg.rules.forEach((r, i) => {
+    const td = document.querySelector('#rulesBody td.uses[data-i="' + i + '"]'); if (!td) return;
+    const x = r.id > 0 ? st[k++] : null;
+    td.textContent = x && x[0] === r.id && x[1] ? x[1] + '× · ' + (x[2] < 60 ? x[2] + ' s' : Math.round(x[2] / 60) + ' min') + ' ago' : '';
+  });
+}
+function moveRule(i, d) { const j = i + d; if (j < 0 || j >= cfg.rules.length) return; const t = cfg.rules[i]; cfg.rules[i] = cfg.rules[j]; cfg.rules[j] = t; if (selRule === i) selRule = j; else if (selRule === j) selRule = i; scheduleSave(); renderRules(); }
+function bindFightOpts() {
+  const a = $('optAuto'); a.checked = !!num(cfg.auto_attack, 1); a.onchange = () => { cfg.auto_attack = a.checked ? 1 : 0; scheduleSave(); };
+  const sp = $('optSpam'); if (document.activeElement !== sp) sp.value = cfg.spam_ms; sp.onchange = () => { cfg.spam_ms = Math.max(30, Math.min(1000, num(sp.value, 100))); sp.value = cfg.spam_ms; scheduleSave(); };
+}
+// the editor of the selected rule (as the lower half of the bot's Fight settings)
+function renderEditor() {
+  const ed = $('editor'), r = cfg.rules[selRule];
+  ed.hidden = !r; if (!r) return;
+  ed.textContent = '';
+  const ch = () => { scheduleSave(); renderRulesRowOnly(); };
+  const numIn = (k, a) => { const i = el('input', { type: 'number', ...a }); i.value = r[k]; i.oninput = () => { r[k] = num(i.value, 0); ch(); }; return i; };
+  const ck = (k, t, title) => { const i = el('input', { type: 'checkbox' }); i.checked = !!r[k]; i.onchange = () => { r[k] = i.checked; ch(); }; return el('label', { class: 'ck', title }, i, t); };
+  const radio = (name, val, cur, t, set) => { const i = el('input', { type: 'radio', name }); i.checked = cur === val; i.onchange = () => { set(val); ch(); renderEditor(); }; return el('label', { class: 'ck' }, i, t); };
+  ed.append(el('div', { class: 'head' }, icoFor(r), el('b', { text: r.name || '#' + r.id }), el('span', { class: 'muted', text: (r.type === 'S' ? 'skill ' : r.type === 'I' ? 'item ' : 'action ') + r.id + ' · priority ' + (selRule + 1) }),
+    el('span', { class: 'sp' }), el('button', { class: 'ghost', text: 'Duplicate', onclick: () => { cfg.rules.splice(selRule + 1, 0, JSON.parse(JSON.stringify(r))); selRule++; scheduleSave(); renderRules(); } }),
+    el('button', { class: 'ghost', text: 'Close', onclick: () => { selRule = -1; renderRules(); } })));
+  const targeted = r.target === 'mob' || r.target === 'player';
+  const fTarget = el('fieldset', null, el('legend', { text: 'Target' }),
+    el('div', { class: 'row' }, radio('tg', 'mob', r.target, 'Mob', v => r.target = v), radio('tg', 'self', r.target, 'Me', v => r.target = v),
+      radio('tg', 'pet', r.target, 'Summon', v => r.target = v), radio('tg', 'player', r.target, 'Player', v => r.target = v)),
+    el('div', { class: 'hint', text: r.target === 'player' ? 'the player who hits me (PvP answer, Alerts page)' : r.target === 'pet' ? 'cast at my summon (heals, buffs)' : r.target === 'self' ? 'buffs, heals, potions: at any time, no target needed' : 'the mob I fight' }),
+    el('div', { class: 'lbl', text: 'Skill distance', style: targeted ? '' : 'opacity:.4' }),
+    el('div', { class: 'row', style: targeted ? '' : 'opacity:.4; pointer-events:none' }, numIn('dmin', { min: 0, step: 50 }), el('span', { class: 'muted', text: '–' }), numIn('dmax', { min: 0, step: 50 }), ck('move', 'Run closer', 'farther than max: run closer (round the walls of the map), then cast')),
+    el('div', { class: 'hint', text: targeted ? 'max 0 = any distance' : '' }));
+  const fReuse = el('fieldset', null, el('legend', { text: 'Reuse' }),
+    el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Own reuse' }), numIn('reuse', { min: 0, step: 0.5, title: 'not again before this many seconds' }), el('span', { class: 'muted', text: 's' })),
+    el('div', { class: 'row' }, el('span', { class: 'muted', text: 'Same mob again after' }), numIn('mobReuse', { min: 0, step: 1, title: 'a debuff lasting 30 s: 30' }), el('span', { class: 'muted', text: 's' })),
+    ck('iffail', 'If fail — again at once', 'did not go (no MP, a wall): its own reuse does not start, it is tried again'),
+    ck('toggle', 'Active skill (toggle)', 'not used while its effect is on me'),
+    ck('repeat', 'Repeat while it reloads', 'nukes: the packet goes all the time, the skill fires the moment it is ready. Off: only when ready, the others wait for its cast'));
+  const fAround = el('fieldset', null, el('legend', { text: 'Mobs around' }),
+    el('div', { class: 'row' }, radio('ar', 0, r.around, 'off', v => r.around = v), radio('ar', 1, r.around, 'me', v => r.around = v), radio('ar', 2, r.around, 'target', v => r.around = v)),
+    el('div', { class: 'row', style: r.around ? '' : 'opacity:.4; pointer-events:none' }, el('span', { class: 'muted', text: 'R' }), numIn('ar', { min: 10, step: 25 }),
+      (() => { const s = el('select'); s.append(el('option', { value: 0, text: '≥' }), el('option', { value: 1, text: '≤' })); s.value = r.cmp; s.onchange = () => { r.cmp = +s.value; ch(); }; return s; })(), numIn('n', { min: 0, max: 99, step: 1 })),
+    el('div', { style: r.around ? '' : 'opacity:.4; pointer-events:none' }, ck('aggro', 'only mobs on me', 'count only the mobs that hit me / my summon')),
+    el('div', { class: 'hint', text: 'AoE: target, R 200, ≥ 3. Around me: a PB AoE' }));
+  const fCond = el('fieldset', null, el('legend', { text: 'Conditions (all must hold)' }));
+  r.conds.forEach((x, j) => {
+    const s = el('select'); for (const [k, t] of COND) s.append(el('option', { value: k, text: t })); s.value = x.k;
+    const unit = (COND.find(c => c[0] === x.k) || ['', '', ''])[2];
+    const v = el('input', { placeholder: unit, disabled: !unit }); v.value = x.v;
+    s.onchange = () => { x.k = s.value; if (!(COND.find(c => c[0] === x.k) || [])[2]) x.v = ''; ch(); renderEditor(); };
+    v.oninput = () => { x.v = v.value.replace(/[^\d/]/g, ''); ch(); };
+    fCond.append(el('div', { class: 'cond' }, s, v));
+  });
+  const fMobs = el('fieldset', { style: targeted && r.target === 'mob' ? '' : 'opacity:.4; pointer-events:none' }, el('legend', { text: 'Use for' }),
+    el('div', { class: 'row' }, radio('mm', 0, r.mobMode, 'all mobs', v => r.mobMode = v), radio('mm', 1, r.mobMode, 'only these', v => r.mobMode = v), radio('mm', 2, r.mobMode, 'all except', v => r.mobMode = v)),
+    el('div', { class: 'chips' }, r.mobIds.map(id => el('span', { class: 'chip m x', title: 'remove', text: mobName(id) + ' ✕', onclick: () => { r.mobIds = r.mobIds.filter(x => x !== id); ch(); renderEditor(); } }))),
+    (() => {
+      const s = el('select', { style: 'width:100%' }); s.append(el('option', { value: '', text: '+ add a mob…' }));
+      const seen = new Set(r.mobIds), st = ST();
+      for (const k of (st && st.mobs) || []) if (!seen.has(k[0])) { seen.add(k[0]); s.append(el('option', { value: k[0], text: k[1] + ' (' + k[0] + ', around now)' })); }
+      for (const m of cfg.mobs) if (!seen.has(m.id)) { seen.add(m.id); s.append(el('option', { value: m.id, text: (m.name || '#' + m.id) + ' (' + m.id + ')' })); }
+      s.onchange = () => { const id = +s.value; if (!id) return; r.mobIds.push(id); rememberMob(id); if (!r.mobMode) r.mobMode = 1; ch(); renderEditor(); };
+      return s;
+    })());
+  ed.append(el('div', { class: 'eg' }, fTarget, fReuse, fAround, fCond), el('div', { style: 'margin-top:10px' }, fMobs));
+}
+// one row's chips / classes again without rebuilding the editor (typing keeps the focus)
+function renderRulesRowOnly() {
+  const tr = $('rulesBody').children[selRule], r = cfg.rules[selRule]; if (!tr || !r) return;
+  tr.className = 'r sel' + (r.on ? '' : ' off');
+  tr.children[3].firstChild.className = 'tg ' + r.target; tr.children[3].firstChild.textContent = TGT[r.target];
+  const chips = tr.children[4].firstChild; chips.textContent = ''; for (const [t, k] of summary(r)) chips.append(el('span', { class: 'chip ' + k, text: t }));
+  tr.children[6].firstChild.checked = r.repeat;
+}
+function rememberMob(id) {
+  if (cfg.mobs.some(m => m.id === id)) return;
+  const s = ST(), k = s && s.mobs && s.mobs.find(x => x[0] === id);
+  cfg.mobs.push({ id, prio: 3, name: k ? k[1] : '' });
+}
+
+// ===================== TARGETS (mob priority) =====================
+const PRIOS = [[1, 'First'], [2, 'High'], [3, 'Normal'], [4, 'Low'], [9, 'Never']];
+$('mobFilter').oninput = () => renderMobs();
+$('mobListed').onchange = () => renderMobs();
+$('mobAddBtn').onclick = () => {
+  const id = Math.round(num($('mobAddId').value, 0)); if (id <= 0) { toast('Type the NPC ID'); return; }
+  const m = cfg.mobs.find(x => x.id === id), nm = $('mobAddName').value.trim();
+  if (m) { if (nm) m.name = nm; } else cfg.mobs.push({ id, prio: 1, name: nm });
+  $('mobAddId').value = ''; $('mobAddName').value = ''; scheduleSave(); renderMobs(); renderTop();
+};
+function renderMobs(soft) {
+  const tb = $('mobsBody'), s = ST(), near = new Map(((s && s.mobs) || []).map(k => [k[0], k]));
+  if (soft && document.activeElement && tb.contains(document.activeElement)) return;
+  const rows = new Map();
+  for (const m of cfg.mobs) rows.set(m.id, { id: m.id, name: m.name, prio: m.prio });
+  for (const [id, k] of near) { const r = rows.get(id); if (r) { if (!r.name) r.name = k[1]; } else rows.set(id, { id, name: k[1], prio: 3 }); }
+  const f = $('mobFilter').value.trim().toLowerCase(), listed = $('mobListed').checked;
+  const list = [...rows.values()].filter(r => (!f || (r.name || '').toLowerCase().includes(f) || String(r.id) === f) && (!listed || cfg.mobs.some(m => m.id === r.id && m.prio !== 3)))
+    .sort((a, b) => a.prio - b.prio || (near.has(b.id) - near.has(a.id)) || (a.name || '').localeCompare(b.name || ''));
+  tb.textContent = '';
+  $('mobsEmpty').hidden = list.length > 0;
+  for (const r of list) {
+    const k = near.get(r.id);
+    const seg = el('div', { class: 'seg prio5' });
+    for (const [p, t] of PRIOS) seg.append(el('button', { class: 'p' + p + (r.prio === p ? ' on' : ''), text: t, onclick: () => setMobPrio(r.id, p, r.name) }));
+    tb.append(el('tr', { class: k ? '' : 'gone' },
+      el('td', null, el('b', { text: r.name || '#' + r.id })),
+      el('td', { class: 'muted mono', text: r.id }),
+      el('td', null, k ? el('span', null, k[2] + ' · ' + k[3], k[4] ? el('span', { class: 'onme', text: ' · ' + k[4] + ' on me' }) : '') : el('span', { class: 'dim', text: 'not around' })),
+      el('td', null, seg)));
+  }
+}
+function setMobPrio(id, p, name) {
+  const m = cfg.mobs.find(x => x.id === id);
+  if (m) { m.prio = p; if (!m.name && name) m.name = name; }
+  else cfg.mobs.push({ id, prio: p, name: name || '' });
+  // a Normal mob no rule names: off the list
+  if (p === 3 && !cfg.rules.some(r => r.mobIds.includes(id))) cfg.mobs = cfg.mobs.filter(x => x.id !== id);
+  scheduleSave(); renderMobs(); renderTop();
+}
+
+// ===================== MAP =====================
+let mapReady = false, maps = { own: [], lib: [], zones: [] }, mapsAt = 0;
+function mapInit() {
+  if (mapReady) return; mapReady = true;
+  $('mapFrame').src = '/nav.html';
+}
+function nav() { try { return $('mapFrame').contentWindow.navApi || null; } catch (e) { return null; } }
+function mapFollow() { const n = nav(); if (n && cur) n.follow(cur); }
+window.addEventListener('message', e => {
+  if (e.origin !== location.origin || !e.data) return;
+  const d = e.data;
+  if (d.ev === 'ready') { mapFollow(); const n = nav(); if (n && cfg.grid && !n.name() && !n.dirty()) n.open(cfg.grid, 'own'); }
+  if (d.ev === 'saved') { loadMaps(true); if (d.name && d.name.toLowerCase() === (cfg.grid || '').toLowerCase()) { cfg.grid_ver = String(Date.now()); scheduleSave(); toast('Saved - the bot loads the new ' + d.name); }
+    else if (!cfg.grid && confirm('Farm ' + charLabel(cur) + ' on ' + d.name + '?')) useMap(d.name); }
+  if (d.ev === 'opened') renderMapSide();
+});
+async function loadMaps(force) {
+  if (!force && Date.now() - mapsAt < 4000) return;
+  mapsAt = Date.now();
+  try { maps = await apiJson('/api/maps'); } catch (e) {}
+  renderMapSide();
+}
+function useMap(name) { cfg.grid = name; cfg.grid_ver = String(Date.now()); scheduleSave(); renderMapSide(); renderTop(); toast(name ? charLabel(cur) + ' farms on ' + name : 'No map: farming in a circle round the start'); }
+const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const ago = ms => { const s = (Date.now() - ms) / 1000; return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
+function renderMapSide() {
+  if (page !== 'map') return;
+  loadMaps();
+  const sel = $('gridSel'); sel.textContent = '';
+  sel.append(el('option', { value: '', text: '— no map: a circle round the start —' }));
+  for (const m of maps.own) sel.append(el('option', { value: m.name, text: m.name }));
+  if (cfg.grid && !maps.own.some(m => m.name.toLowerCase() === cfg.grid.toLowerCase())) sel.append(el('option', { value: cfg.grid, text: cfg.grid + ' (missing!)' }));
+  sel.value = cfg.grid; sel.onchange = () => useMap(sel.value);
+  const s = ST(), mp = s && s.map, st = $('mapStat');
+  st.className = 'mapstat';
+  if (!live()) { st.textContent = 'The bot is off: the map loads when pve.txt runs'; }
+  else if (mp && (mp.file || '').toLowerCase() === (cfg.grid || '').toLowerCase() && mp.ver === cfg.grid_ver) { st.textContent = mp.msg || '—'; st.classList.add(mp.ok || !cfg.grid ? 'ok' : 'bad'); }
+  else st.textContent = 'The bot is loading ' + (cfg.grid || 'no map') + '…';
+  // the way back: the teleport (own / the map's), the rails, the death setting
+  const ws = $('wayStat'), mtp = mp && mp.teleport || '', tp = cfg.teleport || mtp, rails = mp ? mp.rails || 0 : 0;
+  ws.className = 'mapstat ' + (cfg.death === 'return' ? (tp && (!mp || rails) ? 'ok' : 'bad') : '');
+  ws.textContent = (tp ? 'teleport ' + (cfg.teleport ? 'set here' : 'of the map') : 'no teleport') + ' · ' +
+    (!mp ? 'rails: the bot tells' : rails ? rails + ' rail' + (rails === 1 ? '' : 's') + ' on the map' : 'no rail: draw one (Rail) from the landing point to the spot, Save') +
+    ' · ' + (cfg.death === 'return' ? 'on a death: back to the spot' : 'on a death: ' + (cfg.death === 'pause' ? 'pause' : 'wait') + ' (Alerts & misc)');
+  $('gridEdit').disabled = !cfg.grid;
+  const rw = String(cfg.roam_wait || '3000 5000').split(/\s+/).map(Number);
+  const a = $('roamMin'), b = $('roamMax');
+  if (document.activeElement !== a) a.value = Math.round((rw[0] || 0) / 1000); if (document.activeElement !== b) b.value = Math.round((rw[1] || rw[0] || 0) / 1000);
+  a.onchange = b.onchange = () => { const x = Math.max(0, num(a.value, 3)), y = Math.max(x, num(b.value, 5)); cfg.roam_wait = Math.round(x * 1000) + ' ' + Math.round(y * 1000); scheduleSave(); };
+  const box = $('mapList'); box.textContent = '';
+  const n = nav(), onScreen = n ? n.name() + '.navgrid' : '';
+  if (!maps.own.length) box.append(el('div', { class: 'empty', text: 'No maps yet: «+ New» and paint one (or «Paint my run»), or «Open…» an old map of Library\\Nav and save it here' }));
+  for (const m of maps.own) {
+    const use = m.name.toLowerCase() === (cfg.grid || '').toLowerCase();
+    box.append(el('div', { class: 'mrow' + (use ? ' use' : '') },
+      el('b', { text: m.name + (n && n.src() === 'own' && onScreen === m.name ? '  ✎' : '') }), el('small', { text: kb(m.size) + ' · saved ' + ago(m.mod) + (use ? ' · this character' : '') }),
+      el('div', { class: 'acts' },
+        el('button', { class: 'ghost', text: 'Edit', onclick: () => editMap(m.name) }),
+        use ? null : el('button', { text: 'Use', onclick: () => useMap(m.name) }),
+        el('button', { class: 'icon ghost danger', text: '✕', title: 'Delete this map', onclick: () => delMap(m.name) }))));
+  }
+}
+async function editMap(name) { const n = nav(); if (!n) { toast('The editor is loading…'); return; } await n.open(name, 'own'); renderMapSide(); }
+async function delMap(name) {
+  if (!confirm('Delete ' + name + ' from Library\\PvePanel\\Nav? It cannot be undone.')) return;
+  const r = await fetch('/api/map/delete?name=' + encodeURIComponent(name), { method: 'PUT', headers: HDR });
+  if (!r.ok) { toast('Not deleted: ' + await r.text()); return; }
+  if ((cfg.grid || '').toLowerCase() === name.toLowerCase()) useMap('');
+  loadMaps(true); toast('Deleted ' + name);
+}
+$('gridEdit').onclick = () => { if (cfg.grid) editMap(cfg.grid); };
+$('gridReload').onclick = () => { cfg.grid_ver = String(Date.now()); scheduleSave(); toast('The bot loads the map again'); };
+$('mapNew').onclick = () => { const n = nav(); if (n) n.newMap(); };
+$('mapOpenOld').onclick = () => { const n = nav(); if (n) n.dialog(); };
+
+// ===================== BUFFS & SHOP =====================
+const SUPPLIES = [[1463, 'Soulshot D'], [1464, 'Soulshot C'], [1465, 'Soulshot B'], [1466, 'Soulshot A'], [1467, 'Soulshot S'],
+  [3948, 'Blessed Spiritshot D'], [3949, 'Blessed Spiritshot C'], [3950, 'Blessed Spiritshot B'], [3951, 'Blessed Spiritshot A'], [3952, 'Blessed Spiritshot S'],
+  [6645, 'Beast Soulshot'], [6647, 'Beast Blessed Spiritshot'], [3031, 'Spirit Ore'], [2508, 'Cursed Bone'], [726, 'Mana Drug'], [728, 'Mana Potion'], [1539, 'Healing Potion']];
+let profiles = null;
+async function renderBuffs() {
+  bindAll($('pgBuffs'));
+  const rid = num(cfg.rebuff_id, 0), inf = skillInfo.get(rid); $('rebuffName').textContent = rid ? (inf ? inf.name : '') : 'off';
+  if (rid && !inf) askSkillInfo([rid]);
+  const rm = $('rebuffMin'); if (document.activeElement !== rm) rm.value = Math.round(num(cfg.rebuff_left, 600) / 60);
+  rm.onchange = () => { cfg.rebuff_left = Math.max(1, Math.round(num(rm.value, 10) * 60)); scheduleSave(); };
+  const bp = $('rebuffBp'); if (document.activeElement !== bp) bp.value = cfg.rebuff_bypass.join('\n');
+  bp.oninput = () => { cfg.rebuff_bypass = bp.value.split(/\r?\n/).map(x => x.trim()).filter(Boolean); scheduleSave(); };
+  $('rebuffUsual').onclick = () => { cfg.rebuff_id = 1204; cfg.rebuff_bypass = ['_bbs_buffer_show', 'book_use?name=s&pre=0&target=Player']; scheduleSave(); renderBuffs(); };
+  const box = $('supRows'); box.textContent = '';
+  if (!cfg.supply.length) box.append(el('div', { class: 'dim', text: 'Nothing is bought' }));
+  cfg.supply.forEach((s, i) => {
+    const sel = el('select'); for (const [id, n] of SUPPLIES) sel.append(el('option', { value: id, text: n })); sel.value = s.id;
+    sel.onchange = () => { s.id = +sel.value; scheduleSave(); };
+    const mn = el('input', { type: 'number', min: 0, step: 100, title: 'below this: buy' }); mn.value = s.min; mn.oninput = () => { s.min = num(mn.value, 0); scheduleSave(); };
+    const mx = el('input', { type: 'number', min: 0, step: 100, title: 'up to this' }); mx.value = s.max; mx.oninput = () => { s.max = num(mx.value, 0); scheduleSave(); };
+    box.append(el('div', { class: 'row' }, sel, el('span', { class: 'muted', text: 'below' }), mn, el('span', { class: 'muted', text: 'buy up to' }), mx,
+      el('button', { class: 'icon ghost danger', text: '✕', onclick: () => { cfg.supply.splice(i, 1); scheduleSave(); renderBuffs(); } })));
+  });
+  $('supAdd').onclick = () => { cfg.supply.push({ id: 3952, min: 5000, max: 10000 }); scheduleSave(); renderBuffs(); };
+  const w = num(cfg.weapon, 0), ws = $('weapSel'); ws.value = w > 0 ? 'id' : String(w < 0 ? -1 : 0); $('weapIdRow').hidden = !(w > 0);
+  const wi = $('weapId'); if (document.activeElement !== wi) wi.value = w > 0 ? w : '';
+  ws.onchange = () => { cfg.weapon = ws.value === 'id' ? Math.max(1, num(wi.value, 0)) || 1 : +ws.value; if (ws.value === 'id' && !num(wi.value, 0)) toast('Type the weapon item ID'); scheduleSave(); renderBuffs(); };
+  wi.oninput = () => { const v = Math.round(num(wi.value, 0)); if (v > 0) { cfg.weapon = v; scheduleSave(); } };
+  if (!profiles) { try { profiles = await apiJson('/api/profiles'); } catch (e) { profiles = []; } }
+  const ps = $('profSel'), have = new Set(profiles); ps.textContent = '';
+  ps.append(el('option', { value: '', text: '— none (interface off) —' }));
+  for (const p of profiles) ps.append(el('option', { value: p, text: p }));
+  if (cfg.profile && !have.has(cfg.profile)) ps.append(el('option', { value: cfg.profile, text: cfg.profile + ' (missing!)' }));
+  ps.value = cfg.profile;
+}
+
+// ===================== HUMAN =====================
+// distributions: "min max" (uniform) or "min max n mean sigma" (normal cut to min..max) in the stored unit (ms...);
+// an editor shows / drags them in its own unit (data-mul: stored = shown * mul). One number alone (older files): the max
+// of h_press / h_rebuff (from 0), else the min
+const ONE_IS_MAX = { h_press: 1, h_rebuff: 1 };
+const SVGNS = 'http://www.w3.org/2000/svg';
+function sv(tag, a) { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(a || {})) e.setAttribute(k, v); return e; }
+function distGet(k, mul) {
+  const v = String(cfg[k] ?? DEF[k]).trim().split(/\s+/), d = String(DEF[k]).split(/\s+/).map(Number);
+  let a = num(v[0], d[0]), b = v.length > 1 ? num(v[1], d[1]) : d[1];
+  if (v.length === 1 && ONE_IS_MAX[k]) { a = 0; b = num(v[0], d[1]); }
+  if (b < a) b = a;
+  const norm = v[2] === 'n', m = norm ? num(v[3], (a + b) / 2) : (a + b) / 2, s = norm ? num(v[4], (b - a) / 4) : Math.max(1, (b - a) / 4);
+  return { a: a / mul, b: b / mul, norm, m: Math.min(b, Math.max(a, m)) / mul, s: Math.max(1, s) / mul };
+}
+function distPut(k, mul, o) {
+  const r = x => Math.round(x * mul), a = r(o.a), b = Math.max(a, r(o.b));
+  cfg[k] = a + ' ' + b + (o.norm ? ' n ' + Math.min(b, Math.max(a, r(o.m))) + ' ' + Math.max(1, r(o.s)) : '');
+  scheduleSave();
+}
+const decs = step => step < 1 ? (String(step).split('.')[1] || '').length : 0;
+const fmtV = (v, step) => (+v).toFixed(decs(step)).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+function niceStep(span, n) { const raw = span / n, p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p; }
+let distDrag = null;
+// one distribution editor (built once, redrawn from cfg): the density over min..max, the edges, the normal's peak and width
+function distEd(box) {
+  const k = box.dataset.dist, mul = +(box.dataset.mul || 1), step = +(box.dataset.step || 1), unit = box.dataset.unit || '';
+  const lo = +(box.dataset.lo || 0) / mul, hi = +(box.dataset.hi || 1e9) / mul, ax = box.dataset.axis.split(' ').map(Number);
+  if (!box._ui) {
+    const bU = el('button', { type: 'button', text: 'Uniform' }), bN = el('button', { type: 'button', text: 'Normal' });
+    const iA = el('input', { type: 'number', class: 'dnum', step, min: lo, max: hi }), iB = el('input', { type: 'number', class: 'dnum', step, min: lo, max: hi });
+    const svg = sv('svg', { class: 'dchart' }), info = el('div', { class: 'dinfo' });
+    box.append(el('div', { class: 'dh' }, el('label', { text: box.dataset.label }), el('span', { class: 'dseg' }, bU, bN), el('span', { class: 'sp' }),
+      iA, el('span', { class: 'muted', text: '–' }), iB, el('span', { class: 'muted', text: unit })), svg, info);
+    if (box.dataset.hint) box.append(el('div', { class: 'h', text: box.dataset.hint }));
+    box._ui = { bU, bN, iA, iB, svg, info };
+    const set = f => { const o = distGet(k, mul); f(o); distPut(k, mul, o); distEd(box); };
+    bU.onclick = () => set(o => { o.norm = false; });
+    bN.onclick = () => set(o => { if (!o.norm) { o.norm = true; o.m = (o.a + o.b) / 2; o.s = Math.max(step, (o.b - o.a) / 4); } });
+    iA.onchange = () => set(o => { o.a = Math.min(Math.max(lo, num(iA.value, o.a)), hi); if (o.b < o.a) o.b = o.a; });
+    iB.onchange = () => set(o => { o.b = Math.min(Math.max(lo, num(iB.value, o.b)), hi); if (o.a > o.b) o.a = o.b; });
+    svg.addEventListener('pointerdown', e => {
+      const g = e.target.closest('[data-h]'); if (!g) return;
+      e.preventDefault(); distDrag = { box, h: g.dataset.h, o: distGet(k, mul), ax: box._ax };
+    });
+  }
+  const u = box._ui, o = distDrag && distDrag.box === box ? distDrag.o : distGet(k, mul);
+  u.bU.classList.toggle('on', !o.norm); u.bN.classList.toggle('on', o.norm);
+  if (document.activeElement !== u.iA) u.iA.value = fmtV(o.a, step);
+  if (document.activeElement !== u.iB) u.iB.value = fmtV(o.b, step);
+  u.info.textContent = o.b <= o.a ? 'always ' + fmtV(o.a, step) + ' ' + unit
+    : o.norm ? 'normal: mostly round ' + fmtV(o.m, step) + ' ' + unit + ' (± ' + fmtV(o.s, step) + ' holds about 2 of 3), never past ' + fmtV(o.a, step) + '–' + fmtV(o.b, step)
+    : 'uniform: any value from ' + fmtV(o.a, step) + ' to ' + fmtV(o.b, step) + ' ' + unit + ' just as likely';
+  // the axis: its own range, wider when the values go past it (kept still while dragging)
+  const svg = u.svg, W = svg.clientWidth || 380, H = 78, L = 12, R = 12, T = 6, B = 18, pw = W - L - R, ph = H - T - B, base = T + ph;
+  let a0, a1;
+  if (distDrag && distDrag.box === box && distDrag.ax) [a0, a1] = distDrag.ax;
+  else { a0 = Math.min(ax[0], o.a); a1 = Math.max(ax[1], o.b * 1.15); if (a1 <= a0) a1 = a0 + step * 10; box._ax = [a0, a1]; }
+  box._geo = { L, pw };
+  const X = v => L + (v - a0) / (a1 - a0) * pw;
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.textContent = '';
+  const ts = niceStep(a1 - a0, 5);
+  for (let t = Math.ceil(a0 / ts) * ts; t <= a1 + 1e-9; t += ts) {
+    svg.append(sv('line', { x1: X(t), x2: X(t), y1: T, y2: base, class: 'dgrid' }));
+    const tx = sv('text', { x: X(t), y: H - 4, class: 'dtick', 'text-anchor': 'middle' }); tx.textContent = fmtV(t, ts < 1 ? ts : 1); svg.append(tx);
+  }
+  svg.append(sv('line', { x1: L, x2: L + pw, y1: base, y2: base, class: 'daxis' }));
+  if (box.dataset.ref) {                     // a mark on the axis (the reach edge...)
+    const rv = +box.dataset.ref, rl = sv('text', { x: X(rv) + 4, y: T + 9, class: 'dtick' });
+    rl.textContent = box.dataset.reflabel || ''; svg.append(sv('line', { x1: X(rv), x2: X(rv), y1: T, y2: base, class: 'dref' }), rl);
+  }
+  const dens = x => o.norm ? Math.exp(-((x - o.m) ** 2) / (2 * o.s * o.s)) : 1;
+  const n = 72, pts = []; let peak = 0;
+  for (let i = 0; i <= n; i++) { const x = o.a + (o.b - o.a) * i / n, y = dens(x); pts.push([x, y]); if (y > peak) peak = y; }
+  const hm = o.norm ? ph * 0.9 : ph * 0.55, Y = y => base - (peak > 0 ? y / peak : 1) * hm;
+  if (o.b > o.a) {
+    let d = 'M' + X(o.a) + ',' + base; for (const [x, y] of pts) d += ' L' + X(x) + ',' + Y(y); d += ' L' + X(o.b) + ',' + base + ' Z';
+    svg.append(sv('path', { d, class: 'darea' }));
+    svg.append(sv('path', { d: pts.map(([x, y], i) => (i ? 'L' : 'M') + X(x) + ',' + Y(y)).join(' '), class: 'dline' }));
+  } else svg.append(sv('line', { x1: X(o.a), x2: X(o.a), y1: T + 4, y2: base, class: 'dline' }));
+  if (o.norm && o.b > o.a) {
+    const my = Y(dens(o.m)), sx = o.m + o.s;
+    svg.append(sv('line', { x1: X(Math.max(o.a, o.m - o.s)), x2: X(Math.min(o.b, sx)), y1: base - 3, y2: base - 3, class: 'dsig' }));
+    svg.append(sv('line', { x1: X(o.m), x2: X(o.m), y1: my, y2: base, class: 'dmean' }));
+  }
+  const edge = (v, h) => { const g = sv('g', { 'data-h': h });
+    g.append(sv('line', { x1: X(v), x2: X(v), y1: T, y2: base, class: 'dedge' }), sv('rect', { x: X(v) - 4, y: base - 14, width: 8, height: 14, rx: 2, class: 'dgrip' }),
+      sv('rect', { x: X(v) - 9, y: T, width: 18, height: ph, class: 'dhit' })); svg.append(g); };
+  edge(o.a, 'a'); edge(o.b, 'b');
+  if (o.norm && o.b > o.a) {
+    const knob = (x, y, r, cls, h) => { const g = sv('g', { 'data-h': h }); g.append(sv('circle', { cx: x, cy: y, r, class: cls }), sv('circle', { cx: x, cy: y, r: 12, class: 'dhit' })); svg.append(g); };
+    knob(X(o.m + o.s), Y(dens(o.m + o.s)), 4.5, 'dknob2', 's');
+    knob(X(o.m), Y(dens(o.m)), 6, 'dknob', 'm');
+  }
+}
+// a chance (or a share) editor: a bar to drag, 0..data-max %
+function chanceEd(box) {
+  const k = box.dataset.chance, max = +(box.dataset.max || 100);
+  if (!box._ui) {
+    const inp = el('input', { type: 'number', class: 'dnum', min: 0, max, step: 1 }), svg = sv('svg', { class: 'dchart' });
+    box.append(el('div', { class: 'dh' }, el('label', { text: box.dataset.label }), inp, el('span', { class: 'muted', text: '% ' + (box.dataset.text || '') })), svg);
+    box._ui = { inp, svg };
+    inp.onchange = () => { cfg[k] = Math.min(max, Math.max(0, Math.round(num(inp.value, 0)))); scheduleSave(); chanceEd(box); };
+    svg.addEventListener('pointerdown', e => { e.preventDefault(); distDrag = { box, chance: true, v: num(cfg[k] ?? DEF[k], 0) }; distMove(e); });
+  }
+  const u = box._ui, v = distDrag && distDrag.box === box ? distDrag.v : num(cfg[k] ?? DEF[k], 0);
+  if (document.activeElement !== u.inp) u.inp.value = v;
+  const svg = u.svg, W = svg.clientWidth || 380, H = 30, L = 12, R = 12, pw = W - L - R, X = x => L + x / max * pw;
+  box._geo = { L, pw, max };
+  svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H); svg.textContent = '';
+  svg.append(sv('rect', { x: L, y: 9, width: pw, height: 12, rx: 6, class: 'dtrack' }), sv('rect', { x: L, y: 9, width: Math.max(0, X(v) - L), height: 12, rx: 6, class: 'dfill' }));
+  for (let t = 0; t <= 4; t++) svg.append(sv('line', { x1: L + pw * t / 4, x2: L + pw * t / 4, y1: 23, y2: 27, class: 'daxis' }));
+  const g = sv('g', { 'data-h': 'v' }); g.append(sv('circle', { cx: X(v), cy: 15, r: 7, class: 'dknob' }), sv('rect', { x: L, y: 0, width: pw, height: H, class: 'dhit' })); svg.append(g);
+}
+function distMove(e) {
+  const d = distDrag; if (!d) return;
+  const box = d.box, r = box._ui.svg.getBoundingClientRect(), gm = box._geo, fx = (e.clientX - r.left - gm.L) / gm.pw;
+  if (d.chance) { d.v = Math.round(Math.min(1, Math.max(0, fx)) * gm.max); chanceEd(box); return; }
+  const step = +(box.dataset.step || 1), mul = +(box.dataset.mul || 1), lo = +(box.dataset.lo || 0) / mul, hi = +(box.dataset.hi || 1e9) / mul;
+  const [a0, a1] = d.ax, v = Math.round((a0 + fx * (a1 - a0)) / step) * step, o = d.o;
+  if (d.h === 'a') { o.a = Math.min(Math.max(lo, v), o.b); }
+  else if (d.h === 'b') { o.b = Math.max(Math.min(hi, v), o.a); }
+  else if (d.h === 'm') { o.m = Math.min(Math.max(o.a, v), o.b); }
+  else if (d.h === 's') { o.s = Math.max(step, Math.abs(v - o.m)); }
+  if (o.norm) o.m = Math.min(Math.max(o.a, o.m), o.b);
+  distEd(box);
+}
+window.addEventListener('pointermove', distMove);
+window.addEventListener('pointerup', () => {
+  const d = distDrag; if (!d) return; distDrag = null;
+  if (d.chance) { cfg[d.box.dataset.chance] = d.v; scheduleSave(); chanceEd(d.box); }
+  else { distPut(d.box.dataset.dist, +(d.box.dataset.mul || 1), d.o); distEd(d.box); }
+});
+window.addEventListener('resize', () => { if (page === 'human') renderHuman(); });
+function renderHuman() {
+  bindAll($('pgHuman'));
+  if (!distDrag) { document.querySelectorAll('#pgHuman .dist').forEach(distEd); document.querySelectorAll('#pgHuman .chance').forEach(chanceEd); }
+  const on = !!num(cfg.human, 0);
+  $('humanCards').classList.toggle('human-off', !on);
+  // the master switch redraws the dimming at once
+  const m = document.querySelector('#pgHuman [data-k=human]'), f = m.onchange; m.onchange = () => { f(); renderHuman(); };
+}
+
+// ===================== ALERTS =====================
+function renderAlerts() {
+  bindAll($('pgAlerts'));
+  const na = $('noAlert'); if (document.activeElement !== na) na.value = cfg.noalert.join('\n');
+  na.oninput = () => { cfg.noalert = na.value.split(/\r?\n/).map(x => x.trim()).filter(Boolean); scheduleSave(); };
+  const d = String(cfg.pvp_delay || '700 1500').split(/\s+/).map(Number), a = $('pvpMin'), b = $('pvpMax');
+  if (document.activeElement !== a) a.value = d[0] || 0; if (document.activeElement !== b) b.value = d[1] || d[0] || 0;
+  a.onchange = b.onchange = () => { const x = Math.max(0, num(a.value, 700)), y = Math.max(x, num(b.value, 1500)); cfg.pvp_delay = Math.round(x) + ' ' + Math.round(y); scheduleSave(); };
+}
+
+// ===================== LOG =====================
+function renderLog() {
+  const s = ST(), box = $('logBox'), bottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.textContent = '';
+  if (!s) { box.append(el('div', { class: 'dim', text: 'No bot state yet' })); return; }
+  if (s.cfg && s.cfg.errors && s.cfg.errors.length) for (const e of s.cfg.errors) box.append(el('div', { class: 'bad' }, el('span', { text: 'settings' }), e));
+  for (const [t, x] of s.log || []) box.append(el('div', { class: /\[(Death|Champion|Player|PvP)\]/.test(x) ? 'warn' : '' }, el('span', { text: t }), x));
+  if (bottom) box.scrollTop = box.scrollHeight;
+  const bb = $('buffsBox'); bb.textContent = '';
+  for (const [id, n, left] of (s.buffs || []).slice().sort((a, b) => a[1].localeCompare(b[1])))
+    bb.append(el('div', null, el('span', { text: String(id).padStart(5, ' ') }), n + (left > 0 ? '  ' + (left >= 60 ? Math.round(left / 60) + ' min' : left + ' s') : '')));
+}
+
+// ===================== start =====================
+showPage(['fight', 'mobs', 'map', 'buffs', 'alerts', 'log'].includes(page) ? page : 'fight');
+renderAll();
+pollList();
+setInterval(pollList, 2500);
+setInterval(pollState, 1000);
+setInterval(pollCfg, 2500);
+window.addEventListener('beforeunload', () => flushAll());
+</script>
+</body>
+</html>

@@ -22,6 +22,8 @@ namespace PvpPanel
     /// comes from it whole to OnTeamProfile.
     /// A bot sends N|T|&lt;oid&gt;|&lt;name&gt; when its target changes. No relay.ini / no relay: the characters of this PC
     /// still get each other's targets.
+    /// A bot's team command N|X|&lt;payload&gt; (G|x|y|z|range: gather to him) goes to the relay as X|&lt;char&gt;|&lt;payload&gt;
+    /// and to every other bot (here and on the other PCs) as N|X|&lt;char&gt;|&lt;payload&gt;; it is not kept.
     /// </summary>
     sealed class RelayLink
     {
@@ -132,6 +134,22 @@ namespace PvpPanel
                 others = _local.Keys.Where(k => !k.Equals(ch, StringComparison.OrdinalIgnoreCase)).ToArray();
             }
             var line = "N|T|" + ch + "|" + t;
+            await Task.WhenAll(others.Select(o => _toBot(o, line)));
+        }
+
+        /// <summary>A bot's team command (its N|X|payload, e.g. G|x|y|z|range = gather to him): to the relay and the other
+        /// characters here, at once. Not kept: a link that comes later does not get it.</summary>
+        public async Task ExtraAsync(string ch, string payload)
+        {
+            payload = new string(payload.Where(c => !char.IsControl(c)).Take(300).ToArray());
+            if (payload.Length == 0) return;
+            string[] others;
+            lock (_lock)
+            {
+                _out?.Writer.TryWrite("X|" + ch + "|" + payload);
+                others = _local.Keys.Where(k => !k.Equals(ch, StringComparison.OrdinalIgnoreCase)).ToArray();
+            }
+            var line = "N|X|" + ch + "|" + payload;
             await Task.WhenAll(others.Select(o => _toBot(o, line)));
         }
 
@@ -370,6 +388,16 @@ namespace PvpPanel
                     _remoteT[ch] = t;
                 }
                 await ToAll("N|T|" + ch + "|" + t);
+            }
+            else if (kind == "X")                                   // a team command of a bot on another PC
+            {
+                var j = rest.IndexOf('|');
+                if (j <= 0) return;
+                var ch = Clean(rest.Substring(0, j).Trim());
+                var payload = new string(rest.Substring(j + 1).Where(c => !char.IsControl(c)).Take(300).ToArray());
+                if (ch.Length == 0 || payload.Length == 0) return;
+                lock (_lock) if (_local.ContainsKey(ch)) return;    // ours: the bots here have it from us
+                await ToAll("N|X|" + ch + "|" + payload);
             }
             else if (kind == "LEAD")
             {

@@ -1,0 +1,1 @@
+class NextTarget extends UICommonAPI;

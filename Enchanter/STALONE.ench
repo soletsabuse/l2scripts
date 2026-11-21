@@ -1,0 +1,13 @@
+; Enchant settings of STALONE: made in enchant.html (Library\Enchanter), read by enchant.txt on the fly
+run=1
+run_id=1795269444831
+cryst_id=
+delay_ms=200
+put_ms=2000
+order=seq
+max_scrolls=0
+done_max=1
+stop_on_break=0
+chat=0
+sound=1
+debug=1

@@ -49,6 +49,15 @@ namespace EnchPanel
             Save();
         }
 
+        public static string GetStr(string key, string def) =>
+            Values.TryGetValue(key, out var v) && v.Length > 0 ? v : def;
+
+        public static void SetStr(string key, string v)
+        {
+            Values[key] = v.Replace("\r", "").Replace("\n", "");
+            Save();
+        }
+
         public static double GetNum(string key, double def) =>
             Values.TryGetValue(key, out var v) && double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : def;
 

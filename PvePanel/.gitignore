@@ -1,0 +1,10 @@
+# PvePanel: what the bot and the panel write while they run - never committed
+*.pve.json
+*.navlive
+*.tmp
+Logs/
+Nav/cache/
+pve_panel.ini
+PvePanel/bin/
+PvePanel/obj/
+PvePanel/publish/

@@ -28,6 +28,7 @@ namespace EnchPanel
         static readonly Color Run = Color.FromArgb(110, 170, 255);
 
         readonly EnchServer _server = new EnchServer();
+        readonly VoiceHub _voice = new VoiceHub(Dispatcher.CurrentDispatcher);   // the voice control (Library\Voice)
         readonly WinForms.NotifyIcon _icon;
         readonly WinForms.ContextMenuStrip _menu;
         readonly DispatcherTimer _timer;
@@ -66,6 +67,10 @@ namespace EnchPanel
             _timer.Tick += (s, e) => Refresh();
             _timer.Start();
             _ = StartServerAsync(false);
+            _voice.ShowPanel = ShowPanel;    // «открой настройки» and the like bring the panel up
+            var ui = Dispatcher.CurrentDispatcher;
+            EnchServer.Quit = () => ui.BeginInvoke(new Action(Exit));   // PUT /api/quit: as Exit in the menu (an update)
+            _voice.Start();                // only if it is turned on (ench_panel.ini voice_on=1)
         }
 
         // ---------- status ----------
@@ -247,6 +252,7 @@ namespace EnchPanel
             _disposed = true;
             _timer.Stop();
             _server.Stop();
+            _voice.Dispose();              // the engines closed (the job closes them anyway)
             _icon.Visible = false;
             _icon.Dispose();
             _menu.Dispose();

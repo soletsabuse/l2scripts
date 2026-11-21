@@ -1,0 +1,2214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PvE Map</title>
+<style>
+  :root { --bg: #0a0d12; --panel: #11151c; --panel2: #171c25; --panel3: #1e2431; --line: #222936; --line2: #2e3746;
+    --text: #e6ebf2; --muted: #8893a4; --dim: #5d6878; --accent: #5aa9ff; --accent2: #3d8bea; --ok: #4dd4ac; --warn: #ffbf5a; --bad: #ff6b7a;
+    --shadow: 0 12px 40px rgba(0, 0, 0, .5); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); overflow: hidden;
+    font: 13px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+  svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+  /* ===== top bar ===== */
+  #top { position: absolute; top: 0; left: 0; right: 0; z-index: 5; }
+  #bar { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; padding: 8px 12px;
+    background: linear-gradient(180deg, #141922, #0f131a); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 9px; margin-right: 4px; min-width: 0; }
+  .brand .logo { width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: #06121f;
+    background: linear-gradient(135deg, #5aa9ff, #4dd4ac); box-shadow: 0 2px 10px rgba(90, 169, 255, .3); }
+  .brand .logo svg { stroke-width: 2.2; }
+  .brand b { font-size: 14px; font-weight: 650; letter-spacing: .01em; }
+  .brand .file { color: var(--muted); font: 12px Consolas, monospace; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grp { display: flex; align-items: center; gap: 4px; }
+  .seg { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 2px; gap: 2px; }
+  .seg button { border-color: transparent; background: transparent; padding: 4px 9px; }
+  .seg button:hover { background: var(--panel3); border-color: transparent; }
+  .seg button.on { background: #1d3b5f; border-color: #2f6299; color: #fff; }
+  .vsep { width: 1px; height: 24px; background: var(--line); margin: 0 2px; }
+  .sp { flex: 1; }
+  .lbl { color: var(--dim); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; margin: 0 2px 0 4px; }
+  button, label.btn { display: inline-flex; align-items: center; gap: 6px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line2); border-radius: 7px; padding: 5px 10px; font: inherit; cursor: pointer; white-space: nowrap;
+    transition: background .12s, border-color .12s, color .12s; }
+  button:hover, label.btn:hover { border-color: #46536a; background: var(--panel3); }
+  button.on { background: #1d3b5f; border-color: var(--accent); }
+  button.primary { background: linear-gradient(180deg, #4a97f0, #2f73c6); border-color: #5aa3f5; color: #fff; }
+  button.primary:hover { background: linear-gradient(180deg, #5aa3f5, #357bd0); }
+  button.ghost { background: transparent; border-color: transparent; }
+  button.ghost:hover { background: var(--panel3); }
+  button.danger:hover { background: #3a1d22; border-color: #ff5d6c; color: #ff8a95; }
+  #sub button.danger, #sub button.live { padding: 3px 10px; font-size: 12px; }
+  #sub button.live.on { border-color: #3ddc84; color: #3ddc84; }
+  #sub button.live.stale { border-color: #ffd166; color: #ffd166; }
+  button.icon { padding: 5px 7px; }
+  button:disabled { opacity: .3; cursor: default; }
+  #save.dirty::after, #cfgSave.dirty::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #ffd166; box-shadow: 0 0 0 2px rgba(255, 209, 102, .25); }
+  #regen.stale { box-shadow: 0 0 0 2px #ffd166; }
+  #regen.stale::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #ffd166; }
+  input:not([type]), input[type=number], input[type=text], input[type=search], input[type=password], select, textarea {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line2); border-radius: 7px; padding: 5px 8px; font: inherit; }
+  input[type=number] { width: 64px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(90, 169, 255, .15); }
+  input::placeholder, textarea::placeholder { color: var(--dim); }
+  input[type=range] { width: 130px; accent-color: var(--accent); }
+  input[type=checkbox] { accent-color: var(--accent); }
+  option { background: var(--panel2); color: var(--text); }
+  .muted { color: var(--muted); }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
+  #levels { display: flex; gap: 2px; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 2px; }
+  #levels button { padding: 2px 8px; font-size: 12px; background: transparent; border-color: transparent; }
+  #levels button.on { background: #1d3b5f; border-color: #2f6299; }
+  #sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 6px 14px; min-height: 36px;
+    background: rgba(13, 17, 23, .9); border-bottom: 1px solid var(--line); backdrop-filter: blur(8px); }
+  #sub .tname { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: #fff; white-space: nowrap; }
+  #sub .tname svg { color: var(--accent); }
+  #sub .thint { color: var(--muted); font-size: 12px; flex: 1 1 320px; }
+  #sub .opt { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #sub .opt b { color: var(--text); font-weight: 600; min-width: 22px; }
+  #sub .view { display: flex; align-items: center; gap: 8px; margin-left: auto; padding-left: 12px; border-left: 1px solid var(--line); }
+  #sub .view input[type=number] { padding: 3px 7px; }
+
+  /* ===== map overlays ===== */
+  #info { position: absolute; left: 12px; bottom: 12px; z-index: 2; max-width: min(900px, calc(100% - 24px)); pointer-events: none;
+    color: var(--muted); font-size: 12px; background: rgba(10, 13, 18, .86); border: 1px solid var(--line); padding: 7px 12px;
+    border-radius: 9px; backdrop-filter: blur(6px); }
+  #info b { color: var(--text); font-weight: 600; }
+  #info .warn { color: var(--warn); }
+  #toast { position: absolute; top: 96px; left: 50%; transform: translateX(-50%); z-index: 7; display: none; max-width: min(640px, calc(100% - 32px));
+    background: #1d3b5f; border: 1px solid #2f6299; color: #fff; padding: 8px 14px; border-radius: 9px; box-shadow: var(--shadow); }
+  #rooms { position: absolute; right: 12px; top: 96px; width: 412px; max-height: calc(100% - 150px); overflow-y: auto; z-index: 2; display: none;
+    background: rgba(17, 21, 28, .95); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; box-shadow: var(--shadow); backdrop-filter: blur(8px); }
+  #rooms h3 { margin: 4px 0 2px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); font-weight: 650; }
+  #rooms .muted { font-size: 11px; margin-bottom: 4px; }
+  #rooms .r { display: flex; gap: 4px; align-items: center; margin: 3px 0; padding: 4px; border-radius: 8px; border: 1px solid transparent; }
+  #rooms .r:hover { background: rgba(255, 255, 255, .02); }
+  #rooms .r.sel { background: #172c45; border-color: #2a4f7a; }
+  #rooms input, #rooms select { padding: 3px 6px; border-radius: 6px; }
+  #rooms input.n { width: 48px; } #rooms input.m, #rooms input.p { width: 46px; }
+  #rooms input.c { width: 74px; } #rooms input.rm { width: 50px; text-transform: uppercase; }
+  #rooms button { padding: 3px 5px; background: transparent; border-color: transparent; color: var(--muted); }
+  #rooms button:hover { background: var(--panel3); color: var(--text); }
+  #rooms button.x:hover { color: var(--bad); }
+  #rooms button svg { width: 14px; height: 14px; }
+  #rooms .idx { width: 18px; color: var(--dim); font-size: 11px; text-align: right; }
+
+  /* ===== modals ===== */
+  .modal { position: absolute; inset: 0; background: rgba(0, 0, 0, .6); z-index: 8; display: none; place-items: center; padding: 16px; backdrop-filter: blur(3px); }
+  .modal > div { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; width: min(780px, 100%);
+    max-height: calc(100% - 32px); overflow-y: auto; box-shadow: var(--shadow); }
+  .modal header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+  .modal header b { font-size: 16px; font-weight: 650; }
+  .modal header .muted { font-size: 12px; }
+  .modal header button { margin-left: auto; }
+  #scriptText { width: 100%; height: 320px; background: #070a0e; color: #cfe3ff; border: 1px solid var(--line); border-radius: 9px;
+    font: 12px/1.6 Consolas, monospace; padding: 12px; resize: vertical; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+  .hgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .hgrid section { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .hgrid h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
+  .hgrid ul { margin: 0; padding-left: 16px; color: #c4ccd8; } .hgrid li { margin: 4px 0; } .hgrid li b { color: #fff; font-weight: 600; }
+  kbd { font: 11px Consolas, monospace; background: var(--panel3); border: 1px solid var(--line2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--text); }
+
+  /* ===== settings view ===== */
+  #cfg { position: absolute; left: 0; right: 0; bottom: 0; top: 48px; background: var(--bg); z-index: 6; display: none; grid-template-columns: 236px 1fr; }
+  #cfg aside { border-right: 1px solid var(--line); background: var(--panel); overflow-y: auto; padding: 18px 10px; }
+  #cfg aside .ttl { padding: 0 10px 14px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
+  #cfg aside .ttl b { display: block; font-size: 15px; font-weight: 650; }
+  #cfg aside .ttl span { font: 11.5px Consolas, monospace; }
+  #cfg aside a { --c: var(--accent); display: flex; align-items: center; gap: 10px; padding: 7px 10px; margin: 1px 0; border-radius: 8px; color: #c4ccd8; cursor: pointer; user-select: none; }
+  #cfg aside a:hover { background: var(--panel2); }
+  #cfg aside a.on { background: var(--panel3); color: #fff; }
+  #cfg aside a.off { opacity: .35; }
+  #cfg aside a .ic { width: 24px; height: 24px; border-radius: 7px; display: grid; place-items: center; flex: none; color: var(--c);
+    background: color-mix(in srgb, var(--c) 15%, transparent); }
+  #cfg aside a .ic svg { width: 14px; height: 14px; }
+  #cfg aside a .n { margin-left: auto; font-size: 11px; min-width: 20px; padding: 0 6px; border-radius: 999px; text-align: center;
+    background: rgba(90, 169, 255, .15); color: var(--accent); }
+  #cfg main { overflow-y: auto; padding: 0 28px 80px; }
+  #cfg .head { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 16px 0 14px;
+    background: linear-gradient(180deg, var(--bg) 82%, rgba(10, 13, 18, 0)); max-width: 1000px; margin: 0 auto; }
+  #cfg .head h1 { font-size: 20px; margin: 0 4px 0 2px; font-weight: 650; letter-spacing: -.01em; }
+  #cfg .head .fn { font: 12px Consolas, monospace; color: var(--muted); background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+  .search { position: relative; flex: 1 1 200px; max-width: 300px; margin-left: auto; }
+  .search svg { position: absolute; left: 9px; top: 50%; transform: translateY(-50%); color: var(--dim); pointer-events: none; }
+  .search input { width: 100%; padding-left: 31px; }
+  #cfg .chips, #cfg .cards { max-width: 1000px; margin: 0 auto; }
+  #cfg .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 18px; }
+  .chip { display: inline-flex; align-items: center; gap: 7px; background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 11px 3px 9px; font-size: 12px; color: #c4ccd8; }
+  .chip::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--dim); }
+  .chip.ok::before { background: var(--ok); box-shadow: 0 0 6px rgba(77, 212, 172, .6); }
+  .chip.warn { border-color: #5e4a22; color: #ffd48a; background: rgba(255, 191, 90, .07); }
+  .chip.warn::before { background: var(--warn); box-shadow: 0 0 6px rgba(255, 191, 90, .6); }
+  .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .card { --c: var(--accent); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 16px; overflow: hidden; scroll-margin-top: 76px; }
+  .card > header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--c) 10%, transparent), transparent 65%); }
+  .card > header .ic { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; flex: none; color: var(--c);
+    background: color-mix(in srgb, var(--c) 15%, transparent); border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); }
+  .card > header .ic svg { width: 18px; height: 18px; }
+  .card h2 { margin: 0; font-size: 15px; font-weight: 620; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 1px; }
+  .card .cnt { margin-left: auto; font-size: 11px; color: var(--accent); background: rgba(90, 169, 255, .12); border-radius: 999px; padding: 2px 9px; white-space: nowrap; }
+  .card .cnt.none { color: var(--dim); background: transparent; }
+  .card .body { padding: 2px 18px 8px; }
+  .fld { display: grid; grid-template-columns: 220px 1fr 28px; gap: 4px 16px; align-items: center; padding: 10px 0 10px 12px; margin-left: -12px;
+    border-top: 1px solid #1a2029; position: relative; }
+  .body > .fld:first-child { border-top: 0; }
+  .fld::before { content: ''; position: absolute; left: 0; top: 11px; bottom: 11px; width: 3px; border-radius: 3px; background: transparent; transition: background .15s; }
+  .fld.set::before { background: var(--accent); box-shadow: 0 0 8px rgba(90, 169, 255, .5); }
+  .fld > label { color: #c4ccd8; }
+  .fld.set > label { color: #fff; font-weight: 550; }
+  .fld .h { grid-column: 2; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .fld .rst { grid-column: 3; grid-row: 1; visibility: hidden; padding: 4px; background: transparent; border-color: transparent; color: var(--dim); }
+  .fld.set .rst { visibility: visible; }
+  .fld .rst:hover { color: var(--text); background: var(--panel3); }
+  .fld.wide { grid-template-columns: 1fr 28px; }
+  .fld.wide .h { grid-column: 1; }
+  .fld.wide .rst { grid-column: 2; }
+  .fld input[type=text], .fld input[type=password], .fld input[type=number], .fld select, .fld textarea, .rw input, .rw select { width: 100%; }
+  .fld > input, .fld > select { max-width: 460px; } .fld > input[type=number] { max-width: 200px; } .fld > textarea { max-width: 560px; }
+  .fld.wide > .rows { max-width: 620px; } .fld > .rows { max-width: 460px; }
+  .fld select, .rw select { appearance: none; padding-right: 28px; background-repeat: no-repeat; background-position: right 9px center;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238893a4' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); }
+  .fld textarea { resize: vertical; min-height: 58px; font: 12px/1.5 Consolas, monospace; }
+  .tg { position: relative; width: 40px; height: 22px; display: inline-block; }
+  .tg input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .tg span { position: absolute; inset: 0; background: #2b3341; border: 1px solid var(--line2); border-radius: 22px; cursor: pointer; transition: .15s; }
+  .tg span::before { content: ''; position: absolute; width: 16px; height: 16px; left: 2px; top: 2px; background: #c9d1dc; border-radius: 50%; transition: .15s; box-shadow: 0 1px 3px rgba(0, 0, 0, .4); }
+  .tg input:checked + span { background: var(--accent2); border-color: var(--accent); }
+  .tg input:checked + span::before { transform: translateX(18px); background: #fff; }
+  .tg input:focus-visible + span { box-shadow: 0 0 0 3px rgba(90, 169, 255, .25); }
+  .rows { display: flex; flex-direction: column; gap: 6px; }
+  .rw { display: grid; gap: 6px; align-items: center; }
+  /* a skill icon (16x16 of the game, skills.json "icon") in front of a skill */
+  img.ski { width: 20px; height: 20px; flex: none; image-rendering: pixelated; border-radius: 4px; box-shadow: 0 0 0 1px var(--line2); }
+  img.ski.none { visibility: hidden; }
+  .skp { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  .skp select, .skp input { flex: 1; min-width: 0; }
+  .rw .x { padding: 4px 6px; background: transparent; border-color: transparent; color: var(--dim); }
+  .rw .x:hover { color: var(--bad); background: var(--panel3); }
+  .addrow { justify-self: start; font-size: 12px; color: var(--accent); background: transparent; border-style: dashed; }
+  .rw.hd { font-size: 11px; color: var(--dim); }
+  .fld .wt { color: #c4ccd8; }
+  .choice { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 8px; max-width: 820px; margin-top: 6px; }
+  .choice .opt { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 9px 12px; border-radius: 10px;
+    white-space: normal; background: var(--panel2); border-color: var(--line); }
+  .choice .opt b { font-size: 13px; font-weight: 600; color: #dfe5ee; }
+  .choice .opt span { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+  .choice .opt.on { border-color: var(--c); background: color-mix(in srgb, var(--c) 16%, var(--panel2)); box-shadow: 0 0 0 1px color-mix(in srgb, var(--c) 45%, transparent); }
+  .choice .opt.on b { color: #fff; }
+  .fld.sum .what { font-size: 13.5px; line-height: 1.6; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-left: 3px solid var(--c);
+    border-radius: 10px; padding: 10px 14px; max-width: 820px; }
+  .fld.sum .pills { margin-top: 8px; }
+  .fld .acts { display: flex; gap: 8px; align-items: center; }
+  .fld.wide > .wt, .fld.wide > .rows, .fld.wide > .acts { grid-column: 1; }
+  .fld[data-k="mage"] > .rows, .fld[data-k="_skills"] > .rows { max-width: 880px; }
+  .rw .ord { color: var(--muted); font-size: 12px; font-weight: 600; text-align: center; }
+  .rw .rb { display: flex; gap: 2px; }
+  .rw .mv { padding: 4px 5px; background: transparent; border-color: transparent; color: var(--dim); }
+  .rw .mv:hover:not(:disabled) { color: var(--text); background: var(--panel3); }
+  .rw .mv:disabled { opacity: .25; cursor: default; }
+  .fld .acts .muted { font-size: 12px; }
+  details.adv { border-top: 1px solid #1a2029; }
+  details.adv summary { cursor: pointer; color: var(--muted); padding: 11px 0; font-size: 12px; list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; }
+  details.adv summary::-webkit-details-marker { display: none; }
+  details.adv summary::before { content: ''; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s; margin: 0 4px 0 2px; }
+  details[open].adv summary::before { transform: rotate(45deg); }
+  details.adv summary:hover { color: var(--text); }
+  .nores { display: none; text-align: center; color: var(--muted); padding: 60px 0; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: #262e3b; border-radius: 10px; border: 2px solid transparent; background-clip: padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background-color: #323c4d; } ::-webkit-scrollbar-track { background: transparent; }
+  @media (max-width: 900px) { #cfg { grid-template-columns: 1fr !important; } #cfg aside { display: none; } #cfg main { padding: 0 16px 60px; } }
+  @media (max-width: 600px) { .fld { grid-template-columns: 1fr 28px; } .fld > label { grid-column: 1; } .fld .rst { grid-column: 2; }
+    .fld > label + * { grid-column: 1; } .fld .h { grid-column: 1; } #rooms { width: calc(100% - 24px); } }
+  /* ===== PvePanel ===== */
+  #cfgBtn { display: none !important; }
+  #openBox > div { width: min(760px, calc(100vw - 40px)); max-height: calc(100vh - 60px); display: flex; flex-direction: column; }
+  #openList { overflow: auto; padding: 4px 2px; display: grid; gap: 12px; }
+  #openList h5 { margin: 4px 0 6px; font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .08em; }
+  #openList .mrow { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel2); margin-bottom: 4px; }
+  #openList .mrow:hover { border-color: var(--line2); }
+  #openList .mrow b { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+  #openList .mrow span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #openList .none { color: var(--dim); font-size: 12px; padding: 4px 8px; }
+  #openList input[type=search] { width: 100%; }
+  #trailR { width: 58px; }
+  #sub button.live.paint { border-color: #3ddc84; color: #3ddc84; }
+</style>
+</head>
+<body>
+<div id="top">
+<header id="bar">
+  <div class="brand"><span class="logo" data-ic="map"></span><b>NavMesh</b><span id="fileName" class="file">no map</span></div>
+  <div class="grp">
+    <button id="open" data-ic="open" title="Open .navgrid / .zmap / .navtrace / .txt (or drop files anywhere on the page)">Open</button><input id="file" type="file" accept=".zmap,.navtrace,.navgrid,.txt,.json" multiple hidden>
+    <button id="save" class="primary" data-ic="save" title="Save the .navgrid (Ctrl+S)">Save</button>
+    <button id="cfgBtn" data-ic="sliders" title="Farm script settings">Settings</button>
+  </div>
+  <span class="vsep"></span>
+  <div class="grp seg" title="Paint colour">
+    <button data-color="good" title="Walkable: the bot runs here (and only here on a map with Sight cells)"><span class="sw" style="background:#3ddc84"></span>Walk</button>
+    <button data-color="see" title="Sight: mobs stand here and are shot / targeted, the bot never runs here. A map with Sight cells is strict: runs on green only, red is never crossed"><span class="sw" style="background:#4fb3ff"></span>Sight</button>
+    <button data-color="bad" title="Wall: nothing passes - no run, no shot"><span class="sw" style="background:#ff5d6c"></span>Wall</button>
+  </div>
+  <div class="grp seg">
+    <button data-tool="brush" data-ic="brush">Brush</button>
+    <button data-tool="fill" data-ic="fill">Fill</button>
+    <button data-tool="route" data-ic="route" title="Route A→B: how the bot will run">Route</button>
+  </div>
+  <div class="grp seg">
+    <button data-tool="room" data-ic="room">Room</button>
+    <button data-tool="spot" data-ic="star">Spot</button>
+    <button data-tool="safe" data-ic="shield">Safe</button>
+    <button data-tool="node" data-ic="node" title="Own graph node: the bot runs through it too">Node</button>
+    <button data-tool="rail" data-ic="rail" title="Rail: the bot runs it point by point, never cutting it; from the teleport landing point - the way to the spot">Rail</button>
+    <button data-tool="erase" data-ic="erase" title="Remove a node, rail, farm spot, the safe point or a room corner">Erase</button>
+  </div>
+  <div class="grp">
+    <button id="regen" class="primary" data-ic="regen" title="Paint the whole map first (the brush only colours the cells), then Rebuild: the empty margin is cut off, the bot's graph (nodes and links) is built from the painted cells. A yellow ring: painted since the last Rebuild">Rebuild</button>
+    <button id="undo" class="icon" data-ic="undo" title="Undo (Ctrl+Z)"></button>
+    <button id="helpBtn" class="icon ghost" data-ic="help" title="Help"></button>
+  </div>
+</header>
+<div id="sub">
+  <span class="tname" id="toolName"></span>
+  <span class="thint" id="toolHint"></span>
+  <span class="opt" id="optBrush">Size <input id="brush" type="range" min="1" max="100" value="1"><b id="brushV">1</b></span>
+  <label class="opt" id="optFill"><input id="byTrace" type="checkbox" checked> Stop at run lines</label>
+  <div class="view">
+    <div class="grp"><button id="clearAll" class="danger" data-ic="trash" title="Clear the map: the navmesh and everything drawn (rooms, farm spots, the safe point, nodes, rails, the run lines, the zone). The settings stay. Then open a new .navtrace and build the map on it. Ctrl+Z brings it all back">Clear map</button></div>
+    <div class="grp"><button id="trailBtn" class="live" data-ic="brush" title="Paint my run: while it is on, the cells round where the character runs (its live position) become walkable (only unknown cells; walls and sight cells stay). Run round the spot by hand with the farm paused - the map draws itself. Then fix it with the brush, Rebuild, Save">Paint my run</button><input id="trailR" type="number" value="80" min="20" step="20" title="How wide the painted run is: this far round the character (game units)"></div>
+    <div class="grp"><button id="liveBtn" class="live" data-ic="locate" title="Live: where the character is and runs right now. The script writes Library\Nav\<nick>.navlive (SetLiveMap(true) or Settings → Live view); the first time pick the Library\Nav folder. Click again — off; Shift+click — another folder"><span id="liveTxt">Live</span></button><label class="opt" title="keep the character on the screen"><input id="liveFollow" type="checkbox" checked> Follow</label></div>
+    <div class="grp" title="Navmesh cell size: a new size moves the painting onto the new cells"><span class="lbl">Cell</span><input id="cell" type="number" value="4" min="2" step="2"></div>
+    <div class="grp" title="Map tile layer"><span class="lbl">Level</span><span id="levels"></span></div>
+    <div class="grp" title="Shift of the map tiles"><span class="lbl">Offset</span><input id="cdx" type="number" value="0" step="16"><input id="cdy" type="number" value="0" step="16"></div>
+  </div>
+</div>
+</div>
+<canvas id="cv"></canvas>
+<div id="info">Open a <b>.zmap</b> zone, a <b>.navgrid</b> map, a <b>.navtrace</b> run or a <b>.txt</b> script — or drop the files here. Everything is saved into the .navgrid. <b>?</b> in the top right — help.</div>
+<div id="rooms"></div>
+<div id="cfg"></div>
+<div id="scriptBox" class="modal"><div>
+  <header><b>Bot script</b><span class="muted">put it into Library\Scripts as .txt — it takes every setting from the .navgrid</span></header>
+  <textarea id="scriptText" readonly spellcheck="false"></textarea>
+  <div class="row"><button id="scriptCopy" class="primary" data-ic="copy">Copy</button><button id="scriptClose">Close</button></div>
+</div></div>
+<div id="openBox" class="modal"><div>
+  <header><b>Open a map</b><button id="openClose" class="icon ghost" data-ic="close" title="Close (Esc)"></button></header>
+  <div id="openList"></div>
+</div></div>
+<div id="help" class="modal"><div>
+  <header><b>How to use</b><button id="helpClose" class="icon ghost" data-ic="close" title="Close (Esc)"></button></header>
+  <div class="hgrid">
+    <section><h4>Files</h4><ul>
+      <li><b>.zmap</b> zone (Library\Zones) — becomes the starting navmesh</li>
+      <li><b>.navtrace</b> run — a cyan guide line (and its farm spots)</li>
+      <li><b>.navgrid</b> — the map with every setting, the rooms, farm spots and the safe point</li>
+      <li><b>.txt</b> script — its corners and safe point; an old script can also hand its settings to Settings</li>
+      <li><b>Open</b> or drop the files anywhere on the page; <b>Save</b> writes the .navgrid</li></ul></section>
+    <section><h4>Painting</h4><ul>
+      <li>Pick <b>Walk</b>, <b>Sight</b> or <b>Wall</b> and paint with the <b>Brush</b> or <b>Fill</b> (a click inside a shape, like in Paint; the run lines help as walls)</li>
+      <li><b>Walk</b> (green) — the bot runs here. <b>Sight</b> (blue) — mobs stand here and are shot, the bot never runs here. <b>Wall</b> (red) — nothing passes. A map with Sight cells is strict: runs on green only, a click / a run line never crosses red; standing in red the bot first steps out onto green</li>
+      <li>Then press <b>Rebuild</b> and check it with <b>Route</b> A→B — the orange line is exactly how the bot runs</li>
+      <li><b>Cell</b> — the navmesh cell size; a new size moves the painting onto the new cells</li>
+      <li><b>Clear map</b> (under the toolbar, right) — wipes the navmesh and everything drawn (rooms, spots, safe point, nodes, rails, run lines, zone); the settings stay. Then open a new <b>.navtrace</b>, paint on it and <b>Save</b> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> brings it back)</li></ul></section>
+    <section><h4>Map objects</h4><ul>
+      <li><b>Room</b> — click the corners, <kbd>Enter</kbd> or the first corner closes it, drag a corner to move it; room settings — the panel on the right</li>
+      <li><b>Spot</b> — a farm spot: click to place, drag the star to move</li>
+      <li><b>Safe</b> — the safe point: click to place, drag to move</li>
+      <li><b>Node</b> — an own graph node the bot runs through too</li>
+      <li><b>Rail</b> — points in order, <kbd>Enter</kbd> to finish: the bot runs it point by point without cutting (for places where it catches pillars / corners). Started next to the teleport landing point (within 800) — it is the way to the spot after the teleport, the place needs no green</li>
+      <li><b>Erase</b> — click a node, rail, farm spot, the safe point or a room corner</li></ul></section>
+    <section><h4>View &amp; keys</h4><ul>
+      <li>Wheel — zoom · right mouse or <kbd>Space</kbd> + drag — pan</li>
+      <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> — undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> — save the .navgrid</li>
+      <li><kbd>Enter</kbd> / <kbd>Esc</kbd> / <kbd>Backspace</kbd> — finish / cancel / remove the last point of a room or rail</li>
+      <li><b>Level</b> — the map tile layer · <b>Offset</b> — shift of the map tiles</li>
+      <li><b>Live</b> — the character right now (the script with <code>SetLiveMap(true)</code>): blue dot and its trail, yellow line — where it clicked, orange dashes — its route to the goal, green cross — the spot it shoots a mob off green from; mobs: red — on it, yellow — free, hollow — a wall of the map between (no shot); white ring — its target; violet — players</li></ul></section>
+  </div>
+</div></div>
+<div id="toast"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+// line icons (24x24, stroke): icon(name) -> svg markup; [data-ic] buttons get theirs at start
+const IC = {
+  map: '<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',
+  open: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  save: '<path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M8 3v5h7V3M7 21v-7h10v7"/>',
+  sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
+  brush: '<path d="M18 3l3 3-9.5 9.5-3-3z"/><path d="M8.5 12.5C6 12.5 5 14 5 16c0 1.5-1 2.5-2 3 3 1 7 .5 7.5-3.5"/>',
+  fill: '<path d="M19 11 11 3l-8.5 8.5a2 2 0 0 0 0 2.8l5.2 5.2a2 2 0 0 0 2.8 0z"/><path d="M5 2l5 5M2 13h15"/><path d="M22 20a2 2 0 1 1-4 0c0-1.6 2-4 2-4s2 2.4 2 4z"/>',
+  route: '<circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8.5 19h8a3.5 3.5 0 0 0 0-7h-9a3.5 3.5 0 0 1 0-7h8"/>',
+  room: '<path d="M12 3l9 6.5-3.5 10.5h-11L3 9.5z"/>',
+  star: '<path d="M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+  shield: '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+  node: '<path d="M12 3l9 9-9 9-9-9z"/>',
+  rail: '<path d="M3 19l6-6 5 3 7-9"/><rect x="7.5" y="11.5" width="3" height="3"/><rect x="12.5" y="14.5" width="3" height="3"/>',
+  erase: '<path d="M7 21h13"/><path d="M5.5 15.5l9-9a2 2 0 0 1 2.8 0l2.2 2.2a2 2 0 0 1 0 2.8L12 19H9z"/>',
+  regen: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 3.4 2.3c-.6.3-1 .9-1 1.6v.4M12 17h.01"/>',
+  code: '<path d="M8 8l-4 4 4 4M16 8l4 4-4 4M13.5 5l-3 14"/>',
+  import: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M12 11v6M9 14l3 3 3-3"/>',
+  back: '<path d="M15 18l-6-6 6-6"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>',
+  reset: '<path d="M3 12a9 9 0 1 0 2.6-6.4L3 8"/><path d="M3 3v5h5"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/>',
+  copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/>',
+  locate: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/>',
+  up: '<path d="M6 15l6-6 6 6"/>',
+  down: '<path d="M6 9l6 6 6-6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/>',
+  sword: '<path d="M14.5 17.5 3 6V3h3l11.5 11.5M13 19l6-6M16 16l4 4M19 21l2-2"/>',
+  pin: '<path d="M12 22s7-6.4 7-12a7 7 0 0 0-14 0c0 5.6 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>',
+  target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>',
+  spark: '<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/>',
+  magnet: '<path d="M5 4h4v7a3 3 0 0 0 6 0V4h4v7a7 7 0 0 1-14 0z"/><path d="M5 8h4M15 8h4"/>',
+  flask: '<path d="M9 3h6M10 3v6l-5.6 10A1.4 1.4 0 0 0 5.6 21h12.8a1.4 1.4 0 0 0 1.2-2L14 9V3"/><path d="M7.3 15h9.4"/>',
+  bell: '<path d="M6 16v-5a6 6 0 0 1 12 0v5l2 2H4z"/><path d="M10 21a2 2 0 0 0 4 0"/>',
+  compass: '<circle cx="12" cy="12" r="9"/><path d="M15.5 8.5l-2 5-5 2 2-5z"/>',
+  book: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h7M9 11h5"/>',
+  bow: '<path d="M5 3c9 1 15 7 16 16"/><path d="M5 3l16 16"/><path d="M4 20 18 6M18 6h-5M18 6v5"/>' };
+const icon = n => '<svg class="i" viewBox="0 0 24 24">' + (IC[n] || '') + '</svg>';
+// the tools: name and the hint in the bar under the toolbar
+const TOOLS = {
+  brush: ['brush', 'Brush', 'Paint the chosen colour — Walk (runs), Sight (mobs are shot there, no runs) or Wall. Wheel — zoom, right mouse or Space + drag — pan.'],
+  fill: ['fill', 'Fill', 'Click inside a closed shape to flood it with the chosen colour, like in Paint. With "Stop at run lines" the run lines work as walls.'],
+  route: ['route', 'Route A→B', 'Click A, then B: the orange line is exactly how the bot will run it.'],
+  room: ['room', 'Room', 'Click the corners; Enter or a click on the first corner closes it, Esc cancels, Backspace removes the last corner. Drag a corner to move it. Room settings — the panel on the right.'],
+  spot: ['star', 'Farm spot', 'Click to place, drag the star to move. Coordinates and rooms — the panel on the right.'],
+  safe: ['shield', 'Safe point', 'Click to place, drag to move.'],
+  node: ['node', 'Node', 'An own graph node: the bot runs through it too. Click to place, drag to move.'],
+  rail: ['rail', 'Rail', 'Click the points in order; Enter or a click on the last point finishes, Esc cancels, Backspace removes the last point, drag a point to move it. The bot runs a rail point by point, never cutting it; routes prefer rails. Long stretches are split into steps up to 500. A rail with an end within 800 of the teleport landing point is the way to the spot after the teleport: run to its other end, no green needed there.'],
+  erase: ['erase', 'Erase', 'Click a node (own or yellow), a rail, a farm spot, the safe point or a room corner to remove it. A removed yellow node shows as a red cross — click it to bring it back.'] };
+// the overlays sit under the top bars (their height changes with the window width / the tool hint)
+function layoutTop() { const h = $('top').offsetHeight;
+  $('rooms').style.top = h + 12 + 'px'; $('rooms').style.maxHeight = 'calc(100% - ' + (h + 70) + 'px)'; $('toast').style.top = h + 12 + 'px';
+  if (cfgOpen()) $('cfg').style.top = $('bar').offsetHeight + 'px'; }
+const cv = $('cv'), ctx = cv.getContext('2d'), TILE = 32768;
+let zone = null, strokes = [], seeds = [], grid = null, graph = null, gridImg = null;
+let fname = 'map';
+let scale = 0.004, ox = 0, oy = 0, dpr = 1, level = '', tool = 'brush', color = 'good', route = { a: null, b: null, path: null };
+let history = [], mouse = null, leak = null;
+let unodes = [];                                   // own graph nodes ("N x y")
+let rails = [];                                    // rails ("W x1 y1 x2 y2 ..."): the bot runs them point by point
+let railDraw = null;                               // a rail being drawn
+let ptDrag = null;                                 // a farm spot / the safe point / an own node being dragged
+let bans = [];                                     // graph nodes removed ("X x y"): none is built there
+let rooms = [], spots = [], safe = null, roomDraw = null, roomDrag = null, selRoom = -1;   // map extras
+const ROOM_COL = ['#ffd166', '#5ee6ff', '#ff9f1c', '#c792ea', '#3ddc84', '#ff5d6c', '#4fb3ff', '#f78fb3'];
+const tiles = {};
+const W = () => cv.clientWidth, H = () => cv.clientHeight;
+const sx = x => x * scale + ox, sy = y => y * scale + oy, wx = p => (p - ox) / scale, wy = p => (p - oy) / scale;
+const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+function toast(m) { const t = $('toast'); t.textContent = m; t.style.display = 'block'; clearTimeout(t._t); t._t = setTimeout(() => t.style.display = 'none', 2800); }
+function inPoly(p, pts) { let c = false; for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) { const a = pts[i], b = pts[j];
+  if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) c = !c; } return c; }
+
+// ===== grid: 1 = walkable, 0 = not =====
+function newGrid(x0, y0, x1, y1, cell) {
+  return { x0: Math.floor(x0 / cell) * cell - cell * 4, y0: Math.floor(y0 / cell) * cell - cell * 4, cell,
+    w: Math.ceil((x1 - x0) / cell) + 9, h: Math.ceil((y1 - y0) / cell) + 9, z: 0, f: null };
+}
+function gridFromZone() {
+  const cell = +$('cell').value || 4, xs = zone.outer.map(p => p[0]), ys = zone.outer.map(p => p[1]);
+  const g = newGrid(Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys), cell);
+  g.f = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    const p = [g.x0 + cx * cell + cell / 2, g.y0 + cy * cell + cell / 2];
+    g.f[cy * g.w + cx] = inPoly(p, zone.outer) && !zone.inner.some(h => inPoly(p, h)) ? 1 : 0;
+  }
+  return g;
+}
+// painting outside the grid: the grid grows
+function ensure(x, y) {
+  const cell = +$('cell').value || 4;
+  if (!grid) { grid = newGrid(x - 500, y - 500, x + 500, y + 500, cell); grid.f = new Uint8Array(grid.w * grid.h); }
+  // closer than pad to the edge: the grid grows by "more" at once (growing by a little on every brush move copied
+  // the whole grid again and again - the lag); the empty margin is cut off again by Rebuild / Save (gridTrim)
+  const g = grid, pad = g.cell * 20, more = g.cell * 150;
+  let nx0 = g.x0, ny0 = g.y0, nx1 = g.x0 + g.w * g.cell, ny1 = g.y0 + g.h * g.cell;
+  if (x - pad < nx0) nx0 = Math.floor((x - more - g.x0) / g.cell) * g.cell + g.x0;
+  if (y - pad < ny0) ny0 = Math.floor((y - more - g.y0) / g.cell) * g.cell + g.y0;
+  if (x + pad > nx1) nx1 = x + more;
+  if (y + pad > ny1) ny1 = y + more;
+  if (nx0 === g.x0 && ny0 === g.y0 && nx1 <= g.x0 + g.w * g.cell && ny1 <= g.y0 + g.h * g.cell) return;
+  const w = Math.ceil((nx1 - nx0) / g.cell), h = Math.ceil((ny1 - ny0) / g.cell), f = new Uint8Array(w * h);
+  const dx = (g.x0 - nx0) / g.cell, dy = (g.y0 - ny0) / g.cell;
+  for (let cy = 0; cy < g.h; cy++) f.set(g.f.subarray(cy * g.w, cy * g.w + g.w), (cy + dy) * w + dx);
+  grid = { ...g, x0: nx0, y0: ny0, w, h, f }; gridImg = null;
+}
+// the empty (unknown) margin round the painted cells is cut off down to 20 cells: the file stays small and the bot
+// loads it fast. Nothing painted is lost. True when the grid changed
+function gridTrim() {
+  const g = grid; if (!g) return false;
+  let x0 = g.w, y0 = g.h, x1 = -1, y1 = -1;
+  for (let cy = 0; cy < g.h; cy++) { const o = cy * g.w; let a = -1, b = -1;
+    for (let cx = 0; cx < g.w; cx++) if (g.f[o + cx]) { if (a < 0) a = cx; b = cx; }
+    if (a >= 0) { if (a < x0) x0 = a; if (b > x1) x1 = b; if (cy < y0) y0 = cy; y1 = cy; } }
+  if (x1 < 0) return false;
+  const m = 20; x0 = Math.max(0, x0 - m); y0 = Math.max(0, y0 - m); x1 = Math.min(g.w - 1, x1 + m); y1 = Math.min(g.h - 1, y1 + m);
+  const w = x1 - x0 + 1, h = y1 - y0 + 1;
+  if (w === g.w && h === g.h) return false;
+  const f = new Uint8Array(w * h);
+  for (let cy = 0; cy < h; cy++) f.set(g.f.subarray((cy + y0) * g.w + x0, (cy + y0) * g.w + x0 + w), cy * w);
+  grid = { ...g, x0: g.x0 + x0 * g.cell, y0: g.y0 + y0 * g.cell, w, h, f }; gridImg = null;
+  if (graph) graph.safe = grid.f.map(v => v === 1 ? 1 : 0);   // the graph itself is in map units: only its cell copy follows
+  return true;
+}
+// the brush: only the colour of the cells changes, nothing is built (the graph waits for Rebuild); the cells between
+// two mouse moves are painted too (a fast stroke left gaps) and only that piece of the picture is redrawn
+let paintLast = null;
+function paint(p) {
+  const r = +$('brush').value, e = (r + 1) * (grid ? grid.cell : +$('cell').value || 4);   // the whole brush inside the grid
+  ensure(p[0] - e, p[1] - e); ensure(p[0] + e, p[1] + e);
+  const g = grid, v = colorVal(), a = paintLast || p;
+  const k = Math.max(1, Math.ceil(dist(a, p) / (g.cell * Math.max(1, r * 0.7))));
+  let bx0 = g.w, by0 = g.h, bx1 = -1, by1 = -1;
+  for (let j = paintLast ? 1 : k; j <= k; j++) {
+    const cx = Math.floor((a[0] + (p[0] - a[0]) * j / k - g.x0) / g.cell), cy = Math.floor((a[1] + (p[1] - a[1]) * j / k - g.y0) / g.cell);
+    for (let dy = -r; dy <= r; dy++) { const ay = cy + dy; if (ay < 0 || ay >= g.h) continue;
+      const s = Math.floor(Math.sqrt(r * r - dy * dy)), xa = Math.max(0, cx - s), xb = Math.min(g.w - 1, cx + s);
+      if (xb >= xa) g.f.fill(v, ay * g.w + xa, ay * g.w + xb + 1); }
+    if (cx - r < bx0) bx0 = cx - r; if (cy - r < by0) by0 = cy - r; if (cx + r > bx1) bx1 = cx + r; if (cy + r > by1) by1 = cy + r;
+  }
+  paintLast = p; gridPatch(bx0, by0, bx1, by1); graph = null; route.path = null;
+}
+// paint bucket. Cells: 0 = nothing / not scanned, 1 = walkable, 2 = wall. "Walkable" from an empty
+// cell spreads over empty and walkable cells and stops at walls and (if on) the run lines - a room
+// with scanned rows in it is filled whole; "wall" from an empty cell fills only empty cells (inside a
+// pillar). From a cell of the other colour: that colour's area is repainted. The cells under the
+// lines next to the fill get it too
+const colorVal = () => color === 'good' ? 1 : color === 'see' ? 3 : 2;   // the cell value of the paint colour
+function fillAt(p) {
+  ensure(p[0], p[1]);
+  const g = grid, n = g.w * g.h, v = colorVal();
+  const start = Math.floor((p[1] - g.y0) / g.cell) * g.w + Math.floor((p[0] - g.x0) / g.cell);
+  const v0 = g.f[start];
+  if (v0 === v) { toast('Already ' + (v === 1 ? 'walkable' : v === 3 ? 'sight' : 'wall') + ' here'); return; }
+  const through = c => v0 === 0 && v === 1 ? g.f[c] !== 2 && g.f[c] !== 3 : g.f[c] === v0;   // walk over the unknown stops at walls and sight
+  // run lines as walls for the fill: the lines, stroke ends closer than 64 joined, then made 1 cell
+  // thicker all round - no slipping through between points or across a diagonal
+  const thin = new Uint8Array(n), line = new Uint8Array(n);
+  if ($('byTrace').checked) {
+    const mark = (a, b) => { const k = Math.trunc(dist(a, b) / (g.cell / 3)) + 1;
+      for (let j = 0; j <= k; j++) { const x = a[0] + (b[0] - a[0]) * j / k, y = a[1] + (b[1] - a[1]) * j / k;
+        const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+        if (cx >= 0 && cy >= 0 && cx < g.w && cy < g.h) thin[cy * g.w + cx] = 1; } };
+    strokes.forEach((s, si) => {
+      for (let i = 0; i + 1 < s.length; i++) mark(s[i], s[i + 1]);
+      for (const e of [0, s.length - 1]) { let best = null, bd = 64;
+        strokes.forEach((o, oi) => o.forEach((q, qi) => { if (oi === si && Math.abs(qi - e) < 15) return;
+          const d = dist(s[e], q); if (d < bd) { bd = d; best = q; } }));
+        if (best) mark(s[e], best); }
+    });
+    for (let c = 0; c < n; c++) if (thin[c]) { const x = c % g.w;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const ax = x + dx, e = c + dy * g.w + dx;
+        if (ax >= 0 && ax < g.w && e >= 0 && e < n) line[e] = 1; } }
+  }
+  if (line[start]) { toast('That is right on a run line — click inside the shape'); return; }
+  const seen = new Uint8Array(n), list = [], q = [start]; seen[start] = 1; let edge = false;
+  while (q.length) {
+    const c = q.pop(); list.push(c); const x = c % g.w, y = (c - x) / g.w;
+    if (x === 0 || y === 0 || x === g.w - 1 || y === g.h - 1) edge = true;
+    for (const nb of [x < g.w - 1 ? c + 1 : -1, x > 0 ? c - 1 : -1, c + g.w, c - g.w])
+      if (nb >= 0 && nb < n && !seen[nb] && through(nb) && !line[nb]) { seen[nb] = 1; q.push(nb); }
+  }
+  if (edge) {                          // out of the figure: nothing is filled, the leak is shown
+    leak = { cells: list, until: Date.now() + 3000 }; draw(); setTimeout(draw, 3100);
+    toast('The shape is not closed — the fill leaked out (orange). Close the gap with the brush and fill again');
+    return;
+  }
+  snapshot();
+  for (const c of list) g.f[c] = v;
+  for (let c = 0; c < n; c++) if (line[c] && through(c)) { const x = c % g.w;
+    if ((x < g.w - 1 && seen[c + 1]) || (x > 0 && seen[c - 1]) || (c + g.w < n && seen[c + g.w]) || (c - g.w >= 0 && seen[c - g.w])) g.f[c] = v; }
+  gridImg = null; graph = null; route.path = null; draw(); infoLine();
+}
+function snapshot() { if (!grid) return; history.push({ ...grid, f: grid.f.slice() }); if (history.length > 40) history.shift(); }
+function undo() { if (!history.length) return; const s = history.pop();
+  if (s.all) { ({ zone, strokes, seeds, grid, rooms, spots, safe, unodes, bans, rails } = s.all); graph = null; gridImg = null; route.path = null;
+    roomsUi(); fit(); if (grid) regen(); else draw(); dirty(); toast('The map is back'); return; }
+  grid = s; gridImg = null; graph = null; route.path = null; draw(); }
+// ===== live: the script writes Library\Nav\<nick>.navlive (SetLiveMap / K live) every 0.3 s - where the character
+// is, its state, the last run click, the goal of the run and its route nodes, its target, the mobs and players round it
+let liveDir = null, liveOn = false, livePollT = 0, liveErr = '';
+const lives = {};                                  // file name -> { d: the last snapshot, mod: its time, trail: [[x, y]] }
+async function liveSub(h, ...names) { try { for (const n of names) h = await h.getDirectoryHandle(n); return h; } catch (e) { return null; } }
+async function liveToggle(e) {
+  if (liveOn && !e.shiftKey) { liveOn = false; clearTimeout(livePollT); liveUi(); draw(); return; }
+  if (!window.showDirectoryPicker) { toast('Live needs Chrome / Edge (the page reads a folder)'); return; }
+  try {
+    let h = e.shiftKey ? null : (liveDir || await idb('readonly', st => st.get('liveDir')));
+    if (h) { let p = 'prompt'; try { p = await h.queryPermission({ mode: 'read' }); } catch (x) {}
+      if (p !== 'granted' && (await h.requestPermission({ mode: 'read' })) !== 'granted') h = null; }
+    if (!h) { toast('Pick the Library\\Nav folder (once)'); h = await picker(o => showDirectoryPicker(o), { mode: 'read' }); }
+    if (h.name.toLowerCase() !== 'nav') h = (await liveSub(h, 'Nav')) || (await liveSub(h, 'Library', 'Nav')) || h;
+    liveDir = h; idb('readwrite', st => st.put(h, 'liveDir'));
+    liveOn = true; liveUi(); clearTimeout(livePollT); livePoll();
+  } catch (x) { if (x.name !== 'AbortError') toast('Live: ' + x.message); }
+}
+// one snapshot; null = half written (no END yet)
+function liveParse(t) {
+  const L = t.split(/\r?\n/).filter(Boolean); if (L[L.length - 1] !== 'END') return null;
+  const d = { mobs: [], players: [], route: [] };
+  for (const l of L) { const f = l.split(' ');
+    switch (f[0]) {
+      case 'N': d.name = l.slice(2); break;
+      case 'U': d.u = { x: +f[1], y: +f[2], z: +f[3], hp: +f[4], dead: f[5] === '1' }; break;
+      case 'S': d.state = l.slice(2); break;
+      case 'C': d.click = { x: +f[1], y: +f[2], age: +f[3] }; break;
+      case 'G': d.goal = { x: +f[1], y: +f[2], age: +f[3] }; break;
+      case 'R': for (let i = 1; i + 1 < f.length; i += 2) d.route.push([+f[i], +f[i + 1]]); break;
+      case 'A': d.tgt = +f[1]; break;
+      case 'P': d.patrol = { x: +f[1], y: +f[2] }; break;
+      case 'H': d.shoot = { x: +f[1], y: +f[2] }; break;
+      case 'M': d.mobs.push({ oid: +f[1], x: +f[2], y: +f[3], on: f[4] === '1', see: f[5] === '1', name: f.slice(6).join(' ') }); break;
+      case 'Y': d.players.push({ oid: +f[1], x: +f[2], y: +f[3], name: f.slice(4).join(' ') }); break; } }
+  return d;
+}
+async function livePoll() {
+  if (!liveOn || !liveDir) return;
+  const now = Date.now(); liveErr = '';
+  try {
+    for await (const [name, h] of liveDir.entries()) {
+      if (h.kind !== 'file' || !/\.navlive$/i.test(name)) continue;
+      let f, t;
+      try { f = await h.getFile(); } catch (x) { continue; }                      // being written right now: the next time
+      if (now - f.lastModified > 120000) { delete lives[name]; continue; }      // that bot stopped long ago
+      const L = lives[name] || (lives[name] = { mod: 0, trail: [], d: null });
+      if (f.lastModified === L.mod) continue;
+      try { t = await f.text(); } catch (x) { continue; }                        // changed while read: the next time
+      const d = liveParse(t); if (!d) continue;                                  // caught half written: the next time
+      L.mod = f.lastModified; L.d = d;
+      if (d.u) { const t = L.trail, q = t[t.length - 1];
+        if (!q || Math.hypot(q[0] - d.u.x, q[1] - d.u.y) > 6) { t.push([d.u.x, d.u.y]); if (t.length > 600) t.shift(); } }
+    }
+  } catch (x) { liveErr = x.message; }
+  liveFollow(); liveUi(); draw();
+  livePollT = setTimeout(livePoll, 300);
+}
+function liveMain() { let best = null; for (const L of Object.values(lives)) if (L.d && (!best || L.mod > best.mod)) best = L; return best; }
+function liveFollow() {
+  if (!$('liveFollow').checked) return;
+  const L = liveMain(); if (!L || !L.d.u) return;
+  const X = sx(L.d.u.x), Y = sy(L.d.u.y), m = 0.25;
+  if (X < W() * m || X > W() * (1 - m) || Y < H() * m || Y > H() * (1 - m)) { ox += W() / 2 - X; oy += H() / 2 - Y; }
+}
+function liveUi() {
+  const b = $('liveBtn'), L = liveMain(), age = L ? (Date.now() - L.mod) / 1000 : Infinity;
+  b.classList.toggle('on', liveOn && age < 3); b.classList.toggle('stale', liveOn && age >= 3);
+  $('liveTxt').textContent = !liveOn ? 'Live' : liveErr ? 'Live: ' + liveErr : !L ? 'Live: no bot runs pve.txt' :
+    age < 3 ? 'Live · ' + (L.d.name || '') : 'Live · ' + Math.round(age) + ' s old';
+}
+function drawLive() {
+  if (!liveOn) return;
+  const now = Date.now();
+  const txt = (s, X, Y, c, b) => { ctx.font = (b ? 'bold ' : '') + '11px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.strokeText(s, X, Y); ctx.fillStyle = c; ctx.fillText(s, X, Y); };
+  for (const L of Object.values(lives)) { const d = L.d; if (!d || !d.u) continue;
+    const old = now - L.mod > 3000, U = [d.u.x, d.u.y];
+    ctx.save(); ctx.setLineDash([]);
+    // the run: whole only while "Paint my run" is on (PvePanel), else a short tail - the last 20 s
+    { const tr = trailOn ? L.trail : L.trail.filter(p => !p[2] || now - p[2] < 20000);   // (draws run after the whole script)
+      if (tr.length > 1) { ctx.strokeStyle = 'rgba(94,230,255,.55)'; ctx.lineWidth = 2; path(tr); ctx.stroke(); } }
+    // the run: route nodes to the goal (orange dashes), the click right now (yellow, with a cross)
+    if (d.goal && d.goal.age < 4000) { ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 2; ctx.setLineDash([7, 5]); path([U, ...d.route, [d.goal.x, d.goal.y]]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = '#ffb347'; for (const p of d.route) { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3.5, 0, 7); ctx.fill(); }
+      ctx.lineWidth = 2; ctx.strokeStyle = '#ffb347'; ctx.beginPath(); ctx.arc(sx(d.goal.x), sy(d.goal.y), 7, 0, 7); ctx.stroke(); }
+    if (d.click && d.click.age < 3000) { const X = sx(d.click.x), Y = sy(d.click.y); ctx.strokeStyle = '#ffe14d'; ctx.lineWidth = 2.5; path([U, [d.click.x, d.click.y]]); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(X - 6, Y - 6); ctx.lineTo(X + 6, Y + 6); ctx.moveTo(X + 6, Y - 6); ctx.lineTo(X - 6, Y + 6); ctx.stroke(); }
+    if (d.shoot) { const X = sx(d.shoot.x), Y = sy(d.shoot.y); ctx.strokeStyle = '#3ddc84'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X, Y, 8, 0, 7);
+      ctx.moveTo(X - 12, Y); ctx.lineTo(X + 12, Y); ctx.moveTo(X, Y - 12); ctx.lineTo(X, Y + 12); ctx.stroke(); txt('shoot from', X + 12, Y - 6, '#3ddc84'); }
+    if (d.patrol) { const X = sx(d.patrol.x), Y = sy(d.patrol.y); ctx.strokeStyle = '#c792ea'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(X, Y - 9); ctx.lineTo(X + 9, Y); ctx.lineTo(X, Y + 9); ctx.lineTo(X - 9, Y); ctx.closePath(); ctx.stroke(); txt('patrol', X + 11, Y + 4, '#c792ea'); }
+    // mobs: red - on us, yellow - free; hollow - a wall of the map between (no shot); white ring - our target
+    for (const m of d.mobs) { const X = sx(m.x), Y = sy(m.y), c = m.on ? '#ff5d6c' : '#ffd166';
+      if (m.oid === d.tgt) { ctx.strokeStyle = m.see ? '#ffffff' : '#9aa4b2'; ctx.lineWidth = 1.5; ctx.setLineDash(m.see ? [] : [4, 4]); path([U, [m.x, m.y]]); ctx.stroke(); ctx.setLineDash([]);
+        ctx.beginPath(); ctx.arc(X, Y, 10, 0, 7); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); txt(m.name + (m.see ? '' : ' (behind a wall)'), X + 12, Y - 8, '#ffffff'); }
+      ctx.beginPath(); ctx.arc(X, Y, 5, 0, 7); ctx.lineWidth = 2; ctx.strokeStyle = c; if (m.see) { ctx.fillStyle = c; ctx.fill(); } ctx.stroke(); }
+    for (const p of d.players) { const X = sx(p.x), Y = sy(p.y); ctx.fillStyle = '#c792ea'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(X, Y - 7); ctx.lineTo(X + 7, Y); ctx.lineTo(X, Y + 7); ctx.lineTo(X - 7, Y); ctx.closePath(); ctx.fill(); ctx.stroke(); txt(p.name, X + 9, Y + 4, '#c792ea'); }
+    // the character
+    const X = sx(U[0]), Y = sy(U[1]);
+    ctx.fillStyle = old ? '#7b8494' : d.u.dead ? '#ff5d6c' : '#5ee6ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(X, Y, 8, 0, 7); ctx.fill(); ctx.stroke();
+    txt((d.name || '') + ' · HP ' + d.u.hp + '%' + (d.u.dead ? ' · dead' : '') + (old ? ' · no update ' + Math.round((now - L.mod) / 1000) + ' s' : ''), X + 12, Y - 4, '#5ee6ff', true);
+    if (d.state) txt(d.state.length > 90 ? d.state.slice(0, 90) + '…' : d.state, X + 12, Y + 10, '#e6edf3');
+    ctx.restore(); }
+}
+
+// Clear: the navmesh and everything drawn go (the settings stay) - a new run (.navtrace) builds the map anew
+function clearAll() {
+  if (!grid && !zone && !strokes.length && !rooms.length && !spots.length && !safe && !unodes.length && !rails.length) { toast('The map is empty already'); return; }
+  if (!confirm('Clear the whole map?\n\nThe navmesh, rooms, farm spots, the safe point, own nodes, rails, the run lines and the zone go. The settings (tab Settings) stay.\nThen open a new .navtrace, paint the map on it and Save.\n\nCtrl+Z brings it all back.')) return;
+  history.push({ all: { zone, strokes, seeds, grid, rooms, spots, safe, unodes, bans, rails } });
+  if (history.length > 40) history.shift();
+  zone = null; strokes = []; seeds = []; grid = null; graph = null; gridImg = null; leak = null;
+  rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = [];
+  railDraw = null; roomDraw = null; roomDrag = null; ptDrag = null; selRoom = -1; route = { a: null, b: null, path: null };
+  roomsUi(); draw(); dirty();
+  $('info').innerHTML = 'The map is cleared (the settings stay). Open / drop a new <b>.navtrace</b>, paint <b>Walkable</b> on it (<b>Fill</b> stops at its lines), <b>Rebuild</b> and <b>Save</b>.';
+  if (cfgOpen()) cfgUi();
+  toast('Map cleared — open a new .navtrace');
+}
+
+// ===== graph: the bot's algorithm (Core\nav_move.pas) =====
+function regen() {
+  if (!grid) { toast('No navmesh: open a zone or paint Walkable'); return; }
+  // as the bot: corners and lines by the real map (a narrow passage never vanishes); a corner node is
+  // moved off the wall by up to 40 units where there is room
+  const g = grid, safe = g.f.map(v => v === 1 ? 1 : 0);
+  const R = Math.max(1, Math.floor((40 + Math.floor(g.cell / 2)) / g.cell));
+  const sc = (cx, cy) => cx >= 0 && cy >= 0 && cx < g.w && cy < g.h && safe[cy * g.w + cx];
+  // own nodes, then the rail points in order (as the bot); railOf[i] = [rail, point] of a rail node
+  const nodes = unodes.map(p => [p[0], p[1]]), railOf = nodes.map(() => null);
+  rails.forEach((r, ri) => r.forEach((p, pi) => { if (nodes.length < 600) { nodes.push([p[0], p[1]]); railOf.push([ri, pi]); } }));
+  const own = nodes.length;
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) { if (!safe[cy * g.w + cx]) continue;
+    for (let k = 0; k < 4; k++) { const dx = k % 2 === 0 ? 1 : -1, dy = k < 2 ? 1 : -1;
+      if (sc(cx + dx, cy + dy) || !sc(cx + dx, cy) || !sc(cx, cy + dy)) continue;
+      let px = cx, py = cy;
+      for (let j = 1; j <= R; j++) {
+        if (sc(cx - dx * j, cy - dy * j) && sc(cx - dx * j + dx, cy - dy * j) && sc(cx - dx * j, cy - dy * j + dy)) { px = cx - dx * j; py = cy - dy * j; }
+        else break; }
+      const X = g.x0 + px * g.cell + Math.floor(g.cell / 2), Y = g.y0 + py * g.cell + Math.floor(g.cell / 2);
+      if (!nodes.some(p => Math.abs(p[0] - X) <= 64 && Math.abs(p[1] - Y) <= 64) && !bans.some(p => Math.abs(p[0] - X) <= 40 && Math.abs(p[1] - Y) <= 40) && nodes.length < 600) { nodes.push([X, Y]); railOf.push(null); }
+      break; } }
+  graph = { safe, nodes, edges: [], own, railOf };
+  for (let i = 0; i < nodes.length; i++) for (let j = i + 1; j < nodes.length; j++)
+    if (dist(nodes[i], nodes[j]) <= 2500 && lineFree(nodes[i], nodes[j], true)) graph.edges.push([i, j]);
+  // a rail: its points one after another are always linked (drawn by hand: the map may not see it)
+  { const have = new Set(graph.edges.map(([a, b]) => a + ',' + b));
+    for (let i = 0; i + 1 < nodes.length; i++) if (railCons(i, i + 1) && !have.has(i + ',' + (i + 1))) graph.edges.push([i, i + 1]); }
+  // only to look at: a link that is almost the same as going through a third node is dropped (the
+  // bot keeps them all - its routes are the same)
+  const adj = nodes.map(() => new Map()), key = (a, b) => a < b ? a + ',' + b : b + ',' + a;
+  for (const [a, b] of graph.edges) { const d = dist(nodes[a], nodes[b]); adj[a].set(b, d); adj[b].set(a, d); }
+  const gone = new Set();
+  for (const [a, b] of [...graph.edges].sort((p, q) => dist(nodes[q[0]], nodes[q[1]]) - dist(nodes[p[0]], nodes[p[1]]))) {
+    if (a < own || b < own) continue;   // own nodes: every link shown
+    const d = adj[a].get(b);
+    for (const [k, dak] of adj[a]) { if (k === b) continue; const dkb = adj[k].get(b);
+      if (dkb !== undefined && dak + dkb <= d * 1.02) { adj[a].delete(b); adj[b].delete(a); gone.add(key(a, b)); break; } }
+  }
+  graph.edges = graph.edges.filter(([a, b]) => !gone.has(key(a, b)));
+  if (route.a && route.b) route.path = findRoute(route.a, route.b);
+  draw(); infoLine();
+}
+function freeAt(x, y, safe) { const g = grid; if (x < g.x0 || y < g.y0) return true;
+  const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+  if (cx >= g.w || cy >= g.h) return true; return graph.safe[cy * g.w + cx] === 1; }
+function lineFree(a, b, safe) {
+  // checked every half cell, but not finer than every 8 units (as the bot: tiny cells stay fast)
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), n = Math.trunc(L / Math.max(grid.cell * 0.5, 8)) + 1;
+  const at = k => freeAt(Math.round(a[0] + dx * k / n), Math.round(a[1] + dy * k / n), false);
+  let k0 = 0, k1 = n;
+  if (!safe) { while (k0 <= n && !at(k0)) k0++; while (k1 >= k0 && !at(k1)) k1--; }
+  for (let k = k0; k <= k1; k++) { const t = k / n;
+    if (!safe && (t * L < 60 || (1 - t) * L < 60)) continue;
+    if (!freeAt(Math.round(a[0] + dx * t), Math.round(a[1] + dy * t), safe)) return false; }
+  return true;
+}
+// the margin cells for the runs (as NmBuildRun of the bot): every cell within the margin is walkable
+let runGrid = null, runKey = '';
+function runClear() { const c = String(cfg.nav_clear === undefined ? '' : cfg.nav_clear).trim(); return c === '' ? 40 : Math.max(0, +c || 0); }
+function runCells() {
+  const g = grid, C = runClear(), key = C + ':' + g.w + 'x' + g.h + ':' + (graph ? graph.nodes.length : 0);
+  if (runGrid && runKey === key) return runGrid;
+  const R = C > 0 && g.cell > 0 ? Math.ceil(C / g.cell) : 0, out = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    let ok = graph.safe[cy * g.w + cx] === 1;
+    for (let dy = -R; ok && dy <= R; dy++) for (let dx = -R; ok && dx <= R; dx++) {
+      const ax = cx + dx, ay = cy + dy;
+      if (ax < 0 || ay < 0 || ax >= g.w || ay >= g.h || graph.safe[ay * g.w + ax] !== 1) ok = false; }
+    out[cy * g.w + cx] = ok ? 1 : 0; }
+  runGrid = out; runKey = key; return out; }
+function runAt(x, y) { const g = grid, r = runCells(); if (x < g.x0 || y < g.y0) return true;
+  const cx = Math.floor((x - g.x0) / g.cell), cy = Math.floor((y - g.y0) / g.cell);
+  if (cx >= g.w || cy >= g.h) return true; return r[cy * g.w + cx] === 1; }
+// a line the bot RUNS straight (NmRunFree): free and the margin off the red all the way; at an end
+// standing at a wall the first / last 2 x margin may be closer
+function runFree(a, b) {
+  if (!lineFree(a, b, false)) return false;
+  const C = runClear(); if (C <= 0) return true;
+  const r0 = runAt(a[0], a[1]) ? 0 : C * 2, r1 = runAt(b[0], b[1]) ? 0 : C * 2;
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), n = Math.trunc(L / Math.max(grid.cell * 0.5, 8)) + 1;
+  for (let k = 0; k <= n; k++) { const t = k / n; if (t * L <= r0 || (1 - t) * L <= r1) continue;
+    if (!runAt(Math.round(a[0] + dx * t), Math.round(a[1] + dy * t))) return false; }
+  return true; }
+function components() { const p = graph.nodes.map((_, i) => i), f = x => p[x] === x ? x : (p[x] = f(p[x]));
+  for (const [a, b] of graph.edges) p[f(a)] = f(b); return new Set(graph.nodes.map((_, i) => f(i))).size; }
+// rails: a stretch longer than 500 gets points in between (the server path is found only up to ~600)
+function railSplit(pts) {
+  const out = [[Math.round(pts[0][0]), Math.round(pts[0][1])]];
+  for (let i = 1; i < pts.length; i++) { const a = pts[i - 1], b = pts[i], m = Math.trunc((dist(a, b) - 1) / 500);
+    for (let j = 1; j <= m; j++) out.push([Math.round(a[0] + (b[0] - a[0]) * j / (m + 1)), Math.round(a[1] + (b[1] - a[1]) * j / (m + 1))]);
+    out.push([Math.round(b[0]), Math.round(b[1])]); }
+  return out;
+}
+// two graph nodes are points of one rail one after another (that link costs half in routes)
+function railCons(a, b) { const ra = graph.railOf[a], rb = graph.railOf[b]; return !!(ra && rb && ra[0] === rb[0] && Math.abs(ra[1] - rb[1]) === 1); }
+function findRoute(A, B) {
+  const P = graph.nodes, n = P.length, isRail = i => !!graph.railOf[i], anyRail = graph.railOf.some(x => x);
+  if (!anyRail && runFree(A, B)) return [A, B];
+  const D = new Array(n).fill(Infinity), prev = new Array(n).fill(-1), done = new Array(n).fill(false);
+  for (let i = 0; i < n; i++) { const d = dist(A, P[i]); if (d <= 3000 && lineFree(A, P[i], false)) D[i] = d; }
+  const adj = P.map(() => []); for (const [a, b] of graph.edges) { adj[a].push(b); adj[b].push(a); }
+  for (;;) { let u = -1, bd = Infinity; for (let i = 0; i < n; i++) if (!done[i] && D[i] < bd) { bd = D[i]; u = i; }
+    if (u < 0) break; done[u] = true;
+    for (const v of adj[u]) { const al = D[u] + dist(P[u], P[v]) * (railCons(u, v) ? 0.5 : 1); if (al < D[v]) { D[v] = al; prev[v] = u; } } }
+  let e = -1, be = Infinity;
+  for (let i = 0; i < n; i++) if (D[i] < Infinity) { const d = dist(P[i], B); if (d <= 3000 && D[i] + d < be && lineFree(P[i], B, false)) { be = D[i] + d; e = i; } }
+  if (e < 0) return runFree(A, B) ? [A, B] : null;
+  const r = []; for (let v = e; v >= 0; v = prev[v]) r.unshift(v);
+  // as the bot: straight only with no rail point ahead; a rail point is never skipped
+  const railAhead = k => r.slice(k).some(isRail);
+  if (!railAhead(0) && runFree(A, B)) return [A, B];
+  const out = [A]; let cur = A;
+  for (let k = 0; k < r.length; k++) {
+    if (!railAhead(k) && runFree(cur, B)) break;
+    if (!isRail(r[k]) && k + 1 < r.length && runFree(cur, P[r[k + 1]])) continue;
+    out.push(P[r[k]]); cur = P[r[k]]; }
+  out.push(B); return out;
+}
+function infoLine() {
+  if (!grid) return; let free = 0, sight = 0;
+  for (let i = 0, f = grid.f; i < f.length; i++) { const v = f[i]; if (v === 1) free++; else if (v === 3) sight++; }
+  let s = '<b>Navmesh</b> ' + free + ' cells of ' + grid.cell + (sight ? ' · <b>sight</b> ' + sight + ' (strict: runs on green only)' : '');
+  if (graph) { const c = graph.nodes.length ? components() : 0;
+    s += ' · <b>graph</b> ' + graph.nodes.length + ' nodes / ' + graph.edges.length + ' links';
+    if (c > 1) s += ' · <span class="warn">the graph is ' + c + ' unlinked parts — a passage is blocked or too narrow somewhere</span>'; }
+  else s += ' · <span class="warn">changed — press Rebuild</span>';
+  $('info').innerHTML = s; $('fileName').textContent = fname + '.navgrid';
+}
+
+// ===== files =====
+function parseFile(text, name) {
+  if (/<zone/i.test(text)) {
+    const doc = new DOMParser().parseFromString(text, 'text/xml');
+    const pts = el => [...el.querySelectorAll('point')].map(p => [+p.getAttribute('x'), +p.getAttribute('y')]);
+    const ext = doc.querySelector('ExternalPoly');
+    zone = { outer: ext ? pts(ext) : [], inner: [...doc.querySelectorAll('InternalPolies poly')].map(pts) };
+    if (zone.outer.length >= 3 && (!grid || confirm('Start the navmesh over from the zone ' + name + '?\n\nOK — yes; Cancel — keep what is painted, the zone is shown as an outline only'))) {
+      snapshot(); grid = gridFromZone(); gridImg = null; graph = null; }
+    fname = name.replace(/\.\w+$/, '');
+  } else if (/^\s*S\s+-?\d+\s*$/m.test(text) || (/^#\s*navtrace/m.test(text) && !/^G /m.test(text))) {   // a run, or only its farm spots
+    if (/^\s*S\s+-?\d+\s*$/m.test(text)) strokes = [];   // only farm spots in it: the guide line on the screen stays
+    let cur = null; const n0 = spots.length;
+    for (const line of text.split(/\r?\n/)) { const f = line.trim().split(/\s+/);
+      if (f[0] === 'S') { cur = []; strokes.push(cur); } else if (f[0] === 'P' && cur) cur.push([+f[1], +f[2]]);
+      else if (f[0] === 'F') addSpot(+f[1], +f[2], +f[3] || 0, true); }   // farm spots (#f) -> the map
+    strokes = strokes.filter(s => s.length >= 2);
+    if (spots.length > n0) { roomsUi(); dirty(); toast((spots.length - n0) + ' farm spots from ' + name + ' — save the .navgrid'); }
+    // the map must cover the run: grow it (or start an empty one) round the run
+    const all = strokes.flat();
+    if (all.length) { const xs = all.map(p => p[0]), ys = all.map(p => p[1]);
+      ensure(Math.min(...xs), Math.min(...ys)); ensure(Math.max(...xs), Math.max(...ys)); }
+  } else if (/^G /m.test(text)) {
+    let g = null, row = 0;
+    for (const line of text.split(/\r?\n/)) {
+      if (line.startsWith('G ')) { const f = line.trim().split(/\s+/); g = { x0: +f[1], y0: +f[2], cell: +f[3], w: +f[4], h: +f[5], z: +f[6] || 0 }; g.f = new Uint8Array(g.w * g.h); }
+      else if (line.startsWith('R ') && g && row < g.h) { const s = line.slice(2); for (let cx = 0; cx < g.w; cx++) g.f[row * g.w + cx] = s[cx] === '.' ? 1 : s[cx] === '#' ? 2 : s[cx] === ',' ? 3 : 0; row++; }
+    }
+    if (g) { snapshot(); grid = g; gridImg = null; graph = null; $('cell').value = g.cell; fname = name.replace(/\.\w+$/, '');
+      rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = []; railDraw = null; cfg = {}; cfgExtra = []; setClean();
+      for (const line of text.split(/\r?\n/)) {
+        if (line.startsWith('K ')) cfgParse(line);
+        else if (line.startsWith('Q ')) { const f = line.trim().split(/\s+/), pts = [];
+          for (let i = 5; i + 1 < f.length; i += 2) pts.push([+f[i], +f[i + 1]]);
+          rooms.push({ name: f[1], min: +f[2] || 4, mode: f[3] || 'PACK', prio: +f[4] || 1, pts }); }
+        else if (line.startsWith('F ')) { const f = line.trim().split(/\s+/); spots.push({ x: +f[1], y: +f[2], z: +f[3] || 0, room: (f[4] || '').toUpperCase() }); }
+        else if (line.startsWith('S ')) { const f = line.trim().split(/\s+/); safe = { x: +f[1], y: +f[2], z: +f[3] || 0 }; }
+        else if (line.startsWith('N ')) { const f = line.trim().split(/\s+/); unodes.push([+f[1], +f[2]]); }
+        else if (line.startsWith('X ')) { const f = line.trim().split(/\s+/); bans.push([+f[1], +f[2]]); }
+        else if (line.startsWith('W ')) { const f = line.trim().split(/\s+/).slice(1).map(Number), pts = [];
+          for (let i = 0; i + 1 < f.length; i += 2) pts.push([f[i], f[i + 1]]); if (pts.length >= 2) rails.push(railSplit(pts)); }
+      }
+      roomsUi(); }
+  } else if (/AddCorner|SetSafePoint|SetPackFarm|RunFarm/.test(text)) {
+    if (/SetPackFarm|AddSupply|SetBuff|SetLogin/.test(text) && confirm('Take the settings from ' + name + ' into Settings? (pack, mobs, weapon, buff, supplies…)')) {
+      const n = importScript(text); dirty(); toast(n + ' settings taken from ' + name + ' — check them in Settings and save the .navgrid'); }
+    const code = text.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n'); seeds = [];
+    for (const m of code.matchAll(/(AddCorner|SetSafePoint)\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)/g)) {
+      seeds.push({ t: m[1] === 'AddCorner' ? 'C' : 'S', x: +m[2], y: +m[3] }); if (grid && !grid.z) grid.z = +m[4]; }
+  } else toast('Unknown file ' + name);
+}
+// the grid version (V line): a hash of what the bot's graph is made of - G, the rows, own nodes (N), removed
+// nodes (X). The bot keeps the graph it built in Library\Nav\cache and takes it from there while V is the same
+function gridVer(lines) {
+  let h = 0x811c9dc5;
+  for (const s of lines) {
+    for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    h ^= 10; h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+function gridText() {
+  const g = grid, G = 'G ' + g.x0 + ' ' + g.y0 + ' ' + g.cell + ' ' + g.w + ' ' + g.h + ' ' + (g.z || 0);
+  // "?" unknown, "." walk, "#" wall, "," sight (mobs are shot there, no runs); a row is built as bytes (fast on big maps)
+  const ch = [63, 46, 35, 44], rows = [], buf = new Uint8Array(g.w + 2), dec = new TextDecoder();
+  buf[0] = 82; buf[1] = 32;   // "R "
+  for (let cy = 0; cy < g.h; cy++) { const o = cy * g.w; for (let cx = 0; cx < g.w; cx++) buf[cx + 2] = ch[g.f[o + cx]] || 63; rows.push(dec.decode(buf)); }
+  const nl = unodes.map(p => 'N ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  const xl = bans.map(p => 'X ' + Math.round(p[0]) + ' ' + Math.round(p[1]));
+  const wl = rails.filter(r => r.length >= 2).map(r => 'W ' + r.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
+  const L = ['# navgrid: . walkable, # not', G, 'V ' + gridVer([G, ...rows, ...nl, ...xl, ...wl])];
+  for (const r of rows) L.push(r);
+  // the farm script settings (tab Settings), then the map extras: rooms (name min mode prio polygon), farm spots, safe point
+  L.push(...cfgLines());
+  for (const r of rooms) if (r.pts.length >= 3)
+    L.push('Q ' + r.name.replace(/\s+/g, '_') + ' ' + r.min + ' ' + r.mode + ' ' + r.prio + ' ' + r.pts.map(p => Math.round(p[0]) + ' ' + Math.round(p[1])).join(' '));
+  for (const p of spots) L.push('F ' + Math.round(p.x) + ' ' + Math.round(p.y) + ' ' + (p.z || 0) + (p.room ? ' ' + p.room : ''));
+  if (safe) L.push('S ' + Math.round(safe.x) + ' ' + Math.round(safe.y) + ' ' + (safe.z || 0));
+  for (const l of nl) L.push(l);
+  for (const l of xl) L.push(l);
+  for (const l of wl) L.push(l);
+  return L.join('\r\n') + '\r\n';
+}
+// the folder of the maps (Library\Nav): the handle of the last opened / saved file, kept in IndexedDB -
+// the open / save dialogs start there (a browser page cannot name a folder by its path)
+let navDir = null;
+function idb(mode, fn) { return new Promise(res => { try { const rq = indexedDB.open('navview', 1);
+  rq.onupgradeneeded = () => rq.result.createObjectStore('kv');
+  rq.onsuccess = () => { const tx = rq.result.transaction('kv', mode), r = fn(tx.objectStore('kv')); tx.oncomplete = () => res(r && r.result); tx.onerror = () => res(null); };
+  rq.onerror = () => res(null); } catch (e) { res(null); } }); }
+function rememberDir(h) { navDir = h; idb('readwrite', st => st.put(h, 'navDir')); }
+idb('readonly', st => st.get('navDir')).then(h => { if (h && !navDir) navDir = h; });
+// a picker that starts in navDir; a stale handle (folder moved) -> without it
+async function picker(fn, opts) {
+  try { return await fn({ ...opts, id: 'navmaps', ...(navDir ? { startIn: navDir } : {}) }); }
+  catch (e) { if (e.name === 'AbortError' || !navDir) throw e; return await fn({ ...opts, id: 'navmaps' }); }
+}
+async function openFiles() {
+  if (!window.showOpenFilePicker) { $('file').click(); return; }
+  let hs;
+  try { hs = await picker(o => showOpenFilePicker(o), { multiple: true, types: [{ description: 'maps, zones, runs, scripts, the skill list',
+    accept: { 'text/plain': ['.navgrid', '.zmap', '.navtrace', '.txt', '.json'] } }] }); }
+  catch (e) { if (e.name !== 'AbortError') $('file').click(); return; }
+  const nav = hs.find(h => /\.(navgrid|navtrace)$/i.test(h.name));
+  if (nav) rememberDir(nav);
+  const js = hs.filter(h => /\.json$/i.test(h.name)), rest = hs.filter(h => !js.includes(h));
+  for (const h of js) await loadSkills(await h.getFile(), h);   // skills.json: the skill list (its handle kept for Save)
+  if (rest.length) load(await Promise.all(rest.map(h => h.getFile())));
+}
+
+async function save() {
+  if (!grid) { toast('Nothing to save'); return; }
+  const name = fname + '.navgrid', text = gridText();
+  try { if (window.showSaveFilePicker) { const h = await picker(o => showSaveFilePicker(o), { suggestedName: name, types: [{ description: 'navgrid', accept: { 'text/plain': ['.navgrid'] } }] });
+    rememberDir(h);
+    const w = await h.createWritable(); await w.write(text); await w.close(); fname = h.name.replace(/\.\w+$/, '');
+    setClean(); toast('Saved ' + h.name + ' — in the script: SetNavGrid(\'' + h.name + '\')'); return; } }
+  catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.download = name; a.click();
+  setClean();
+  toast('Downloaded ' + name + ' — put it into Library\\Nav; in the script: SetNavGrid(\'' + name + '\')');
+}
+
+// ===== map extras: rooms, farm spots, safe point =====
+function roomDist(r, x, y) {
+  if (inPoly([x, y], r.pts)) return 0; let best = Infinity;
+  for (let i = 0, j = r.pts.length - 1; i < r.pts.length; j = i++) { const [ax, ay] = r.pts[j], [bx, by] = r.pts[i], L2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    let t = L2 < 1 ? 0 : ((x - ax) * (bx - ax) + (y - ay) * (by - ay)) / L2; t = Math.max(0, Math.min(1, t));
+    best = Math.min(best, Math.hypot(x - (ax + (bx - ax) * t), y - (ay + (by - ay) * t))); }
+  return best; }
+function spotAuto(q) { let best = 500, name = '';
+  for (const r of rooms) if (r.pts.length >= 3) { const d = roomDist(r, q.x, q.y); if (d <= best) { best = d; name = r.name; } }
+  return name; }
+function addSpot(x, y, z, quiet) {
+  if (spots.some(p => Math.hypot(p.x - x, p.y - y) < 30)) return;
+  spots.push({ x: Math.round(x), y: Math.round(y), z: z || (grid ? grid.z : 0) || 0 });
+  if (!quiet) toast('Farm spot ' + spots.length);
+}
+function nextRoomName() { const used = new Set(rooms.map(r => r.name));
+  for (let i = 0; i < 26; i++) { const n = String.fromCharCode(65 + i); if (!used.has(n)) return n; } return 'R' + (rooms.length + 1); }
+function roomsUi() {
+  const box = $('rooms');
+  box.style.display = rooms.length || spots.length ? 'block' : 'none';
+  box.innerHTML = '<h3>Rooms</h3><div class="muted">name · min mobs · mode · priority · ↑↓ order for "In turn"</div>';
+  rooms.forEach((r, i) => {
+    const d = document.createElement('div'); d.className = 'r' + (i === selRoom ? ' sel' : '');
+    d.innerHTML = '<span class="sw" style="background:' + ROOM_COL[i % ROOM_COL.length] + '"></span>' +
+      '<input class="n" value="' + r.name + '"><input class="m" type="number" min="1" value="' + r.min + '">' +
+      '<select><option>PACK</option><option>SINGLE</option><option>AUTO</option></select>' +
+      '<input class="p" type="number" min="1" value="' + r.prio + '">' +
+      '<button class="up" title="earlier in the queue">' + icon('up') + '</button><button class="dn" title="later in the queue">' + icon('down') + '</button>' +
+      '<button class="x" title="delete the room">' + icon('close') + '</button>';
+    const [n, m, sel, pr, x] = [d.querySelector('.n'), d.querySelector('.m'), d.querySelector('select'), d.querySelector('.p'), d.querySelector('.x')];
+    sel.value = r.mode;
+    n.onchange = () => { r.name = n.value.trim() || r.name; draw(); };
+    m.onchange = () => { r.min = Math.max(1, +m.value || 1); };
+    sel.onchange = () => { r.mode = sel.value; };
+    pr.onchange = () => { r.prio = Math.max(1, +pr.value || 1); };
+    x.onclick = () => { rooms.splice(i, 1); selRoom = -1; roomsUi(); draw(); };
+    // the order of the list = the order of "In turn" (room_order SEQ) - saved as it is
+    const move = dir => { const j = i + dir; if (j < 0 || j >= rooms.length) return;
+      [rooms[i], rooms[j]] = [rooms[j], rooms[i]]; selRoom = j; roomsUi(); draw(); };
+    d.querySelector('.up').onclick = () => move(-1);
+    d.querySelector('.dn').onclick = () => move(1);
+    if (i === 0) d.querySelector('.up').disabled = true;
+    if (i === rooms.length - 1) d.querySelector('.dn').disabled = true;
+    d.onclick = ev => { if (ev.target.tagName === 'DIV' || ev.target.tagName === 'SPAN') { selRoom = i; roomsUi(); draw(); } };
+    box.appendChild(d);
+  });
+  if (!spots.length) return;
+  const h = document.createElement('h3'); h.textContent = 'Farm spots'; h.style.marginTop = '10px'; box.appendChild(h);
+  const hint = document.createElement('div'); hint.className = 'muted'; hint.textContent = 'x · y · z · rooms (A or A,B; empty — by position) — or drag the star with the Spot tool'; box.appendChild(hint);
+  spots.forEach((q, i) => {
+    const d = document.createElement('div'); d.className = 'r';
+    d.innerHTML = '<span class="idx">' + (i + 1) + '</span>' +
+      '<input class="c" type="number" value="' + q.x + '"><input class="c" type="number" value="' + q.y + '"><input class="c" type="number" value="' + (q.z || 0) + '">' +
+      '<input class="rm" placeholder="' + (spotAuto(q) || '—') + '" title="after pulling which rooms to run here: A or A,B; empty — by position (grey — the one it gets by itself)" value="' + (q.room || '') + '">' +
+      '<button class="g" title="show on the map">' + icon('locate') + '</button><button class="x" title="delete the spot">' + icon('close') + '</button>';
+    const [ix, iy, iz] = d.querySelectorAll('input.c');
+    ix.onchange = () => { q.x = Math.round(+ix.value || q.x); draw(); };
+    iy.onchange = () => { q.y = Math.round(+iy.value || q.y); draw(); };
+    iz.onchange = () => { q.z = Math.round(+iz.value || 0); };
+    const ir = d.querySelector('input.rm');
+    ir.onchange = () => { q.room = ir.value.toUpperCase().split(/[^A-Za-z0-9_]+/).filter(Boolean).join(','); ir.value = q.room; draw(); };
+    d.querySelector('.g').onclick = () => { ox = W() / 2 - q.x * scale; oy = H() / 2 - q.y * scale; draw(); levelsSoon(); };
+    d.querySelector('.x').onclick = () => { spots.splice(i, 1); roomsUi(); draw(); };
+    box.appendChild(d);
+  });
+}
+function closeRoom() {
+  if (!roomDraw || roomDraw.pts.length < 3) { roomDraw = null; draw(); return; }
+  rooms.push({ name: nextRoomName(), min: 6, mode: 'PACK', prio: 1, pts: roomDraw.pts });
+  selRoom = rooms.length - 1; roomDraw = null; roomsUi(); draw();
+  toast('Room ' + rooms[selRoom].name + ' — its settings are in the panel on the right');
+}
+// the erase tool: the nearest thing under the click (in screen pixels): own node, farm spot, safe point,
+// room corner (a room keeps 3), a removed node (back again), a graph node (removed: an "X" line)
+function eraseAt(px, py) {
+  const near = (x, y) => Math.hypot(sx(x) - px, sy(y) - py) < 10;
+  let k = unodes.findIndex(q => near(q[0], q[1]));
+  if (k >= 0) { unodes.splice(k, 1); toast('Node removed'); regen(); return; }
+  k = rails.findIndex(r => r.some(q => near(q[0], q[1])));
+  if (k >= 0) { rails.splice(k, 1); toast('Rail removed'); regen(); return; }
+  k = spots.findIndex(q => near(q.x, q.y));
+  if (k >= 0) { spots.splice(k, 1); toast('Farm spot removed'); roomsUi(); draw(); return; }
+  if (safe && near(safe.x, safe.y)) { safe = null; toast('Safe point removed'); draw(); return; }
+  for (let i = 0; i < rooms.length; i++) { const j = rooms[i].pts.findIndex(q => near(q[0], q[1]));
+    if (j >= 0) { if (rooms[i].pts.length <= 3) { toast('A room keeps at least 3 corners — to delete the room use ✕ in the panel on the right'); return; }
+      rooms[i].pts.splice(j, 1); toast('Corner of room ' + rooms[i].name + ' removed'); draw(); return; } }
+  k = bans.findIndex(q => near(q[0], q[1]));
+  if (k >= 0) { bans.splice(k, 1); toast('Graph node restored'); regen(); return; }
+  if (graph) { k = graph.nodes.findIndex(q => near(q[0], q[1]));
+    if (k >= 0) { bans.push([graph.nodes[k][0], graph.nodes[k][1]]); toast('Graph node removed — the bot will not build it either'); regen(); return; } }
+  toast('Nothing to erase here');
+}
+function roomVertexAt(p) { const R = 8 / scale;
+  for (let i = rooms.length - 1; i >= 0; i--) for (let k = 0; k < rooms[i].pts.length; k++)
+    if (dist(p, rooms[i].pts[k]) < R) return [i, k];
+  return null; }
+
+// ===== settings of the farm script: "K key value" lines of the .navgrid (spot_farm_pack_nav.pas, PkSetting) =====
+// cfg: field id -> text ('' / missing = the library default); list fields -> arrays of rows
+let cfg = {}, cfgExtra = [], cfgDirty = false;
+const ITEMS = [[1463, 'Soulshot D'], [1464, 'Soulshot C'], [1465, 'Soulshot B'], [1466, 'Soulshot A'], [1467, 'Soulshot S'],
+  [3948, 'Blessed Spiritshot D'], [3949, 'Blessed Spiritshot C'], [3950, 'Blessed Spiritshot B'], [3951, 'Blessed Spiritshot A'],
+  [3952, 'Blessed Spiritshot S'], [6645, 'Beast Soulshot'], [6647, 'Beast Blessed Spiritshot'], [3031, 'Spirit Ore'],
+  [2508, 'Cursed Bone'], [726, 'Mana Drug'], [728, 'Mana Potion'], [1539, 'Healing Potion'],
+  [1345, 'Arrows S (Shining Arrow)'], [1785, 'Soul Ore'], [5589, 'Energy Stone']];
+const ITEM_CONST = { SOULSHOT_D: 1463, SOULSHOT_C: 1464, SOULSHOT_B: 1465, SOULSHOT_A: 1466, SOULSHOT_S: 1467,
+  BLESSED_SPIRITSHOT_D: 3948, BLESSED_SPIRITSHOT_C: 3949, BLESSED_SPIRITSHOT_B: 3950, BLESSED_SPIRITSHOT_A: 3951,
+  BLESSED_SPIRITSHOT_S: 3952, BEAST_SOULSHOT: 6645, BEAST_BLESSED_SPIRITSHOT: 6647, SPIRIT_ORE: 3031, CURSED_BONE: 2508,
+  MANA_DRUG: 726, MANA_POTION: 728, HEALING_POTION: 1539, ARROW_S: 1345, SOUL_ORE: 1785, ENERGY_STONE: 5589 };
+// pull tuning (Core\mob_pull.pas, PullSet): key, label, default, hint
+const PULL = [
+  ['pull_range', 'Pull range', 0, 'with a pack in tow, free mobs farther than this are not taken (0 — any)'],
+  ['leash_range', 'Leash', 0, 'a pack mob farther than this lags behind — we wait in a zigzag (0 — off; on the way to the spot then 800)'],
+  ['zig', 'Zigzag', 180, 'this far to each side across the way to the one lagging behind'],
+  ['overshoot', 'Overshoot', 150, 'click this far past the mob — no stops'],
+  ['single_range', 'Single range', 3000, 'single mode: mobs farther than this (by the path) are not taken'],
+  ['pack_density', 'Pack density', 0, 'auto mode: this many free mobs within 1500 — gather a pack (0 — half a pack)'],
+  ['touch', 'Touch', 120, 'this close to a mob — it must aggro'],
+  ['touch_wait_ms', 'Aggro wait, ms', 800, 'nobody on us, standing at the mob this long without aggro — hit it'],
+  ['extra_range', 'Extra on the way', 300, 'the pack is full, but free mobs this close are still taken'],
+  ['min_hp', 'Min HP %', 50, 'HP below this — the pull ends'],
+  ['nogain_ms', 'No new aggro, ms', 15000, 'no new aggro this long — the pull ends'],
+  ['max_ms', 'Max pull, ms', 120000, 'the longest one pull may take'],
+  ['pack_mult', 'Pack overflow', 2, 'this many packs on us — the pull ends at once'],
+  ['grid_tol', 'Grid tolerance', 48, 'a mob this close to a green cell still counts']];
+const PULL_ADV = [
+  ['touch_grace_ms', 'Aggro time after a touch, ms', 3000], ['touch_max', 'Touches without aggro', 3], ['skip_ms', 'Skip a stuck mob, ms', 8000],
+  ['ignore_ms', 'Skip a passive mob, ms', 30000], ['approach_ms', 'Cannot reach a mob, ms', 15000], ['tap_after_ms', 'Tap after the run-by, ms', 1000],
+  ['tap_ms', 'Tap: time for the hit on top of the run, ms', 1000], ['tap_skill_ms', 'Tap skill: time for its hit after the cast, ms', 3000],
+  ['heal_cast_ms', 'Heal while pulling: we stand for its cast at most, ms', 2000],
+  ['tap_fire_ms', 'Tap skill: no start of its cast in this (out of sight) - closer, ms', 1200], ['tap_resend_ms', 'Tap skill: sent again this often until it starts, ms', 150],
+  ['tap_skip_ms', 'A hit mob counts as aggroed, ms', 10000], ['back_penalty', 'Penalty for a mob behind', 400],
+  ['hit_range', 'Hit range', 80], ['stuck_ms', 'Stuck, ms', 1500], ['aggro_dist', 'Aggro farther than this does not count', 1500],
+  ['stop_ms', 'Stopped, ms', 300], ['reclick_dist', 'Re-click if the mob moved by', 80], ['tick_ms', 'Tick, ms', 30]];
+const BOOLS = { debug_file: '0', debug_run: '0', tap_always: '0', exp_off: '0', private_alert: '1', spots_only: '0', pickup: '1', patrol: '1', skip_champions: '0', champs_last: '1', room_recount: '0', room_ignore_way: '0', mage_body: '0', death_stop: '1', kite: '0', pvp: '0', live: '0' };
+const SIMPLE = ['zone', 'config', 'teleport', 'mode', 'zrange', 'weapon', 'corner_radius', 'auto_corner', 'room_players', 'room_avoid', 'champ_hp', 'room_order', 'room_cycle_wait', 'spot_wait_ms', 'spoil_per_mob', 'nav_clear', 'nav_wp_cache_ms', 'debug', 'ranged_ms',
+  'player_alert', 'chat_alert', 'champion_alert', 'telegram', 'mage_spam_ms', 'room_pause_min', 'room_pause_max', 'kite_step', 'kite_range', 'kite_wait', 'kite_near', 'fight', 'pvp_delay'];
+// the skill list of the mage fight: Library\Nav\skills.json, one for every map (the farm script reads it) - how
+// each skill is cast, its cast range, AoE radius, name. A page opened from the disk cannot read a file by itself:
+// the list opened / saved here last is kept in the browser (IndexedDB) with the file's handle, and at the start
+// the file itself is read again when the browser still allows it. The map's K mage lines: priority, skill, when, value
+const SKILL_FILE = 'skills.json';
+const SKILL_TYPES = [['TARGET', 'At the target'], ['AOE', 'AoE at the target'], ['SELF_AOE', 'AoE round us, no target'], ['SELF', 'On us (heal, buff)']];
+const SKILL_SHORT = { TARGET: 'at the target', AOE: 'AoE at the target', SELF_AOE: 'AoE round us', SELF: 'on us' };
+// the text of skills.json -> the list; null = not a skill list
+function parseSkills(t) {
+  let j; try { j = JSON.parse(String(t || '').replace(/^\uFEFF/, '')); } catch (e) { return null; }
+  const a = Array.isArray(j) ? j : j && Array.isArray(j.skills) ? j.skills : null;
+  if (!a) return null;
+  return a.filter(s => s && Math.floor(+s.id) > 0).map(s => { const ty = String(s.type || '').toUpperCase();
+    return { id: String(Math.floor(+s.id)), type: SKILL_SHORT[ty] ? ty : 'TARGET', range: String(Math.floor(+s.range) || 0),
+      rad: String(Math.floor(+s.radius) || 0), name: String(s.name || ''), icon: ICON_OK.test(s.icon || '') ? s.icon : '' }; });
+}
+// the picture of a skill (skills.json "icon": a 16x16 PNG in base64, put there by skills_export.txt from the bot's L2ICO.dat)
+const ICON_OK = /^[A-Za-z0-9+\/]+=*$/;
+function skillIcon(s) {
+  const im = mk('img', { class: 'ski', alt: '' });
+  if (s && s.icon) im.src = 'data:image/png;base64,' + s.icon; else im.classList.add('none');
+  return im;
+}
+let skillDb = [], skillDbDirty = false, skillFile = null;   // the list; edited, not saved; the handle of skills.json
+let skillSeen = null;   // the text of skills.json as this page read / wrote it last (a change made outside it is not overwritten silently)
+const skillById = id => skillDb.find(s => s.id === String(id));
+const skillLabel = s => s.id + ' · ' + (s.name || 'no name') + ' — ' + SKILL_SHORT[s.type] +
+  (s.type === 'TARGET' || s.type === 'AOE' ? ' ' + (+s.range || 600) : '') + (s.type === 'AOE' || s.type === 'SELF_AOE' ? ', radius ' + (+s.rad || 0) : '');
+const MAGE_CONDS = [['READY', 'Whenever ready'], ['HP_BELOW', 'Our HP % below'], ['MOBS', 'Mobs in its area, at least'],
+  ['PER_MOB', 'Again on a mob after, ms'], ['MOB_HP_ABOVE', 'Target MaxHP above'], ['EVERY', 'At most every, ms']];
+const MAGE_PH = { READY: '—', HP_BELOW: '70', MOBS: '3', PER_MOB: '30000 (0 — once)', MOB_HP_ABOVE: '100000', EVERY: '5000' };
+// own buffs: cast anywhere, or only standing at the farm spot (never on the runs / the pull)
+const SPOT_OPTS = [['0', 'anywhere'], ['1', 'only at the farm spot']];
+// own buffs (K selfbuff, 4th): when it is kept on us
+const WHEN_OPTS = [['0', 'always'], ['1', 'only at the farm spot'], ['2', 'in the fight at the spot, off after it'], ['3', 'in a fight with few mobs on us']];
+// fight / pull skills: the page shows seconds, the .navgrid keeps ms
+const ms2s = x => +x > 0 ? String(+x / 1000) : '';
+const s2ms = x => Math.max(0, Math.round((parseFloat(x) || 0) * 1000));
+const skAoe = r => { const s = skillById(r[0]); return !!s && (s.type === 'AOE' || s.type === 'SELF_AOE'); };
+const skAtMob = r => { const s = skillById(r[0]); return !s || s.type === 'TARGET' || s.type === 'AOE'; };
+// cfg.mage: [skill, when, value] in the order of the priority (the upper row first; saved as K mage 1.., 2.., ...)
+// what the farm does: how the mobs are taken (K mode; none - rooms if drawn, an archer one by one, else packs)
+// and how they are hit (K fight; none - Mage if mage skills are set, Bow if K kite 1, else Melee)
+const FIGHTS = ['MELEE', 'BOW', 'MAGE'];
+const mageRows = () => (cfg.mage || []).some(r => +r[0]);
+const fightOf = () => { const f = cv0('fight').toUpperCase(); return FIGHTS.includes(f) ? f : mageRows() ? 'MAGE' : cv0('kite') === '1' ? 'BOW' : 'MELEE'; };
+const modeOf = () => cv0('mode').toUpperCase() || (rooms.length ? 'ROOMS' : fightOf() === 'BOW' ? 'SINGLE' : 'PACK');
+const isPull = () => ['PACK', 'AUTO', 'ROOMS'].includes(modeOf());   // packs are pulled: a corner / a farm spot / a room
+const isProf = () => modeOf() === 'PROFILE';
+const notProf = () => !isProf();
+const isMelee = () => fightOf() === 'MELEE' && !isProf();
+const mageOn = () => fightOf() === 'MAGE' && mageRows();
+// a K mage line / AddMageSkill: the row goes after the rows of the same or a higher priority
+function mageAdd(prio, skill, cond, val) {
+  const L = cfg.mage = cfg.mage || [], p = parseInt(prio) || 1;
+  const row = [String(skill || ''), String(cond || 'READY').toUpperCase(), val == null ? '' : String(val)];
+  if (row[1] === 'HP_BELOW' && !(+row[2] > 0)) row[2] = '';   // "HP below 0%" never goes: empty = the default (70)
+  row.p = p; let i = L.length; while (i > 0 && (L[i - 1].p || 0) > p) i--; L.splice(i, 0, row);
+}
+// skills.json as the farm script reads it: one skill per line
+function skillsText() {
+  const clean = s => String(s || '').replace(/["\\{}\[\]\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim();
+  const rows = skillDb.filter(s => Math.floor(+s.id) > 0).map(s => '    { "id": ' + Math.floor(+s.id) + ', "type": "' + s.type + '", "range": ' +
+    (Math.floor(+s.range) || 0) + ', "radius": ' + (Math.floor(+s.rad) || 0) + ', "name": "' + clean(s.name) + '"' +
+    (ICON_OK.test(s.icon || '') ? ', "icon": "' + s.icon + '"' : '') + ' }');
+  return ['{',
+    '  "about": "Skills of the fight and the pull, one list for every map: skills.json in the Nav folder (next to nav_view.html and the maps). Edited in nav_view.html, Settings > Skills; read by spot_farm_pack_nav.pas: the K mage / fight_skill / pull_skill / rush_skill lines of a .navgrid name skills of this list",',
+    '  "types": {',
+    '    "TARGET": "cast at the target (nuke, drain, debuff); range: the target must be this close",',
+    '    "AOE": "cast at the target from range, hits every mob within radius of it",',
+    '    "SELF_AOE": "no target: hits every mob within radius of us",',
+    '    "SELF": "on us (heal, buff)"',
+    '  },',
+    '  "skills": [',
+    ...(rows.length ? [rows.join(',\r\n')] : []),
+    '  ]',
+    '}', ''].join('\r\n');
+}
+// the list now is the file: kept in the browser for the next start (with the file's handle: Save writes it again)
+function skillsKeep(h, text) {
+  skillDbDirty = false; if (h) skillFile = h; if (text != null) skillSeen = text;
+  const plain = skillDb.map(s => ({ id: s.id, type: s.type, range: s.range, rad: s.rad, name: s.name, icon: s.icon || '' }));
+  idb('readwrite', st => { st.put(plain, 'skills'); if (skillSeen != null) st.put(skillSeen, 'skillsSeen'); if (h) st.put(h, 'skillsFile'); });
+}
+// the start: the kept copy, then the file itself if the browser still lets the page read it
+idb('readonly', st => st.get('skills')).then(a => {
+  if (Array.isArray(a) && !skillDb.length && !skillDbDirty) { skillDb = a.filter(s => s && +s.id > 0); skillsUiRefresh(true); } });
+idb('readonly', st => st.get('skillsSeen')).then(t => { if (typeof t === 'string' && skillSeen === null) skillSeen = t; });
+idb('readonly', st => st.get('skillsFile')).then(async h => {
+  if (!h || !h.getFile || skillFile) return; skillFile = h;
+  try { if (await h.queryPermission({ mode: 'read' }) !== 'granted') { skillsUiRefresh(true); return; }
+    const t = await (await h.getFile()).text(), L = parseSkills(t);
+    if (L && !skillDbDirty) { skillDb = L; skillsKeep(null, t); } } catch (e) { }
+  skillsUiRefresh(true);
+});
+async function loadSkills(file, h) {
+  const t = await file.text(), L = parseSkills(t);
+  if (!L) { toast(file.name + ': not a skill list (JSON with "skills": [...])'); return false; }
+  skillDb = L; skillsKeep(h, t); skillsUiRefresh(true);
+  toast(L.length + ' skills from ' + file.name + (file.name.toLowerCase() === SKILL_FILE ? '' : ' — the farm script reads only Library\\Nav\\' + SKILL_FILE));
+  return true;
+}
+async function openSkills() {
+  if (skillDbDirty && !confirm('The skill list has unsaved changes. Open the file and drop them?')) return;
+  if (window.showOpenFilePicker) {
+    try { const [h] = await picker(o => showOpenFilePicker(o), { types: [{ description: 'skill list', accept: { 'application/json': ['.json'] } }] });
+      await loadSkills(await h.getFile(), h); return; }
+    catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const i = mk('input', { type: 'file', accept: '.json' }); i.onchange = () => { if (i.files[0]) loadSkills(i.files[0], null); }; i.click();
+}
+async function saveSkills() {
+  const text = skillsText(), done = (h, t) => { skillsKeep(h, h ? text : null); skillsUiRefresh(true); toast(t); };
+  if (skillFile && skillFile.createWritable) try {   // the file opened / saved before: written again, no dialog
+    if (await skillFile.requestPermission({ mode: 'readwrite' }) === 'granted') {
+      const cur = await (await skillFile.getFile()).text();   // changed outside the page since it was read here: ask
+      if (skillSeen !== null && cur !== skillSeen && cur !== text &&
+        !confirm(skillFile.name + ' was changed outside this page since it was opened here.\n\nOK — write the list of the page over it; Cancel — keep the file (Open it to see it)')) return;
+      const w = await skillFile.createWritable(); await w.write(text); await w.close();
+      done(skillFile, 'Saved ' + skillFile.name + ' — ' + skillDb.length + ' skills'); return; }
+  } catch (e) { }
+  try { if (window.showSaveFilePicker) { const h = await picker(o => showSaveFilePicker(o), { suggestedName: SKILL_FILE, types: [{ description: 'skill list', accept: { 'application/json': ['.json'] } }] });
+    const w = await h.createWritable(); await w.write(text); await w.close();
+    done(h, 'Saved ' + h.name + (h.name.toLowerCase() === SKILL_FILE ? ' — it must lie in Library\\Nav' : ' — the farm script reads only Library\\Nav\\' + SKILL_FILE)); return; } }
+  catch (e) { if (e.name === 'AbortError') return; }
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' })); a.download = SKILL_FILE; a.click();
+  done(null, 'Downloaded ' + SKILL_FILE + ' — put it into Library\\Nav');
+}
+// the skill list changed: the fields that pick from it are drawn again (the list itself only when asked)
+function skillsUiRefresh(self) {
+  for (const k of ['mage', 'mage_tap', 'mage_buff', 'fight_skill', 'pull_skill', 'rush_skill', ...(self ? ['_skills'] : [])]) {
+    const el = document.querySelector('#cfg .fld[data-k="' + k + '"]'), f = CARDS.flatMap(c => c.f || []).find(x => x.k === k);
+    if (el && f) el.replaceWith(fieldUi(f));
+  }
+  cfgChips(); cfgCounts(); cfgFilter();
+}
+// the settings cards: ic = icon (IC), c = accent colour; fields: k = key, l = label, type, ph = default shown grey, h = hint
+const CARDS = [
+  { ic: 'sword', c: '#ff6b7a', t: 'How to farm', sub: 'Pick these two first — the cards below show only what fits them', f: [
+    { k: 'mode', l: 'How the mobs are taken', type: 'seg', eff: modeOf, opts: [
+      ['SINGLE', 'One by one', 'runs over the spot, kills each mob where it stands'],
+      ['PACK', 'Packs', 'pulls a pack by running past the mobs, kills it at a farm spot / corner'],
+      ['ROOMS', 'Rooms', 'room after room of the map, each by its own mode (set on the map)'],
+      ['AUTO', 'Auto', 'many free mobs near — a pack, few — one by one'],
+      ['PROFILE', 'Bot profile', 'the bot interface farms (Profile .xml), the script runs to the spot and buffs']],
+      h: () => cv0('mode') ? '' : 'not picked yet — taken by the map: ' + (rooms.length ? 'rooms are drawn → Rooms' : fightOf() === 'BOW' ? 'an archer → One by one' : 'no rooms → Packs') },
+    { k: 'fight', l: 'How they are hit', type: 'seg', eff: fightOf, show: notProf, opts: [
+      ['MELEE', 'Melee', 'the auto attack; mass spoil / sweep if set'],
+      ['BOW', 'Bow + kite', 'a shot, a short step away from the mob, the next shot'],
+      ['MAGE', 'Mage skills', 'the skills of the Mage card, no auto attack']] },
+    { k: '_sum', type: 'summary' }] },
+  { ic: 'user', c: '#5aa9ff', t: 'Account & start', sub: 'Game login and bot files', f: [
+    { k: 'login.user', l: 'Login', h: 'empty — no auto-login' },
+    { k: 'login.pass', l: 'Password', type: 'pass' },
+    { k: 'zone', l: 'Zone .zmap', ph: 'MOS_1.zmap', h: 'Library\\Zones; empty — the zone active in the bot' },
+    { k: 'config', l: 'Profile .xml', ph: 'alarm.xml', h: 'Library\\Configurations, the name with .xml. Mode Profile: it farms; the other modes: an alarm one (auto attack off). A name that is not there: the bot keeps the profile loaded before — the script then leaves the interface off' }] },
+  { ic: 'target', c: '#ff8a7a', t: 'Mobs', sub: 'Which mobs, the pack, spoil', f: [
+    { k: 'pack.size', show: () => ['PACK', 'AUTO'].includes(modeOf()), l: 'Pack size', type: 'num', ph: '6', h: 'how many mobs to gather before the fight' },
+    { k: 'pack.spoil', show: isMelee, l: 'Mass spoil', type: 'num', ph: '302', h: 'skill ID; empty — 302 (with Mage skills / Bow kite — none), 0 — no spoil' },
+    { k: 'spoil_per_mob', show: isMelee, l: 'Mass spoils per mob', type: 'num', ph: '2', h: 'system messages are not read: a mob counts as spoiled once it was under this many mass spoils (resurrected / late ones get as many too)' },
+    { k: 'pack.sweep', show: isMelee, l: 'Mass sweep', type: 'num', ph: '444', h: 'skill ID; empty — 444 (with Mage skills / Bow kite — none), 0 — no sweep' },
+    { k: 'pack.mobs', show: notProf, l: 'Mob IDs', type: 'ids', ph: '22126, 22127', h: 'empty — any mob in the zone' },
+    { k: 'skip_champions', show: notProf, l: 'Skip champions', type: 'bool', h: 'champions are never pulled or hit — a room with only them left counts as cleared, we move on' },
+    { k: 'champs_last', show: () => notProf() && cv0('skip_champions') !== '1', l: 'Champions last', type: 'bool', h: 'in a fight the usual mobs are killed first, the champions after them (a champion is hit only while no usual mob is in reach)' },
+    { k: 'champ_hp', show: notProf, l: 'Champion from MaxHP', type: 'num', ph: '100000', h: 'a mob with MaxHP above this is a champion; empty — the threshold from Alerts' },
+    { k: 'pickup', show: notProf, l: 'Pick up drop', type: 'bool', h: 'after a fight pick up the drop nearby (off — leave it, move on at once)' },
+    { k: 'patrol', show: notProf, l: 'Patrol when no mobs', type: 'bool', h: 'nothing to hit near — run over the farm spots / patrol points / the map looking for mobs. Off — stand where it is and wait for the respawn (the safe point, if set — there); a mob within the usual reach is still taken' },
+    { k: 'zrange', show: notProf, l: 'Own floor only', type: 'num', ph: '0', h: 'mobs no farther than this by height (0 — no limit)' },
+    { k: 'ignore', l: 'Ignored mobs', type: 'ids', ph: '12345, 67890', h: 'never pulled or hit (archers shooting from their place…)' }] },
+  { ic: 'pin', c: '#c792ea', show: isPull, t: 'Farm spot & rooms', sub: 'Where to stand and fight the pack', f: [
+    { k: 'spots_only', l: 'My spots only', type: 'bool', h: 'take the pack only to the farm spots on the map, never look for own corners' },
+    { k: 'spot_wait_ms', show: () => fightOf() === 'MELEE', l: 'Wait for the pack, ms', type: 'num', ph: '1500', h: 'do not hit until the pack has come (80% near / stopped coming / this time), holding the spot; 0 — hit at once' },
+    { k: 'corner_radius', show: () => fightOf() === 'MELEE', l: 'Spot radius', type: 'num', ph: '0', h: 'hits pack mobs up to this far from the spot, stepping to them (0 — stands)' },
+    { k: 'auto_corner', l: 'Look for a corner within', type: 'num', ph: '0', h: 'no fitting farm spot — a wall corner within this radius (0 — off)' },
+    { k: 'ranged_ms', show: () => fightOf() !== 'BOW', l: 'Ranged attacker, ms', type: 'num', ph: '3000', h: 'a mob on us stands and does not come this long — run to kill it, then back (0 — wait)' },
+    { k: 'room_order', show: () => modeOf() === 'ROOMS', l: 'Room order', type: 'sel', opts: [['', 'Smart: where most mobs are (by room "min")'], ['SEQ', 'In turn: A, B, C… without counting mobs']],
+      h: 'in turn — in the order of the room list on the map from the room nearest to the start (started in B — B, C, …, A); its pack is dead — on to the next one at once, mobs on us come along' },
+    { k: 'room_cycle_wait', show: () => modeOf() === 'ROOMS', l: 'Pause after a round, s', type: 'num', ph: '0', h: 'in turn: all rooms done — wait this long, then a new round (0 — at once)' },
+    { k: 'room_pause_min', show: () => modeOf() === 'ROOMS', l: 'Pause before the next room, ms: from', type: 'num', ph: '1000', h: 'a room done — a random «human» pause, from … to ms, before the run to the next one (mobs on us — no pause); 0 and 0 — none' },
+    { k: 'room_pause_max', show: () => modeOf() === 'ROOMS', l: '… to, ms', type: 'num', ph: '3000' },
+    { k: 'room_recount', show: () => modeOf() === 'ROOMS', l: 'Gather new ones', type: 'bool', h: 'while pulling a room the mobs are counted again: respawned ones join the pack too (off — as many as counted at the entry)' },
+    { k: 'room_ignore_way', show: () => modeOf() === 'ROOMS', l: 'No fights on the way', type: 'bool', h: 'aggroed outside the room we head to — keep running, they follow and join the pull (HP below 50% — fight). At the start (no room farmed yet) this is always so: mobs on us go along to the first room' },
+    { k: 'room_players', show: () => modeOf() === 'ROOMS', l: 'Player in the room, s', type: 'num', ph: '60', h: 'a stranger in the room this many seconds — leave (0 — at once, -1 — ignore). A room with a stranger seen from afar is not chosen' },
+    { k: 'room_avoid', show: () => modeOf() === 'ROOMS', l: 'Avoid it for, s', type: 'num', ph: '30', h: 'after leaving because of a player the room is avoided this many seconds' },
+    { k: '_map', type: 'map' }] },
+  { ic: 'bow', c: '#ff9f43', show: () => fightOf() === 'BOW' && notProf(), t: 'Bow kite', sub: 'After every shot (once its arrow lands) a short step away from the mobs on us, then the next shot', f: [
+    { k: 'kite_step', l: 'Step', type: 'num', ph: '120', h: 'how far each step goes; shorter — the next shot comes sooner' },
+    { k: 'kite_range', l: 'Shoot from', type: 'num', ph: '500', h: 'about the bow range: a target farther than this — run closer first' },
+    { k: 'kite_near', l: 'Step when a mob is closer than', type: 'num', ph: '380', h: 'the step goes only while a mob that hits us / has us as its target is closer than this; all farther — stand and shoot. Empty — «Shoot from» minus «Step» (380 with the defaults)' },
+    { k: 'kite_wait', l: 'Step after the shot, ms', type: 'num', ph: 'auto', h: 'empty — as soon as the arrow lands (the mob loses HP; a miss — after the usual landing time); a number — this many ms after the shot starts' }] },
+  { ic: 'spark', c: '#ff5d8f', show: () => ['MELEE', 'BOW'].includes(fightOf()) && notProf(), t: 'Fight skills', sub: 'Debuffs and the like pressed in the fight, between the hits / shots', f: [
+    { k: 'fight_skill', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
+      cols: [['Skill', 'skill', null, '3fr'], ['At most every, s', 'num', '0 — when ready', '1.1fr'],
+        ['Same mob again after, s', 'num', r => skAtMob(r) ? '0 — no limit' : '—', '1.2fr'], ['Mobs at least', 'num', '1', '.8fr']],
+      newRow: () => { const used = (cfg.fight_skill || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type !== 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card below: here they are picked from it' }),
+      h: 'pressed in the fight between the hits (bow: between the shots). Every moment the upper row that may go is cast: it is ready, it was not cast within «At most every» (empty — whenever ready), this mob has not had it within «Same mob again after» (a debuff lasting 30 s — 30; empty — no limit), the target is within its cast range, at least «Mobs at least» mobs are in its area (AoE — its radius from the Skills card; else — the mobs on us). While it is being cast no attack order goes (it would cancel it); it did not go in 3 s (out of sight, MP) — held 3 s. A mage has its own rows in the Mage card («At most every», «Again on a mob after»)' }] },
+  { ic: 'spark', c: '#b18cff', show: () => fightOf() === 'MAGE' && notProf(), t: 'Mage', sub: 'The pack is killed by skills instead of the auto attack', f: [
+    { k: 'mage', l: 'Skills in the fight, by priority', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add skill',
+      cols: [['Skill', 'skill', null, '3fr'], ['Use when', 'sel', MAGE_CONDS, '1.6fr'], ['Value', 'num', r => MAGE_PH[r[1]] || '', '.8fr']],
+      newRow: () => { const used = (cfg.mage || []).map(r => r[0]), s = skillDb.find(s => +s.id && !used.includes(s.id)); return [s ? s.id : '', 'READY', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card below: here they are picked from it' }),
+      h: 'any row — a mage: no auto attack, no spoil / sweep. The skills are picked from the Skills card (skills.json); the order is the priority (the arrows move a row): every moment the upper skill that may go is cast — its condition holds, it is ready, the target is within its cast range. Skills «Our HP % below» (drains, heals; empty — 70) go while pulling and on the runs to the farm spot too: a drain at the nearest mob on us within its range, we stand for its cast. The pull: it starts at the farm spot of the room (the Spot tool; none — the middle of the room), every mob of the room gets a pull skill from its cast range and only in sight (no cast through a wall: we go round it; no body pull), then to the farm spot as before. The target is the mob with the most mobs round it (the biggest AoE radius), within the longest cast range' },
+    { k: 'mage_tap', l: 'Pull skills, in order', type: 'rows', wide: true, titled: true, hdr: true, ord: true, add: '+ Add pull skill',
+      cols: [['Skill', 'skill', s => s.type === 'TARGET' || s.type === 'AOE', '3fr']],
+      newRow: () => { const used = (cfg.mage_tap || []).map(r => r[0]), fight = (cfg.mage || []).map(r => skillById(r[0])).filter(Boolean);
+        const s = [...fight, ...skillDb].find(s => +s.id && s.type === 'TARGET' && !used.includes(s.id)); return [s ? s.id : '']; },
+      h: 'every mob of the room gets one of these: the first of the list that is ready (no reuse) and reaches it — one in reuse, the next one goes, the pull does not wait for it. We stop a bit inside its cast range (Skills card), cast it at the mob, wait for the hit and go to the next one; the room comes after us. Empty — the upper «at the target» skill of the fight used «whenever ready»' },
+    { k: 'mage_body', l: 'Body pull instead', type: 'bool', h: 'no pull skills: the mage runs past the mobs as the others do (the list above is not used)' },
+    { k: 'mage_spam_ms', l: 'Skill spam, ms', type: 'num', ph: '100', h: 'as sh_solo: a skill packet this often, no waiting for the cast — the next nuke is pressed while the reuse ends and goes at once; a skill with a condition (drain, AoE, debuff) is waited for until it goes. The target is counted again every 200 ms: the most mobs round it, then the lowest HP' },
+    { k: 'mage_buff', l: 'Own buffs', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add buff',
+      cols: [['Skill', 'skill', s => s.type === 'SELF', '3fr'], ['Buff ID on us', 'num', '= the skill', '1.1fr'], ['Recast, s before its end', 'num', '60', '1.3fr'],
+        ['Where', 'sel', SPOT_OPTS, '1.5fr']],
+      newRow: () => { const used = (cfg.mage_buff || []).map(r => r[0]), s = skillDb.find(s => +s.id && s.type === 'SELF' && !used.includes(s.id)); return [s ? s.id : '', '', '', '0']; },
+      note: () => skillDb.some(s => s.type === 'SELF') ? null : mk('div', { class: 'h', text: 'no skill «On us» in the skill list — add your buffs in the Skills card below (how it is cast: «On us»): here they are picked from it' }),
+      h: 'a buff is gone or ends within «Recast» seconds — its skill is cast on us at a calm moment: no mob on us (right before the pull of a room, during the pause between the rooms, while waiting), we stand until it is on. Never in the middle of a fight: a buff gone there waits for the end of the fight. Buff ID — only when the effect on us has another ID than the skill (empty — the same). Recast: empty — 60 s, 0 — only when it is gone. A toggle is cast only when it is off. «only at the farm spot» — the run between the rooms never stops for it: it waits until we stand at the farm spot (of the room, the fight, the safe point) with no mob on us. Works in the pack / rooms farm, not in Profile mode' }] },
+  { ic: 'book', c: '#8c9bff', show: notProf, t: 'Skills', sub: 'Library\\Nav\\skills.json — one list for every map, the skill fields of the cards pick from it', db: true, f: [
+    { k: '_skills', l: 'Skill list', type: 'skilldb',
+      h: 'how each skill is cast, its cast range and AoE radius. Saved by its own button into skills.json (the farm script reads it there), not with the .navgrid; the page remembers the file it opened / saved' }] },
+  { ic: 'target', c: '#ffb454', t: 'Weapon', sub: 'Farm weapon and the tap for the pull', f: [
+    { k: 'weapon', l: 'Farm weapon', type: 'num', h: 'item ID; empty — what is in hands at start' },
+    { k: 'tap.id', show: isPull, l: 'Tap weapon', type: 'num', h: 'a mob does not aggro on a run-by — hit it with this, then on' },
+    { k: 'tap.range', show: isPull, l: 'Tap range', type: 'num', ph: '80' },
+    { k: 'tap_always', show: isPull, l: 'Tap every mob', type: 'bool', h: 'pull every mob with a hit, no run-by' },
+    { k: 'dagger.id', show: isMelee, l: 'Dagger for a fat mob', type: 'num', h: 'one fat mob left — the dagger' },
+    { k: 'dagger.hp', show: isMelee, l: 'Fat from MaxHP', type: 'num', ph: '0', h: '0 — the champion threshold' }] },
+  { ic: 'magnet', c: '#2ec4b6', show: () => isPull() && notProf(), t: 'Pull skills', sub: 'An AoE that aggroes everything round, a skill cast at every mob, a dash on the way', f: [
+    { k: 'pull_skill', l: 'Skills of the pull', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add pull skill',
+      cols: [['Skill', 'skill', s => s.type !== 'SELF', '3fr'],
+        ['At most every, s', 'num', r => skAoe(r) || !skillById(r[0]) ? '0 — when ready' : '—', '1.2fr']],
+      newRow: () => { const used = (cfg.pull_skill || []).map(r => r[0]), free = s => +s.id && !used.includes(s.id);
+        const s = skillDb.find(s => free(s) && (s.type === 'SELF_AOE' || s.type === 'AOE')) || skillDb.find(s => free(s) && s.type === 'TARGET'); return [s ? s.id : '', '']; },
+      note: () => skillDb.length ? null : mk('div', { class: 'h', text: 'the skill list is empty — open ' + SKILL_FILE + ' or add the skills in the Skills card: here they are picked from it' }),
+      h: 'AoE (round us / at the target — how it is cast and its radius: the Skills card): the pull is ONE run planned at its start. The free mobs of the room (no rooms: as many as the pack lacks) are grouped into areas of its radius — the most mobs per press — and the areas are put in the shortest order from the entry to a farm spot of the room (the spot that makes the whole way shortest; no spot — it ends at the last area). On the run it is pressed as soon as every mob of the next area is in its reach and «At most every» allows — no stop, at once on to the next area; the mobs it took are ours and never pressed / run at again. Not ready yet at an area (reuse): through it and back, never standing. Then the pack is led to that farm spot and killed. Never while an ignored mob / a skipped champion is in its area; only mobs in sight (no wall of the map between). «At the target» — every mob of the pull gets it from its cast range instead of the run-by (as the pull skills of a mage); «At most every» is not used then' },
+    { k: 'rush_skill', l: 'Rush skills — a dash on the way', type: 'rows', wide: true, titled: true, hdr: true, add: '+ Add rush skill',
+      cols: [['Skill', 'skill', s => s.type === 'TARGET', '3fr'],
+        ['Shortest dash', 'num', '100', '1.4fr']],
+      newRow: () => { const used = (cfg.rush_skill || []).map(r => r[0]), ok = s => +s.id && s.type === 'TARGET' && !used.includes(s.id);
+        const s = skillDb.find(s => ok(s) && /boost|rush|charge|dash|leap|jump/i.test(s.name || '')) || skillDb.find(ok); return [s ? s.id : '', '']; },
+      h: 'a skill that flies us to a mob (Blazing Boost…: «at the target», its range — the Skills card). Not a pull of its own: on every run of the pull and of the pack to the farm spot it is cast as soon as it is ready at a mob on our way — the mob we run to, or any mob of the pull list, free or already on us, that brings us closer to where we go (along the map) by at least half the dash — forward, never back; on the way home to the farm spot with the pack too. Looked at every tick of the pull, as often as its reuse allows. Only in sight and on green, never at an ignored mob / a skipped champion. Right as it starts we click on our way: the move waits on the server for the end of its cast and goes instead of a hit at the mob. The free mob it went at is ours (it comes); the run to the pull start with nothing on us — not used. Shortest dash: a mob nearer than this is not dashed at (empty — 100). A skill both here and in «Skills of the pull» — a rush only' }] },
+  { ic: 'spark', c: '#ffd166', t: 'Buffs', sub: 'Buffer service and own buffs', f: [
+    { k: 'buff.id', l: 'Buff ID (watched)', type: 'num', ph: '1204', h: 'empty — 1204 with the bypasses below (as on all our chars); 0 — no buff' },
+    { k: 'buff.bypass', l: 'Buff bypasses', type: 'lines', ph: '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player', h: 'one per line, in this order' },
+    { k: 'selfbuff', l: 'Own buffs', type: 'rows', wide: true, titled: true, hdr: true, cols: [['Skill', 'num', '421', '1.1fr', 'skillid'], ['Buff ID', 'num', '0 = same as skill', '1fr'], ['Cast', 'sel', [['0', 'on self'], ['1', 'target me first']], '1.2fr'], ['When', 'sel', WHEN_OPTS, '2.2fr'], ['Kind', 'sel', [['0', 'buff'], ['1', 'toggle']], '0.9fr'], ['Mobs on us ≤', 'num', r => r[3] === '3' ? '1' : '—', '0.8fr']], h: 'no buff on us — the skill is cast on self. «target me first» — a skill cast at a target (1323): the bot targets itself, casts, then the mob back. When: «always» — kept on; «only at the farm spot» — never on the runs and the pull: it waits until we stand at the farm spot (the spot / corner of the fight, a farm spot of the map, the safe point; a map with none of them — in a fight), right before the pull of a room too; «in the fight at the spot, off after it» — cast in the fight there and taken off as soon as the fight is over (a buff that cuts the run speed: the run to the next pull goes at full speed); «in a fight with few mobs on us» — on while 1..«Mobs on us ≤» mobs are on us, off with more and after the fight (a toggle that hits one target hard: a polearm then hits only one). Kind «toggle» — on is on whatever its time, its skill once more turns it off (it is never pressed while on). A buff is taken off by the bot (as a click on its icon). Empty — 421; skill 0 — no own buffs' }] },
+  { ic: 'magnet', c: '#4dd4ac', show: notProf, t: 'Pull', sub: 'Core\\mob_pull.pas — empty = the default (grey)', pull: true },
+  { ic: 'flask', c: '#7ee787', t: 'Supplies', sub: 'Below the minimum — buy up to the maximum', f: [
+    { k: 'supply', l: 'Supplies', type: 'rows', wide: true, cols: [['Item', 'item'], ['Min', 'num', '100'], ['Max', 'num', '400']] }] },
+  { ic: 'bell', c: '#ff8fab', t: 'Alerts', sub: 'Private messages, general chat, death and champions are on by default', f: [
+    { k: 'player_alert', l: 'Player closer than', type: 'num', ph: '0', h: 'not from the party / clan (0 — off)' },
+    { k: 'pvp', l: 'Hit back a player who hits me', type: 'bool', h: 'not party / clan. Without Ctrl: only a flagged one (he hit first) is hit — no PK by mistake. Bow: from where it stands, within «Shoot from» and in sight; melee: up to 600 away. Over when he dies, is gone or has not hit for 8 s' },
+    { k: 'pvp_delay', l: 'Reaction before the answer, ms', ph: '300 800', h: 'a random pause from — to' },
+    { k: 'private_alert', l: 'Private messages', type: 'bool' },
+    { k: 'chat_alert', l: 'General chat closer than', type: 'num', ph: '1000', h: 'a player (not party / clan) wrote in the general chat closer than this; an unseen one (GM in invisibility) too. 0 — off' },
+    { k: 'champion_alert', l: 'Champion from MaxHP', type: 'num', ph: '100000', h: '0 — off' },
+    { k: 'telegram', l: 'Telegram key', type: 'pass', h: 'the key from the Adrenaline cabinet' },
+    { k: 'death_stop', l: 'Stop after a death', type: 'bool', h: 'died → «To Village» → up in town: the script stops (the alert goes to Telegram too). Off — back to the spot via Aden. A farm with no teleport waits for a resurrection either way' }] },
+  { ic: 'compass', c: '#5ee6ff', t: 'Way to the spot', sub: 'Empty — farms where it was started', f: [
+    { k: 'teleport', l: 'Teleport from Aden', ph: '_bbs_teleport?id=...&fromtown=6', h: 'gatekeeper bypass' },
+    { k: 'stp.npc', l: 'Second teleport: NPC', type: 'num' },
+    { k: 'stp.bypass', l: 'Its bypasses', type: 'lines', h: 'one per line' },
+    { k: 'path', l: 'Path from the landing point', type: 'lines', ph: 'x y z\nx y z', h: 'x y z points, one per line, run by the server path. Easier: draw a Rail from the landing point into the zone — after the teleport the bot runs it first (its end within 800 of the landing point), no green needed there' }] },
+  { ic: 'sliders', c: '#a3aec0', t: 'Misc', sub: 'Experience, debug and run tuning', f: [
+    { k: 'exp_off', l: 'Experience off', type: 'bool', h: 'exp?state=off' },
+    { k: 'debug_file', l: 'Debug log to file', type: 'bool', h: 'a detailed log of the pull / fight / rooms in Library\\Logs\\dbg_<nick>_<time>_N.log (to look into problems)' },
+    { k: 'live', l: 'Live view for this page', type: 'bool', h: 'Library\\Nav\\<nick>.navlive every 0.3 s — the button Live above the map shows where the character is and runs, its route, its target and the mobs' },
+    { k: 'debug_run', l: 'Run log', type: 'bool', h: 'into the same debug log (turns it on itself): every click, which route point was chosen and why, runs to nodes, "standing / stuck", unsticking, how the run ended' },
+    { k: 'nav_clear', l: 'Run clearance from walls', type: 'num', ph: '40', h: 'the bot runs straight / cuts nodes only if the line is never closer than this to red along its whole length. The orange Route on the map is computed the same way — as drawn, so it runs (0 — may brush the walls)' },
+    { k: 'nav_wp_cache_ms', l: 'Route cache, ms', type: 'num', ph: '500', h: 'where to click while running — recomputed at most once per this (while moved < 64). Less — more precise at corners, more — lighter on the PC; 0 — every tick' },
+    { k: 'debug', l: 'Debug output', type: 'sel', opts: [['', 'Default (states)'], ['0', 'Quiet'], ['1', '[State] on change'], ['2', '[State] + room table']] }] }];
+
+const ids = s => (s || '').split(/[^\d]+/).filter(Boolean).join(', ');
+const cv0 = k => (cfg[k] === undefined ? '' : String(cfg[k])).trim();
+function cfgParse(line) {
+  const m = line.match(/^K\s+(\S+)\s*(.*)$/); if (!m) return;
+  const key = m[1].toLowerCase(), rest = m[2].trim(), f = rest.split(/\s+/).filter(Boolean), tail = n => f.slice(n).join(' ');
+  const list = (k, row) => (cfg[k] = cfg[k] || []).push(row);
+  switch (key) {
+    case 'login': cfg['login.user'] = f[0] || ''; cfg['login.pass'] = f[1] || ''; break;
+    case 'buff': cfg['buff.id'] = f[0] || ''; cfg['buff.bypass'] = tail(1).split('|').map(s => s.trim()).filter(Boolean).join('\n'); break;
+    case 'second_tp': cfg['stp.npc'] = f[0] || ''; cfg['stp.bypass'] = tail(1).split('|').map(s => s.trim()).filter(Boolean).join('\n'); break;
+    case 'path': { const L = []; for (let i = 0; i + 2 < f.length; i += 3) L.push(f.slice(i, i + 3).join(' ')); cfg.path = L.join('\n'); break; }
+    case 'pack': cfg['pack.size'] = f[0] || ''; cfg['pack.spoil'] = f[1] || ''; cfg['pack.sweep'] = f[2] || ''; cfg['pack.mobs'] = ids(tail(3)); break;
+    case 'tap': cfg['tap.id'] = f[0] || ''; cfg['tap.range'] = f[1] || ''; break;
+    case 'dagger': cfg['dagger.id'] = f[0] || ''; cfg['dagger.hp'] = f[1] || ''; break;
+    case 'ignore': cfg.ignore = ids(rest); break;
+    case 'pull': if (f[0]) cfg['pull.' + f[0].toLowerCase()] = f[1] || ''; break;
+    case 'selfbuff': list('selfbuff', [f[0] || '', f[1] || '0', f[2] === '1' ? '1' : '0', ['1', '2', '3'].includes(f[3]) ? f[3] : '0',
+      f[4] === '1' ? '1' : '0', +f[5] > 1 ? f[5] : '']); break;   // skill buff onme when toggle max
+    case 'mage': mageAdd(f[0], f[1], f[2], f[3]); break;   // by priority: the rows are kept in its order
+    case 'mage_tap': if (f[0] === '0') cfg.mage_body = '1'; else for (const id of f) if (+id) list('mage_tap', [id]); break;   // the pull skills in order
+    // skill, buff on us (0 = the skill's), recast s before its end (-1 = the default), 1 = only at the farm spot
+    case 'mage_buff': list('mage_buff', [f[0] || '', +f[1] ? f[1] : '', f[2] && f[2] !== '-1' ? f[2] : '', f[3] === '1' ? '1' : '0']); break;
+    case 'fight_skill': list('fight_skill', [f[0] || '', ms2s(f[1]), ms2s(f[2]), +f[3] > 1 ? f[3] : '']); break;   // skill every_ms permob_ms min
+    case 'pull_skill': list('pull_skill', [f[0] || '', ms2s(f[2])]); break;   // skill min(not used) every_ms
+    case 'rush_skill': list('rush_skill', [f[0] || '', +f[1] > 0 ? f[1] : '']); break;   // skill [the shortest dash]
+    case 'supply': list('supply', [f[0] || '', f[1] || '', f[2] || '']); break;
+    default: if (SIMPLE.includes(key) || key in BOOLS) cfg[key] = rest; else cfgExtra.push(line.trim());
+  }
+}
+// the farm goes by the rooms: mode ROOMS, or no mode and rooms are drawn
+function cfgRooms() { const m = cv0('mode'); return m === 'ROOMS' || (m === '' && rooms.length > 0); }
+// the bot interface farms: no K pack line (the script farm stays off)
+function cfgProfile() { return cv0('mode') === 'PROFILE'; }
+function cfgLines() {
+  const L = [], v = cv0, put = (...a) => L.push('K ' + a.join(' ').trim());
+  if (v('login.user')) put('login', v('login.user'), v('login.pass'));
+  for (const k of ['zone', 'config', 'teleport']) if (v(k)) put(k, v(k));
+  if (v('buff.id') === '0') put('buff', 0);
+  else if (v('buff.id')) put('buff', v('buff.id'), (v('buff.bypass') || '_bbs_buffer_show\nbook_use?name=s&pre=0&target=Player').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
+  if (v('stp.npc')) put('second_tp', v('stp.npc'), v('stp.bypass').split(/\r?\n/).map(s => s.trim()).filter(Boolean).join('|'));
+  if (v('path')) { const n = v('path').split(/[^\d-]+/).filter(Boolean); if (n.length >= 3) put('path', n.slice(0, n.length - n.length % 3).join(' ')); }
+  for (const r of cfg.selfbuff || []) if (r[0] !== '' && r[0] != null) {   // skill buff [target me first] [when] [toggle] [max mobs]
+    const a = [+r[0] || 0, +r[1] || 0, r[2] === '1' ? 1 : 0, +r[3] || 0, r[4] === '1' ? 1 : 0, r[3] === '3' && +r[5] > 1 ? Math.floor(+r[5]) : 0];
+    while (a.length > 2 && !a[a.length - 1]) a.pop();   // the defaults at the end are not written
+    put('selfbuff', ...a); }
+  // the priority = the row; an empty value = the grey default of its condition (HP below 70, 3 mobs...)
+  (cfg.mage || []).filter(r => +r[0]).forEach((r, i) => put('mage', i + 1, +r[0], r[1] || 'READY',
+    String(r[2] || '').trim() === '' ? parseInt(MAGE_PH[r[1] || 'READY']) || 0 : +r[2] || 0));
+  const taps = (cfg.mage_tap || []).map(r => +r[0]).filter(Boolean);   // the pull skills in order (body pull: K mage_body 1 below)
+  if (taps.length && v('mage_body') !== '1') put('mage_tap', ...taps);
+  // own buffs: skill, buff ID on us (0 = the skill's), recast s before its end (empty — the default 60: not written,
+  // -1 when the 4th follows), 1 = only at the farm spot
+  for (const r of cfg.mage_buff || []) if (+r[0]) {
+    const rc = String(r[2] ?? '').trim() === '' ? null : +r[2] || 0, a = [+r[0], +r[1] || 0];
+    if (r[3] === '1') a.push(rc === null ? -1 : rc, 1); else if (rc !== null) a.push(rc);
+    put('mage_buff', ...a); }
+  // fight skills of melee / bow: skill, at most every ms, the same mob again after ms, mobs at least (the page: seconds)
+  for (const r of cfg.fight_skill || []) if (+r[0]) put('fight_skill', +r[0], s2ms(r[1]), s2ms(r[2]), +r[3] > 1 ? Math.floor(+r[3]) : 1);
+  // pull skills: skill, free mobs in its area at least (0 = the default 3), at most every ms
+  for (const r of cfg.pull_skill || []) if (+r[0]) put('pull_skill', +r[0], 0, s2ms(r[1]));
+  // rush skills: skill, the shortest dash (empty — the default 100: not written)
+  for (const r of cfg.rush_skill || []) if (+r[0]) put('rush_skill', +r[0], ...(+r[1] > 0 ? [Math.floor(+r[1])] : []));
+  // a mage / an archer has no spoil / sweep: empty fields mean 0 then, not 302 / 444. The pack line goes in every mode
+  // but Profile (the script farm starts by it, the mob IDs are in it): no pack size - 6 (used by Packs / Auto only)
+  const mg = fightOf() !== 'MELEE';
+  if (!cfgProfile()) put('pack', v('pack.size') || (cfgRooms() ? 0 : 6), v('pack.spoil') === '' ? (mg ? 0 : 302) : v('pack.spoil'), v('pack.sweep') === '' ? (mg ? 0 : 444) : v('pack.sweep'), ids(v('pack.mobs')).replace(/ /g, ''));
+  if (!cfgProfile()) put('fight', fightOf());
+  if (v('tap.id')) put('tap', v('tap.id'), v('tap.range') || 0);
+  if (v('dagger.id')) put('dagger', v('dagger.id'), v('dagger.hp') || 0);
+  if (v('ignore')) put('ignore', ids(v('ignore')).replace(/ /g, ''));
+  for (const k of SIMPLE) if (!['zone', 'config', 'teleport', 'fight'].includes(k) && v(k) !== '') put(k, v(k));
+  for (const k in BOOLS) if (k !== 'kite' && v(k) !== '' && v(k) !== BOOLS[k]) put(k, v(k));   // K kite: K fight BOW now
+  for (const [k] of [...PULL, ...PULL_ADV]) if (v('pull.' + k) !== '') put('pull', k, v('pull.' + k));
+  for (const r of cfg.supply || []) if (+r[0] && r[2] !== '') put('supply', +r[0], +r[1] || 0, +r[2] || 0);
+  return L.concat(cfgExtra);
+}
+// settings out of an old script .txt (SetPackFarm, AddSupply...): the same values into the form
+function importScript(text) {
+  const code = text.split(/\r?\n/).map(l => l.replace(/\/\/.*$/, '')).join('\n');
+  const call = (name, fn) => { for (const m of code.matchAll(new RegExp('\\b' + name + '\\s*\\(([^;]*)\\)\\s*;', 'g'))) fn(m[1]); };
+  const strs = a => [...a.matchAll(/'([^']*)'/g)].map(m => m[1]);
+  const nums = a => (a.match(/-?\d+/g) || []);
+  const arr = a => { const m = a.match(/\[([^\]]*)\]/); return m ? m[1] : ''; };
+  let n = 0; const set = (k, val) => { cfg[k] = String(val); n++; };
+  call('SetLogin', a => { const s = strs(a); set('login.user', s[0] || ''); set('login.pass', s[1] || ''); });
+  call('SetZone', a => set('zone', strs(a)[0] || ''));
+  call('SetConfig', a => set('config', strs(a)[0] || ''));
+  call('SetTeleport', a => set('teleport', strs(a)[0] || ''));
+  call('SetBuff', a => { set('buff.id', nums(a)[0]); set('buff.bypass', strs(a).join('\n')); });
+  call('SetSecondTeleport', a => { set('stp.npc', nums(a)[0]); set('stp.bypass', strs(a).join('\n')); });
+  call('SetPath', a => { const p = nums(arr(a)), L = []; for (let i = 0; i + 2 < p.length; i += 3) L.push(p.slice(i, i + 3).join(' ')); set('path', L.join('\n')); });
+  call('SetPackFarm', a => { const p = nums(a.replace(/\[.*\]/s, '')); set('pack.size', p[0]); set('pack.spoil', p[1]); set('pack.sweep', p[2]);
+    set('pack.mobs', ids(nums(arr(a)).filter(x => +x > 0).join(','))); });
+  call('SetFarmMode', a => { const m = a.match(/FARM_(\w+)/); if (m) set('mode', m[1]); });
+  call('SetPullIgnore', a => set('ignore', ids(nums(arr(a)).join(','))));
+  call('SetPackTap', a => { const p = nums(a); set('tap.id', p[0]); set('tap.range', p[1] || ''); });
+  call('SetPackDagger', a => { const p = nums(a); set('dagger.id', p[0]); set('dagger.hp', p[1] || ''); });
+  call('SetPackTapAlways', a => set('tap_always', /true/i.test(a) ? '1' : '0'));
+  call('SetBowKite', a => { const p = nums(a); set('fight', 'BOW'); if (+p[0]) set('kite_step', p[0]); if (+p[1]) set('kite_range', p[1]); if (+p[2]) set('kite_wait', p[2]); });
+  call('SetKiteNear', a => { const p = nums(a); if (p.length) set('kite_near', p[0]); });
+  call('SetPvpAnswer', a => { const p = nums(a); set('pvp', '1'); if (p.length) set('pvp_delay', p.join(' ')); });
+  call('SetLiveMap', a => set('live', /true/i.test(a) ? '1' : '0'));
+  call('SetIdlePatrol', a => set('patrol', /true/i.test(a) ? '1' : '0'));
+  call('SetDebugLog', a => { const b = a.split(',').map(s => /true/i.test(s)); set('debug_file', b[0] ? '1' : '0'); set('debug_run', b[1] ? '1' : '0'); });
+  call('SetExpOff', a => set('exp_off', /true/i.test(a) ? '1' : '0'));
+  call('SetPrivateAlert', a => set('private_alert', /true/i.test(a) ? '1' : '0'));
+  call('SetTelegram', a => set('telegram', strs(a)[0] || ''));
+  for (const [fn, k] of [['SetZRange', 'zrange'], ['SetWeapon', 'weapon'], ['SetCornerRadius', 'corner_radius'], ['SetAutoCorner', 'auto_corner'],
+    ['SetRoomPlayers', 'room_players'], ['SetDebug', 'debug'], ['SetPlayerAlert', 'player_alert'], ['SetChatAlert', 'chat_alert'], ['SetChampionAlert', 'champion_alert']])
+    call(fn, a => { const p = nums(a); if (p.length) set(k, p[0]); });
+  call('SetPull', a => { const s = strs(a), p = nums(a.replace(/'[^']*'/g, '')); if (s[0] && p.length) set('pull.' + s[0].toLowerCase(), p[0]); });
+  let sb = false, su = false, ms = false;
+  call('AddSelfBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0', '0', '0', '']); n++; });
+  call('AddSelfBuffOnMe', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '1', '0', '0', '']); n++; });
+  call('AddSpotBuff', a => { const p = nums(a); if (!sb) { cfg.selfbuff = []; sb = true; } cfg.selfbuff.push([p[0], p[1] || '0', '0', '1', '0', '']); n++; });
+  call('AddOwnBuff', a => { const p = nums(a); if (!+p[0]) return; if (!sb) { cfg.selfbuff = []; sb = true; }   // skill buff onme when toggle max
+    cfg.selfbuff.push([String(p[0]), String(p[1] || 0), +p[2] === 1 ? '1' : '0', ['1', '2', '3'].includes(String(p[3])) ? String(p[3]) : '0',
+      +p[4] === 1 ? '1' : '0', +p[5] > 1 ? String(p[5]) : '']); n++; });
+  call('SetChampionsLast', a => { cfg.champs_last = /true/i.test(a) ? '1' : '0'; if (cfg.champs_last === BOOLS.champs_last) delete cfg.champs_last; n++; });
+  let fsk = false, psk = false;   // AddFightSkill(skill, every ms, the same mob again after ms, mobs at least); AddPullSkill(skill, min, every ms)
+  call('AddFightSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!fsk) { cfg.fight_skill = []; fsk = true; }
+    cfg.fight_skill.push([String(p[0]), ms2s(p[1]), ms2s(p[2]), +p[3] > 1 ? String(p[3]) : '']); n++; });
+  call('AddPullSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!psk) { cfg.pull_skill = []; psk = true; }
+    cfg.pull_skill.push([String(p[0]), ms2s(p[2])]); n++; });
+  let rsk = false;   // AddRushSkill(skill, the shortest dash)
+  call('AddRushSkill', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!rsk) { cfg.rush_skill = []; rsk = true; }
+    cfg.rush_skill.push([String(p[0]), +p[1] > 0 ? String(p[1]) : '']); n++; });
+  call('AddMageSkill', a => { const m = a.match(/^\s*(-?\d+)\s*,\s*(\d+)\s*,\s*'(\w*)'\s*,\s*(-?\d+)/); if (!m) return;
+    if (!ms) { cfg.mage = []; ms = true; } mageAdd(m[1], m[2], m[3], m[4]); n++; });
+  let mt = false;   // SetMageTap(0) = body pull; SetMageTap(x) + AddMageTap(y)... = the pull skills in order
+  call('SetMageTap', a => { const p = nums(a); if (!p.length) return; if (!+p[0]) { set('mage_body', '1'); return; }
+    cfg.mage_tap = [[String(p[0])]]; mt = true; n++; });
+  call('AddMageTap', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!mt) { cfg.mage_tap = []; mt = true; } cfg.mage_tap.push([String(p[0])]); n++; });
+  let mb = false;   // AddMageBuff(skill, buff ID, recast s before its end; -1 = the default)
+  call('AddMageBuff', a => { const p = nums(a); if (!p.length || !+p[0]) return; if (!mb) { cfg.mage_buff = []; mb = true; }
+    cfg.mage_buff.push([String(p[0]), +p[1] > 0 ? String(p[1]) : '', p[2] !== undefined && +p[2] >= 0 ? String(p[2]) : '', '0']); n++; });
+  call('AddSupply', a => { const m = a.match(/^\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)/); if (!m) return; if (!su) { cfg.supply = []; su = true; }
+    cfg.supply.push([String(ITEM_CONST[m[1].toUpperCase()] || +m[1] || ''), m[2], m[3]]); n++; });
+  call('SetSafePoint', a => { const p = nums(a); if (p.length >= 3) safe = { x: +p[0], y: +p[1], z: +p[2] }; });
+  return n;
+}
+
+function mk(tag, props, ...kids) { const e = document.createElement(tag); if (props) for (const k in props) {
+  if (k === 'class') e.className = props[k]; else if (k === 'text') e.textContent = props[k]; else if (k in e) e[k] = props[k]; else e.setAttribute(k, props[k]); }
+  for (const c of kids) if (c != null) e.append(c); return e; }
+function dirty() { cfgDirty = true; $('save').classList.add('dirty'); const s = $('cfgSave'); if (s) s.classList.add('dirty'); cfgChips(); cfgCounts(); }
+// saved / a new map loaded: no unsaved changes; the file name in the top bar
+function setClean() { cfgDirty = false; $('save').classList.remove('dirty'); const s = $('cfgSave'); if (s) s.classList.remove('dirty');
+  $('fileName').textContent = fname + '.navgrid'; }
+function btn(ic, text, fn, cls) { const b = mk('button', { class: cls || '', onclick: fn }); b.innerHTML = icon(ic) + '<span>' + text + '</span>'; return b; }
+function fieldUi(f) {
+  if (f.type === 'map') {
+    const row = mk('div', { class: 'fld' }), pill = (t, ok) => mk('span', { class: 'chip' + (ok ? ' ok' : ''), text: t });
+    row.dataset.s = 'on the map rooms farm spots safe point';
+    row.append(mk('label', { text: 'On the map' }),
+      mk('div', { class: 'pills' }, pill(rooms.length + ' rooms', rooms.length), pill(spots.length + ' farm spots', spots.length), pill(safe ? 'safe point set' : 'no safe point', !!safe)),
+      mk('div', { class: 'h', text: 'drawn on the map with the Room, Spot and Safe tools' }));
+    return row;
+  }
+  if (f.type === 'skilldb') return skillDbUi(f);
+  if (f.type === 'summary') {
+    const [s, W] = farmSummary(), row = mk('div', { class: 'fld wide sum' });
+    row.dataset.s = 'what the farm does ' + s.toLowerCase();
+    row.append(mk('div', { class: 'what', text: s }));
+    if (W.length) row.append(mk('div', { class: 'pills' }, ...W.map(w => mk('span', { class: 'chip warn', text: w }))));
+    return row;
+  }
+  if (f.type === 'seg') {   // one of a few, as buttons: the picked one lit (none picked - the one taken by default lit)
+    const row = mk('div', { class: 'fld wide' }); row.dataset.k = f.k;
+    row.dataset.s = [f.l, f.k, ...f.opts.map(o => o[1] + ' ' + o[2])].join(' ').toLowerCase();
+    const cur = f.eff(), seg = mk('div', { class: 'choice' });
+    for (const [val, t, d] of f.opts) {
+      const b = mk('button', { class: 'opt' + (val === cur ? ' on' : ''), onclick: () => {
+        cfg[f.k] = val; if (f.k === 'fight') delete cfg.kite; dirty(); cfgUi(); } });
+      b.append(mk('b', { text: t }), mk('span', { text: d })); seg.append(b);
+    }
+    const rst = mk('button', { class: 'rst', title: 'Reset: taken by default', onclick: () => { delete cfg[f.k]; dirty(); cfgUi(); } });
+    rst.innerHTML = icon('reset');
+    row.append(mk('div', { class: 'wt', text: f.l }), rst, seg);
+    const h = typeof f.h === 'function' ? f.h() : f.h; if (h) row.append(mk('div', { class: 'h', text: h }));
+    row.classList.toggle('set', cv0(f.k) !== ''); return row;
+  }
+  const row = mk('div', { class: 'fld' + (f.wide ? ' wide' : '') }); row.dataset.k = f.k;
+  const opts = () => typeof f.opts === 'function' ? f.opts() : f.opts || [];   // a list built when drawn (the skills)
+  row.dataset.s = [f.l, f.h, f.k, ...(f.cols || []).map(c => c[0]), ...opts().map(o => o[1])].join(' ').toLowerCase();
+  const isSet = () => f.type === 'bool' ? cv0(f.k) !== '' && cv0(f.k) !== BOOLS[f.k] : f.type === 'rows' ? !!(cfg[f.k] || []).length : cv0(f.k) !== '';
+  const mark = () => { row.classList.toggle('set', isSet()); cfgCounts(); };
+  if (!f.wide) row.append(mk('label', { text: f.l || '', title: f.k }));
+  else if (f.titled) row.append(mk('div', { class: 'wt', text: f.l }));
+  let inp;
+  const store = s => { s = (s || '').trim(); if (s === '') delete cfg[f.k]; else cfg[f.k] = s; mark(); dirty(); };
+  if (f.type === 'bool') {
+    const c = mk('input', { type: 'checkbox' }); c.checked = (cv0(f.k) || BOOLS[f.k]) === '1';
+    c.onchange = () => { const v = c.checked ? '1' : '0'; if (v === BOOLS[f.k]) delete cfg[f.k]; else cfg[f.k] = v; mark(); dirty(); };
+    inp = mk('label', { class: 'tg' }, c, mk('span'));
+  } else if (f.type === 'sel') {
+    const o = opts(); inp = mk('select'); for (const [v, t] of o) inp.append(mk('option', { value: v, text: t }));
+    if (cv0(f.k) && !o.some(x => x[0] === cv0(f.k))) inp.append(mk('option', { value: cv0(f.k), text: 'ID ' + cv0(f.k) + ' (not in the list)' }));
+    inp.value = cv0(f.k); inp.onchange = () => { store(inp.value); if (f.k === 'mode') cfgUi(); };
+  } else if (f.type === 'lines') {
+    inp = mk('textarea', { placeholder: f.ph || '', spellcheck: false, rows: 3 }); inp.value = cv0(f.k); inp.oninput = () => store(inp.value);
+  } else if (f.type === 'rows') {
+    inp = mk('div', { class: 'rows' });
+    // f.ord: the order of the rows is the priority - the row number in front, arrows to move a row up / down
+    const cols = (f.ord ? '22px ' : '') + f.cols.map(c => c[3] || (c[1] === 'item' ? '2fr' : c[1] === 'skill' ? '2.6fr' : c[1] === 'sel' ? '1.6fr' : '1fr')).join(' ') + ' auto';
+    const draw = () => { inp.innerHTML = '';
+      const note = f.note ? f.note() : null; if (note) inp.append(note);
+      if (f.hdr && (cfg[f.k] || []).length) {   // the column names over the rows
+        const hd = mk('div', { class: 'rw hd' }); hd.style.gridTemplateColumns = cols;
+        if (f.ord) hd.append(mk('span', { text: '#', class: 'ord' }));
+        for (const c of f.cols) hd.append(mk('span', { text: c[0] })); hd.append(mk('span')); inp.append(hd);
+      }
+      (cfg[f.k] || []).forEach((r, i, L) => {
+        const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
+        if (f.ord) line.append(mk('span', { class: 'ord', text: i + 1, title: 'priority: the upper row goes first' }));
+        f.cols.forEach((c, j) => {
+          let e;
+          if (c[1] === 'item') { e = mk('select'); for (const [id, nm] of ITEMS) e.append(mk('option', { value: id, text: nm }));
+            if (r[j] && !ITEMS.some(x => String(x[0]) === String(r[j]))) e.append(mk('option', { value: r[j], text: 'ID ' + r[j] })); e.value = r[j]; e.onchange = () => { r[j] = e.value; dirty(); }; }
+          else if (c[1] === 'skill') {   // a skill of the skill list (skills.json); c[2] = which ones (none = all)
+            e = mk('select', { title: c[0] }); e.append(mk('option', { value: '', text: '— pick a skill —' }));
+            for (const s of skillDb) if (+s.id && (typeof c[2] !== 'function' || c[2](s))) e.append(mk('option', { value: s.id, text: skillLabel(s) }));
+            if (r[j] && ![...e.options].some(o => o.value === String(r[j]))) { const s = skillById(r[j]);
+              e.append(mk('option', { value: r[j], text: s ? skillLabel(s) : 'ID ' + r[j] + ' — not in the skill list' })); }
+            const sk = e; sk.value = r[j] || ''; sk.onchange = () => { r[j] = sk.value; dirty(); draw(); };   // redraw: the hints follow its kind
+            e = mk('span', { class: 'skp' }, skillIcon(skillById(r[j])), sk); }
+          else if (c[1] === 'sel') { e = mk('select', { title: c[0] }); for (const [v, t] of c[2]) e.append(mk('option', { value: v, text: t }));
+            e.value = r[j] || c[2][0][0]; e.onchange = () => { r[j] = e.value; dirty(); draw(); }; }   // redraw: the hints of the other columns follow
+          else { const ph = typeof c[2] === 'function' ? c[2](r) : c[2];
+            const inp0 = mk('input', { type: 'number', placeholder: ph || c[0], title: c[0] + (ph ? ': ' + ph : '') }); inp0.value = r[j] || '';
+            inp0.oninput = () => { r[j] = inp0.value.trim(); dirty(); }; e = inp0;
+            if (c[4] === 'skillid') { const im = skillIcon(skillById(r[j]));   // a skill ID: its icon in front, it follows the number
+              inp0.addEventListener('input', () => { const s = skillById(r[j]); im.classList.toggle('none', !(s && s.icon)); if (s && s.icon) im.src = 'data:image/png;base64,' + s.icon; });
+              e = mk('span', { class: 'skp' }, im, inp0); } }
+          line.append(e);
+        });
+        const x = mk('button', { class: 'x', title: 'remove', onclick: () => { cfg[f.k].splice(i, 1); if (!cfg[f.k].length) delete cfg[f.k]; draw(); mark(); dirty(); } });
+        x.innerHTML = icon('close');
+        if (f.ord) {   // swap with the row above / below
+          const mv = (d, ic, t) => { const b = mk('button', { class: 'mv', title: t, disabled: !L[i + d], onclick: () => {
+            [L[i], L[i + d]] = [L[i + d], L[i]]; draw(); dirty(); } }); b.innerHTML = icon(ic); return b; };
+          line.append(mk('span', { class: 'rb' }, mv(-1, 'up', 'up: a higher priority'), mv(1, 'down', 'down: a lower priority'), x));
+        } else line.append(x);
+        inp.append(line);
+      });
+      inp.append(mk('button', { class: 'addrow', text: f.add || '+ Add row', onclick: () => {
+        (cfg[f.k] = cfg[f.k] || []).push(f.newRow ? f.newRow() : f.cols.map(c => c[1] === 'item' ? String(ITEMS[0][0]) : c[1] === 'sel' ? c[2][0][0] : ''));
+        draw(); mark(); dirty(); } }));
+    };
+    draw();
+  } else {
+    inp = mk('input', { type: f.type === 'num' ? 'number' : f.type === 'pass' ? 'password' : 'text', placeholder: f.ph || '', spellcheck: false });
+    inp.value = cv0(f.k);
+    inp.oninput = () => store(inp.value);
+    if (f.type === 'ids') inp.onchange = () => { inp.value = ids(inp.value); store(inp.value); };
+  }
+  row.append(inp);
+  // back to the library default: the key is dropped from the .navgrid
+  const rst = mk('button', { class: 'rst', title: 'Reset to the default', onclick: () => {
+    delete cfg[f.k]; row.replaceWith(fieldUi(f)); dirty(); if (f.k === 'mode') cfgUi(); else cfgFilter(); } });
+  rst.innerHTML = icon('reset'); row.append(rst);
+  if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
+  row.classList.toggle('set', isSet()); return row;
+}
+// the skill list (skills.json) to edit: ID, how it is cast, cast range, AoE radius, name; Open / Save by its own buttons
+function skillDbUi(f) {
+  const row = mk('div', { class: 'fld wide' }); row.dataset.k = f.k;
+  row.dataset.s = [f.l, f.h, SKILL_FILE, 'skills', ...skillDb.map(s => s.name)].join(' ').toLowerCase();
+  const list = mk('div', { class: 'rows' }), cols = '24px .9fr 1.7fr .9fr .9fr 2.2fr auto';
+  const sv = btn('save', 'Save ' + SKILL_FILE, saveSkills, skillDbDirty ? 'primary dirty' : '');
+  const st = mk('span', { class: 'muted' });
+  const status = () => { st.textContent = skillDbDirty ? 'changed — not saved yet' : !skillDb.length ? '' :
+    skillDb.length + ' skills · ' + (skillFile ? skillFile.name : 'the copy kept by the page'); };
+  const touched = () => { skillDbDirty = true; sv.className = 'primary dirty'; status(); cfgCounts(); };
+  const draw = () => { list.innerHTML = '';
+    if (!skillDb.length) list.append(mk('div', { class: 'h', text: 'No skills yet: press Open ' + SKILL_FILE + ' and pick Library\\Nav\\' + SKILL_FILE +
+      ' (once — the page remembers it), or add the skills here and save them there' }));
+    else { const hd = mk('div', { class: 'rw hd' }); hd.style.gridTemplateColumns = cols;
+      for (const t of ['', 'ID', 'Cast', 'Range', 'AoE radius', 'Name', '']) hd.append(mk('span', { text: t })); list.append(hd); }
+    skillDb.forEach((s, i) => {
+      const line = mk('div', { class: 'rw' }); line.style.gridTemplateColumns = cols;
+      const num = (k, ph) => { const e = mk('input', { type: 'number', placeholder: ph, title: ph }); e.value = s[k];
+        e.oninput = () => { s[k] = e.value.trim(); touched(); }; e.onchange = () => skillsUiRefresh(); return e; };
+      const ty = mk('select', { title: 'how it is cast' }); for (const [v, t] of SKILL_TYPES) ty.append(mk('option', { value: v, text: t }));
+      ty.value = s.type; ty.onchange = () => { s.type = ty.value; touched(); skillsUiRefresh(); };
+      const nm = mk('input', { type: 'text', placeholder: 'name', spellcheck: false }); nm.value = s.name;
+      nm.oninput = () => { s.name = nm.value; touched(); }; nm.onchange = () => skillsUiRefresh();
+      const x = mk('button', { class: 'x', title: 'remove', onclick: () => { skillDb.splice(i, 1); touched(); draw(); skillsUiRefresh(); } });
+      x.innerHTML = icon('close');
+      line.append(skillIcon(s), num('id', 'skill ID'), ty, num('range', 'cast range'), num('rad', 'AoE radius'), nm, x); list.append(line);
+    });
+    list.append(mk('button', { class: 'addrow', text: '+ Add skill', onclick: () => {
+      skillDb.push({ id: '', type: 'TARGET', range: '600', rad: '0', name: '' }); touched(); draw(); } }));
+  };
+  draw(); status();
+  row.append(mk('div', { class: 'wt', text: f.l }), mk('div', { class: 'acts' }, btn('open', 'Open ' + SKILL_FILE, openSkills), sv, st), list);
+  if (f.h) row.append(mk('div', { class: 'h', text: f.h }));
+  return row;
+}
+const FIGHT_NAME = { MELEE: 'melee', BOW: 'bow + kite', MAGE: 'mage skills' };
+const ROOM_MODE = { PACK: 'pack', SINGLE: 'one by one', AUTO: 'auto' };
+// the "How to farm" card: what the farm will do with these settings, in one go, and what does not fit
+function farmSummary() {
+  const v = cv0, m = modeOf(), ft = fightOf(), W = [];
+  const mobs = v('pack.mobs') ? 'mobs ' + v('pack.mobs') : 'any mob of the map', size = v('pack.size') || '6';
+  let s;
+  if (m === 'PROFILE') s = 'The bot interface farms by ' + (v('config') || 'the Profile .xml') + '. The script runs to the spot and turns it on; ' +
+    'when the buff runs low it turns the interface off, kills what hits it (on the safe point if there is one), rebuffs and turns it on again.';
+  else {
+    s = m === 'SINGLE' ? 'Runs over the spot and kills ' + mobs + ' one by one where they stand.'
+      : m === 'AUTO' ? 'Many free mobs near — pulls a pack of ' + size + ' to a corner, few — kills them one by one (' + mobs + ').'
+      : m === 'ROOMS' ? 'Goes room by room, each by its own mode: ' + (rooms.map(r => r.name + ' — ' + (ROOM_MODE[r.mode] || r.mode)).join(', ') || 'no rooms drawn') + ' (' + mobs + ').'
+      : 'Pulls a pack of ' + size + ' (' + mobs + ') by running past them, takes it to a farm spot / wall corner and kills it there.';
+    const R = +v('kite_range') || 500, S = +v('kite_step') || 120;
+    s += ' ' + (ft === 'BOW' ? 'Shoots from up to ' + R + '; after every shot a step of ' + S + ' away while a mob on it is closer than ' + (+v('kite_near') || R - S) + '.'
+      : ft === 'MAGE' ? 'Kills with the ' + (cfg.mage || []).filter(r => +r[0]).length + ' skills of the Mage card, no auto attack.'
+      : 'Hits with the auto attack' + (v('pack.spoil') === '0' ? '' : ', mass spoil ' + (v('pack.spoil') || 302) + ' and sweep ' + (v('pack.sweep') || 444)) + '.');
+    const fsk = (cfg.fight_skill || []).filter(r => +r[0]).length, psk = (cfg.pull_skill || []).filter(r => +r[0]).length, rsk = (cfg.rush_skill || []).filter(r => +r[0]).length;
+    if (fsk && ft !== 'MAGE') s += ' Presses ' + fsk + ' fight skill' + (fsk > 1 ? 's' : '') + ' (debuffs…) between the ' + (ft === 'BOW' ? 'shots' : 'hits') + '.';
+    if (psk && isPull()) s += ' Pulls with ' + psk + ' skill' + (psk > 1 ? 's' : '') + ' of the Pull skills card.';
+    if (rsk && isPull()) s += ' Dashes at mobs on its way (' + rsk + ' rush skill' + (rsk > 1 ? 's' : '') + ').';
+  }
+  if (m === 'ROOMS' && !rooms.length) W.push('Rooms picked, but no rooms on the map — draw them with the Room tool');
+  if (m === 'ROOMS' && ft === 'BOW') { const pk = rooms.filter(r => r.mode !== 'SINGLE').map(r => r.name);
+    if (pk.length) W.push('rooms ' + pk.join(', ') + ' are pulled as a pack — for one by one click the room on the map and set Single'); }
+  if (m !== 'PROFILE' && ft === 'MAGE' && !mageRows()) W.push('no mage skills yet — add them in the Mage card');
+  if (m === 'PROFILE' && !v('config')) W.push('Bot profile needs the Profile .xml (Account & start)');
+  return [s, W];
+}
+function cfgChips() {
+  const box = $('cfgChips'); if (!box) return; box.innerHTML = '';
+  const chip = (t, c) => box.append(mk('span', { class: 'chip ' + (c || ''), text: t }));
+  const v = cv0, mode = modeOf();
+  const MODE = { PACK: 'packs to a corner', SINGLE: 'single', AUTO: 'auto', ROOMS: 'rooms', PROFILE: 'profile — the interface farms' };
+  const mobs = v('pack.mobs') ? 'mobs ' + v('pack.mobs') : 'any mobs';
+  chip(v('login.user') ? 'login ' + v('login.user') : 'no auto-login', v('login.user') ? 'ok' : '');
+  // a profile that is not an .xml is not there: the bot keeps the profile loaded before (a spoiler attacks by itself)
+  if (v('config') && !/\.xml$/i.test(v('config'))) chip('Profile ' + v('config') + ': the bot profiles are .xml files — it will not load', 'warn');
+  if (cfgProfile()) chip(v('config') ? 'profile ' + v('config') : 'Profile mode, but no Profile .xml', v('config') ? 'ok' : 'warn');
+  else if (cfgRooms()) chip('pack = the whole room · ' + mobs, 'ok');
+  else if (mode === 'PACK' || mode === 'AUTO') chip('pack of ' + (v('pack.size') || '6') + ' · ' + mobs, 'ok');
+  else chip('one by one · ' + mobs, 'ok');
+  chip('mode: ' + (MODE[mode] || mode) + (cfgProfile() ? '' : ' · ' + FIGHT_NAME[fightOf()]), mode === 'ROOMS' && !rooms.length ? 'warn' : 'ok');
+  const mg = (cfg.mage || []).filter(r => +r[0]);
+  const mb = (cfg.mage_buff || []).filter(r => +r[0]);
+  const fsk = (cfg.fight_skill || []).filter(r => +r[0]), psk = (cfg.pull_skill || []).filter(r => +r[0]), rsk = (cfg.rush_skill || []).filter(r => +r[0]);
+  const miss = [...new Set([...mg, ...(cfg.mage_tap || []), ...mb, ...fsk, ...psk, ...rsk].map(r => r[0]).filter(x => +x && !skillById(x)))];
+  if (mg.length) chip(cfgProfile() ? 'mage skills: not used in Profile mode' : 'mage: ' + mg.length + ' skills, no auto attack', cfgProfile() ? 'warn' : 'ok');
+  if (fsk.length && !cfgProfile()) chip(fightOf() === 'MAGE' ? 'fight skills: not used by a mage (its own rows in the Mage card)' : 'fight skills: ' + fsk.length,
+    fightOf() === 'MAGE' ? 'warn' : 'ok');
+  if (psk.length && !cfgProfile()) chip(isPull() ? 'pull skills: ' + psk.length : 'pull skills: not used one by one (no pull)', isPull() ? 'ok' : 'warn');
+  if (rsk.length && !cfgProfile()) chip(isPull() ? 'rush skills: ' + rsk.length + ' (a dash on the way)' : 'rush skills: not used one by one (no pull)', isPull() ? 'ok' : 'warn');
+  { const both = rsk.map(r => r[0]).filter(id => psk.some(p => p[0] === id)); if (both.length) chip('skill ' + both.join(', ') + ' is a pull and a rush skill — a rush only', 'warn'); }
+  if ((mg.length || fsk.length || psk.length || rsk.length) && !skillDb.length) chip('the skill list is empty — Skills card: open Library\\Nav\\' + SKILL_FILE, 'warn');
+  else if (miss.length) chip('not in ' + SKILL_FILE + ': ' + miss.join(', ') + ' — cast at the target from 600', 'warn');
+  if (mb.length) chip(cfgProfile() ? 'own buffs of the Mage card: not used in Profile mode' : 'own buffs: ' + mb.length + ' (with no mob on us)', cfgProfile() ? 'warn' : 'ok');
+  if (mg.length && !cfgProfile() && !mg.some(r => r[1] === 'HP_BELOW'))
+    chip('mage: no skill «Our HP % below» (a drain / heal) — it does not heal itself while pulling', 'warn');
+  if (mg.length && !cfgProfile() && cfgRooms()) {   // a mage starts the pull of a room at its farm spot
+    const nm = s => String(s || '').trim().replace(/\s+/g, '_').toUpperCase();
+    const own = r => spots.some(p => p.room ? p.room.split(',').includes(nm(r.name)) : spotAuto(p) === r.name);
+    const no = rooms.filter(r => r.pts.length >= 3 && !own(r)).map(r => r.name);
+    if (no.length) chip('mage: no farm spot for room ' + no.join(', ') + ' — its pull starts in its middle (Spot tool)', 'warn');
+  }
+  if (mode === 'ROOMS' && !rooms.length) chip('rooms mode, but no rooms on the map', 'warn');
+  chip(rooms.length + ' rooms · ' + spots.length + ' farm spots', rooms.length || spots.length ? 'ok' : '');
+  chip(safe ? 'safe point set' : 'no safe point', safe ? 'ok' : '');
+  if (!v('teleport') && !v('path')) chip('no way to the spot: farms where started');
+  if ((cfg.supply || []).length) chip('supplies: ' + cfg.supply.length);
+  if (!grid) chip('no map open — nowhere to save', 'warn');
+}
+// changed fields per card: the card header and the side menu
+function cfgCounts() {
+  document.querySelectorAll('#cfg .card').forEach(card => {
+    const i = +card.dataset.i, db = CARDS[i] && CARDS[i].db, n = db ? 0 : card.querySelectorAll('.fld.set').length, c = card.querySelector('.cnt');
+    if (c && db) { c.textContent = skillDb.length + ' skills' + (skillDbDirty ? ' · not saved' : ''); c.classList.toggle('none', !skillDbDirty); }   // the skill list
+    else if (c) { c.textContent = n ? n + ' changed' : 'defaults'; c.classList.toggle('none', !n); }
+    const a = document.querySelector('#cfg aside a[data-i="' + i + '"] .n'); if (a) { a.textContent = n || ''; a.style.display = n ? '' : 'none'; }
+  });
+}
+// the filter box: fields whose label / hint / key has the text (a card title match shows the whole card)
+let cfgQuery = '';
+function cfgFilter() {
+  const q = cfgQuery.trim().toLowerCase(); let any = false;
+  document.querySelectorAll('#cfg .card').forEach(card => {
+    const i = +card.dataset.i, whole = !q || CARDS[i].t.toLowerCase().includes(q); let n = 0;
+    card.querySelectorAll('.fld').forEach(r => { const ok = whole || (r.dataset.s || '').includes(q); r.style.display = ok ? '' : 'none'; if (ok) n++; });
+    const adv = card.querySelector('details.adv');
+    if (adv) { const hit = [...adv.querySelectorAll('.fld')].some(r => r.style.display !== 'none'); adv.style.display = hit ? '' : 'none'; if (q && hit) adv.open = true; }
+    card.style.display = n ? '' : 'none'; if (n) any = true;
+    const a = document.querySelector('#cfg aside a[data-i="' + i + '"]'); if (a) a.classList.toggle('off', !n);
+  });
+  const nr = document.querySelector('#cfg .nores'); if (nr) nr.style.display = any ? 'none' : 'block';
+}
+// the side menu follows the scroll: the last card whose top is above the sticky header
+function cfgSpy() {
+  const main = document.querySelector('#cfg main'); if (!main) return;
+  const top = main.getBoundingClientRect().top + 96; let cur = -1;
+  document.querySelectorAll('#cfg .card').forEach(c => { if (c.style.display !== 'none' && (cur < 0 || c.getBoundingClientRect().top <= top)) cur = +c.dataset.i; });
+  document.querySelectorAll('#cfg aside a').forEach(a => a.classList.toggle('on', +a.dataset.i === cur));
+}
+function cfgUi() {
+  const box = $('cfg'), old = box.querySelector('main'), keep = old ? old.scrollTop : 0; box.innerHTML = '';
+  const nav = mk('aside', null, mk('div', { class: 'ttl' }, mk('b', { text: 'Settings' }), mk('span', { class: 'muted', text: fname + '.navgrid' })));
+  const main = mk('main');
+  const search = mk('input', { type: 'search', placeholder: 'Filter settings…', spellcheck: false }); search.value = cfgQuery;
+  const sbox = mk('label', { class: 'search' }, search); sbox.insertAdjacentHTML('afterbegin', icon('search'));
+  const imp = mk('label', { class: 'btn', title: 'Take the settings from an old .txt script' }, mk('input', { type: 'file', accept: '.txt,.pas', hidden: true, onchange: async e => {
+    const f = e.target.files[0]; if (!f) return; const n = importScript(await f.text()); e.target.value = ''; toast(n + ' settings taken from ' + f.name); dirty(); cfgUi(); } }));
+  imp.insertAdjacentHTML('afterbegin', icon('import') + '<span>Import .txt</span>');
+  const sv = btn('save', 'Save .navgrid', save, 'primary' + (cfgDirty ? ' dirty' : '')); sv.id = 'cfgSave';
+  main.append(mk('div', { class: 'head' }, btn('back', 'Map', () => cfgShow(false), 'ghost'), mk('h1', { text: 'Farm settings' }),
+    mk('span', { class: 'fn', text: fname + '.navgrid' }), sbox, imp, btn('code', 'Bot script', showScript), sv));
+  main.append(mk('div', { class: 'chips', id: 'cfgChips' }));
+  const cards = mk('div', { class: 'cards' });
+  CARDS.forEach((c, i) => {
+    if (c.show && !c.show()) return;   // does not fit the mode / the fight picked in How to farm
+    const card = mk('section', { class: 'card' }); card.style.setProperty('--c', c.c); card.dataset.i = i;
+    const ic = mk('span', { class: 'ic' }); ic.innerHTML = icon(c.ic);
+    card.append(mk('header', null, ic, mk('div', null, mk('h2', { text: c.t }), c.sub ? mk('div', { class: 'sub', text: c.sub }) : null), mk('span', { class: 'cnt' })));
+    const body = mk('div', { class: 'body' });
+    if (c.pull) {
+      // only what the mode uses in sight: one by one - its reach (the rest of the pull under Fine tuning), the single reach
+      // with one by one in it, the pack density with Auto only
+      const m = modeOf(), fits = k => (k !== 'single_range' || ['SINGLE', 'AUTO', 'ROOMS'].includes(m)) && (k !== 'pack_density' || m === 'AUTO');
+      const top = m === 'SINGLE' ? ['single_range'] : null, isTop = k => fits(k) && (!top || top.includes(k));
+      for (const [k, l, d, h] of PULL) if (isTop(k)) body.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
+      const more = [...PULL.filter(([k]) => fits(k) && !isTop(k)), ...PULL_ADV];
+      const adv = mk('details', { class: 'adv' }, mk('summary', { text: 'Fine tuning (' + more.length + ')' }));
+      for (const [k, l, d, h] of more) adv.append(fieldUi({ k: 'pull.' + k, l, type: 'num', ph: String(d), h }));
+      body.append(adv);
+    } else for (const f of c.f) if (!f.show || f.show()) body.append(fieldUi(f));
+    card.append(body); cards.append(card);
+    const a = mk('a', { 'data-i': i, onclick: () => card.scrollIntoView({ behavior: 'smooth', block: 'start' }) }); a.style.setProperty('--c', c.c);
+    const ai = mk('span', { class: 'ic' }); ai.innerHTML = icon(c.ic);
+    a.append(ai, mk('span', { text: c.t }), mk('span', { class: 'n' })); nav.append(a);
+  });
+  cards.append(mk('div', { class: 'nores', text: 'No settings match the filter' }));
+  main.append(cards); box.append(nav, main);
+  search.oninput = () => { cfgQuery = search.value; cfgFilter(); cfgSpy(); };
+  main.onscroll = cfgSpy;
+  cfgChips(); cfgCounts(); cfgFilter(); main.scrollTop = keep; cfgSpy();
+}
+const cfgOpen = () => $('cfg').style.display === 'grid';
+function cfgShow(on) { const box = $('cfg'); box.style.top = $('bar').offsetHeight + 'px';
+  box.style.display = on ? 'grid' : 'none'; $('cfgBtn').classList.toggle('on', on); if (on) cfgUi(); }
+function scriptText() {
+  const n = fname + '.navgrid';
+  return ['uses SysUtils;', "uses SpotFarmPackNav in 'spot_farm_pack_nav.pas';", '',
+    '// All settings, rooms, farm spots and the safe point are in ' + n + ' (Library\\Nav):',
+    '// open it in Library\\Nav\\nav_view.html, button "Settings". A line after SetNavGrid overrides the file.', '',
+    'begin', "  SetNavGrid('" + n + "');", '  RunFarm();', 'end.', ''].join('\r\n');
+}
+function showScript() { $('scriptText').value = scriptText(); $('scriptBox').style.display = 'grid'; }
+
+// ===== drawing =====
+const LEVELS = ['', '1', '2', '3', '4', '5', '6'];
+function visTiles() { const dx = +$('cdx').value || 0, dy = +$('cdy').value || 0, r = [];
+  const x0 = Math.floor((wx(0) - dx) / TILE) + 20, x1 = Math.floor((wx(W()) - dx) / TILE) + 20, y0 = Math.floor((wy(0) - dy) / TILE) + 18, y1 = Math.floor((wy(H()) - dy) / TILE) + 18;
+  if ((x1 - x0 + 1) * (y1 - y0 + 1) > 30) return r; for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) r.push([x, y]); return r; }
+function tile(tx, ty, l) { const k = tx + '_' + ty + (l ? '_' + l : '');
+  if (!(k in tiles)) { const im = new Image(); tiles[k] = im; im.onload = () => { draw(); levelsSoon(); }; im.onerror = () => { tiles[k] = null; levelsSoon(); }; im.src = '/tiles/' + k + '.jpg'; }
+  const im = tiles[k]; return im && im.complete && im.naturalWidth ? im : null; }
+function levelsUi() { const box = $('levels'), vis = visTiles(); box.innerHTML = '';
+  for (const l of LEVELS) { const b = document.createElement('button'); b.textContent = l || 'top';
+    if (l === level) b.className = 'on'; else if (vis.length <= 6 && !vis.some(([x, y]) => tile(x, y, l))) b.style.opacity = .35;
+    b.onclick = () => { level = l; try { localStorage.setItem('navmeshLevel', l); } catch (e) {} levelsUi(); draw(); }; box.appendChild(b); } }
+let lt = 0; function levelsSoon() { clearTimeout(lt); lt = setTimeout(levelsUi, 250); }
+// the picture of the cells: built whole once (a map opened, the grid grown), then the brush / the run repaint only
+// their own piece of it (gridPatch) - rebuilding all of it on every mouse move was the lag on big maps
+const GRID_COL = new Uint32Array(4);
+[[0, 0, 0, 0], [61, 220, 132, 95], [255, 93, 108, 110], [79, 179, 255, 100]].forEach((c, i) => new Uint8Array(GRID_COL.buffer).set(c, i * 4));
+let gridPix = null;   // the picture's pixels: { of: the grid, img, u: its 32-bit view, g: its context }
+function gridImage() {
+  if (gridImg) return gridImg;
+  const c = document.createElement('canvas'); c.width = grid.w; c.height = grid.h;
+  const g = c.getContext('2d'), img = g.createImageData(grid.w, grid.h), u = new Uint32Array(img.data.buffer), f = grid.f;
+  for (let i = 0; i < f.length; i++) u[i] = GRID_COL[f[i]] || 0;
+  g.putImageData(img, 0, 0); gridImg = c; gridPix = { of: grid, img, u, g }; return c;
+}
+// the cells x0..x1, y0..y1 changed: only that piece of the picture (no picture yet / another grid: built whole on the next draw)
+function gridPatch(x0, y0, x1, y1) {
+  if (!gridImg || !gridPix || gridPix.of !== grid) { gridImg = null; return; }
+  const g = grid, u = gridPix.u, f = g.f;
+  x0 = Math.max(0, x0); y0 = Math.max(0, y0); x1 = Math.min(g.w - 1, x1); y1 = Math.min(g.h - 1, y1);
+  if (x1 < x0 || y1 < y0) return;
+  for (let y = y0; y <= y1; y++) for (let i = y * g.w + x0, e = y * g.w + x1; i <= e; i++) u[i] = GRID_COL[f[i]] || 0;
+  gridPix.g.putImageData(gridPix.img, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+}
+function path(pts) { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(sx(p[0]), sy(p[1])) : ctx.moveTo(sx(p[0]), sy(p[1]))); }
+// draw() asks for one redraw on the next frame: a fast mouse sends far more moves than the screen shows frames
+let drawQ = 0;
+function draw() { if (!drawQ) drawQ = requestAnimationFrame(() => { drawQ = 0; drawNow(); }); }
+function drawNow() {
+  $('regen').classList.toggle('stale', !!grid && !graph);   // painted since the last Rebuild: the button says so
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.fillStyle = '#0d1014'; ctx.fillRect(0, 0, W(), H());
+  const dx = +$('cdx').value || 0, dy = +$('cdy').value || 0;
+  for (const [tx, ty] of visTiles()) { const im = tile(tx, ty, level); if (im) ctx.drawImage(im, sx((tx - 20) * TILE + dx), sy((ty - 18) * TILE + dy), TILE * scale, TILE * scale); }
+  if (grid) { ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(gridImage(), sx(grid.x0), sy(grid.y0), grid.w * grid.cell * scale, grid.h * grid.cell * scale); ctx.restore(); }
+  if (zone) { ctx.setLineDash([8, 5]); ctx.lineWidth = 1.2; ctx.strokeStyle = '#c792ea'; path(zone.outer); ctx.closePath(); ctx.stroke();
+    for (const h of zone.inner) { path(h); ctx.closePath(); ctx.stroke(); } ctx.setLineDash([]); }
+  ctx.strokeStyle = '#5ee6ff'; ctx.lineWidth = 1.5; for (const s of strokes) { path(s); ctx.stroke(); }
+  if (leak && Date.now() < leak.until && grid) { ctx.fillStyle = 'rgba(255,159,28,.45)'; const s = grid.cell * scale + .5;
+    for (const c of leak.cells) ctx.fillRect(sx(grid.x0 + (c % grid.w) * grid.cell), sy(grid.y0 + Math.floor(c / grid.w) * grid.cell), s, s); }
+  if (graph) { ctx.strokeStyle = 'rgba(255,209,102,.3)'; ctx.lineWidth = 1; ctx.beginPath();
+    for (const [a, b] of graph.edges) { ctx.moveTo(sx(graph.nodes[a][0]), sy(graph.nodes[a][1])); ctx.lineTo(sx(graph.nodes[b][0]), sy(graph.nodes[b][1])); } ctx.stroke();
+    ctx.fillStyle = '#ffd166'; for (const p of graph.nodes) { ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 3, 0, 7); ctx.fill(); } }
+  if (tool === 'erase') { ctx.strokeStyle = '#ff5d6c'; ctx.lineWidth = 2; for (const p of bans) { const X = sx(p[0]), Y = sy(p[1]);
+    ctx.beginPath(); ctx.moveTo(X - 5, Y - 5); ctx.lineTo(X + 5, Y + 5); ctx.moveTo(X + 5, Y - 5); ctx.lineTo(X - 5, Y + 5); ctx.stroke(); } }
+  ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 4; for (const r of rails) { path(r); ctx.stroke(); }
+  for (const r of rails) for (const p of r) { ctx.fillStyle = '#00e5ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+    ctx.fillRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); ctx.strokeRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); }
+  if (railDraw) { ctx.setLineDash([6, 4]); ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 3;
+    path(railDraw.cursor ? [...railDraw.pts, railDraw.cursor] : railDraw.pts); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = '#00e5ff'; for (const p of railDraw.pts) ctx.fillRect(sx(p[0]) - 4, sy(p[1]) - 4, 8, 8); }
+  for (const p of unodes) { const X = sx(p[0]), Y = sy(p[1]); ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X, Y - 7); ctx.lineTo(X + 7, Y); ctx.lineTo(X, Y + 7); ctx.lineTo(X - 7, Y); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  rooms.forEach((r, i) => { const col = ROOM_COL[i % ROOM_COL.length];
+    path(r.pts); ctx.closePath(); ctx.globalAlpha = i === selRoom ? .22 : .1; ctx.fillStyle = col; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.lineWidth = i === selRoom ? 2.5 : 1.5; ctx.strokeStyle = col; ctx.stroke();
+    if (tool === 'room') { ctx.fillStyle = col; for (const p of r.pts) ctx.fillRect(sx(p[0]) - 3, sy(p[1]) - 3, 6, 6); }
+    const cxr = r.pts.reduce((a, p) => a + p[0], 0) / r.pts.length, cyr = r.pts.reduce((a, p) => a + p[1], 0) / r.pts.length;
+    ctx.font = 'bold 13px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.fillStyle = col;
+    const lbl = r.name + ' · ' + r.min + ' · ' + r.mode; ctx.strokeText(lbl, sx(cxr) - 20, sy(cyr)); ctx.fillText(lbl, sx(cxr) - 20, sy(cyr)); });
+  if (roomDraw) { ctx.setLineDash([6, 4]); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2;
+    path(roomDraw.cursor ? [...roomDraw.pts, roomDraw.cursor] : roomDraw.pts); ctx.stroke(); ctx.setLineDash([]); }
+  for (const p of spots) { const X = sx(p.x), Y = sy(p.y); ctx.fillStyle = '#c792ea'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (let k = 0; k < 10; k++) { const a = k * Math.PI / 5 - Math.PI / 2, rr = k % 2 ? 4 : 9;
+      k ? ctx.lineTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr) : ctx.moveTo(X + Math.cos(a) * rr, Y + Math.sin(a) * rr); }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    const lab = p.room || (rooms.length ? spotAuto(p) : '');
+    if (lab) { ctx.font = (p.room ? 'bold ' : '') + '11px system-ui'; ctx.lineWidth = 3; ctx.strokeStyle = '#000'; ctx.fillStyle = p.room ? '#ffffff' : '#c792ea';
+      ctx.strokeText(lab, X + 9, Y - 6); ctx.fillText(lab, X + 9, Y - 6); } }
+  if (safe) { ctx.fillStyle = '#4fb3ff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(safe.x), sy(safe.y), 8, 0, 7);
+    ctx.fill(); ctx.stroke(); ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText('S', sx(safe.x) - 3, sy(safe.y) + 4); }
+  for (const s of seeds) { ctx.fillStyle = s.t === 'S' ? '#4fb3ff' : s.t === 'F' ? '#c792ea' : '#ffd166'; ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(sx(s.x), sy(s.y), 6, 0, 7); ctx.fill(); ctx.stroke(); }
+  for (const [p, l] of [[route.a, 'A'], [route.b, 'B']]) if (p) { ctx.fillStyle = '#ff9f1c'; ctx.beginPath(); ctx.arc(sx(p[0]), sy(p[1]), 7, 0, 7); ctx.fill();
+    ctx.fillStyle = '#000'; ctx.font = 'bold 10px system-ui'; ctx.fillText(l, sx(p[0]) - 3, sy(p[1]) + 4); }
+  if (route.path) { ctx.strokeStyle = '#ff9f1c'; ctx.lineWidth = 3; path(route.path); ctx.stroke(); }
+  if (mouse && tool === 'brush') { const r = (+$('brush').value + .5) * (+$('cell').value || 4) * scale;
+    ctx.strokeStyle = color === 'good' ? '#3ddc84' : color === 'see' ? '#4fb3ff' : '#ff5d6c'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(mouse[0], mouse[1], r, 0, 7); ctx.stroke(); }
+  drawLive();
+}
+function fit() {
+  const box = [...(zone ? zone.outer : []), ...strokes.flat(), ...seeds.map(s => [s.x, s.y]), ...rooms.flatMap(r => r.pts)];
+  if (!box.length && grid) box.push([grid.x0, grid.y0], [grid.x0 + grid.w * grid.cell, grid.y0 + grid.h * grid.cell]);
+  if (!box.length) return; const xs = box.map(p => p[0]), ys = box.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  scale = Math.min(W() / Math.max(200, x1 - x0), (H() - 140) / Math.max(200, y1 - y0)) * 0.85;
+  ox = W() / 2 - (x0 + x1) / 2 * scale; oy = H() / 2 - (y0 + y1) / 2 * scale; levelsSoon();
+}
+
+// ===== input =====
+let pan = null, painting = false, space = false;
+// a rail being drawn is done: 2+ points -> a rail (long stretches split to 500)
+function finishRail() {
+  const d = railDraw; railDraw = null;
+  if (d && d.pts.length >= 2) {
+    const r = railSplit(d.pts); rails.push(r);
+    const g = grid, off = r.filter(p => { if (!g) return false; const cx = Math.floor((p[0] - g.x0) / g.cell), cy = Math.floor((p[1] - g.y0) / g.cell);
+      return cx < 0 || cy < 0 || cx >= g.w || cy >= g.h || g.f[cy * g.w + cx] !== 1; }).length;
+    toast('Rail: ' + r.length + ' points' + (off ? ' — ' + off + ' off the green (the bot clicks them anyway)' : ''));
+  } else if (d) toast('A rail needs at least 2 points');
+  regen();
+}
+function setTool(t) { if (t !== 'room') roomDraw = null; if (t !== 'rail' && railDraw) finishRail();
+  tool = t; document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
+  const m = TOOLS[t]; $('toolName').innerHTML = icon(m[0]) + m[1]; $('toolHint').textContent = m[2];
+  $('optBrush').style.display = t === 'brush' ? '' : 'none'; $('optFill').style.display = t === 'fill' ? '' : 'none'; layoutTop();
+  cv.style.cursor = t === 'brush' ? 'none' : t === 'fill' ? 'cell' : 'crosshair'; draw(); }
+function setColor(c) { color = c; document.querySelectorAll('[data-color]').forEach(b => b.classList.toggle('on', b.dataset.color === c));
+  if (tool === 'route') setTool('brush'); draw(); }
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  if (e.button !== 0 || space) { pan = { x: e.clientX, y: e.clientY, ox, oy }; return; }
+  const p = [wx(e.offsetX), wy(e.offsetY)];
+  if (tool === 'route') {
+    if (!graph) regen();
+    if (!route.a || route.b) route = { a: p, b: null, path: null };
+    else { route.b = p; route.path = graph ? findRoute(route.a, route.b) : null; if (graph && !route.path) toast('No route'); }
+    draw(); return;
+  }
+  if (tool === 'fill') { fillAt(p); return; }
+  if (tool === 'room') {
+    if (roomDraw) { if (roomDraw.pts.length >= 3 && dist(p, roomDraw.pts[0]) < 10 / scale) { closeRoom(); return; }
+      roomDraw.pts.push([Math.round(p[0]), Math.round(p[1])]); draw(); return; }
+    const hv = roomVertexAt(p); if (hv) { roomDrag = hv; selRoom = hv[0]; roomsUi(); return; }
+    roomDraw = { pts: [[Math.round(p[0]), Math.round(p[1])]], cursor: null }; draw(); return;
+  }
+  if (tool === 'spot') { const k = spots.findIndex(q => Math.hypot(sx(q.x) - e.offsetX, sy(q.y) - e.offsetY) < 10);
+    if (k >= 0) { ptDrag = { kind: 'spot', k }; return; }
+    addSpot(p[0], p[1], 0, false); roomsUi(); draw(); return; }
+  if (tool === 'erase') { eraseAt(e.offsetX, e.offsetY); return; }
+  if (tool === 'rail') {
+    if (railDraw) { const last = railDraw.pts[railDraw.pts.length - 1];
+      if (Math.hypot(sx(last[0]) - e.offsetX, sy(last[1]) - e.offsetY) < 10) { finishRail(); return; }
+      railDraw.pts.push([Math.round(p[0]), Math.round(p[1])]); draw(); return; }
+    for (let i = 0; i < rails.length; i++) { const j = rails[i].findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
+      if (j >= 0) { ptDrag = { kind: 'rail', i, j }; return; } }
+    railDraw = { pts: [[Math.round(p[0]), Math.round(p[1])]], cursor: null }; draw(); return;
+  }
+  if (tool === 'node') { const k = unodes.findIndex(q => Math.hypot(sx(q[0]) - e.offsetX, sy(q[1]) - e.offsetY) < 9);
+    if (k >= 0) { ptDrag = { kind: 'node', k }; return; }
+    {
+      const g = grid, cx = g ? Math.floor((p[0] - g.x0) / g.cell) : -1, cy = g ? Math.floor((p[1] - g.y0) / g.cell) : -1;
+      if (!g || cx < 0 || cy < 0 || cx >= g.w || cy >= g.h || g.f[cy * g.w + cx] !== 1) toast('The node is not on a green cell — the bot cannot pass through it');
+      unodes.push([Math.round(p[0]), Math.round(p[1])]); }
+    regen(); return; }
+  if (tool === 'safe' && safe && Math.hypot(sx(safe.x) - e.offsetX, sy(safe.y) - e.offsetY) < 10) { ptDrag = { kind: 'safe' }; return; }
+  if (tool === 'safe') { safe = { x: Math.round(p[0]), y: Math.round(p[1]), z: grid ? grid.z || 0 : 0 }; toast('Safe point set'); draw(); return; }
+  snapshot(); painting = true; paintLast = null; paint(p); draw();
+});
+window.addEventListener('mousemove', e => {
+  const r = cv.getBoundingClientRect(); mouse = [e.clientX - r.left, e.clientY - r.top];
+  if (pan) { ox = pan.ox + e.clientX - pan.x; oy = pan.oy + e.clientY - pan.y; draw(); levelsSoon(); return; }
+  if (painting) paint([wx(mouse[0]), wy(mouse[1])]);
+  if (roomDrag) rooms[roomDrag[0]].pts[roomDrag[1]] = [Math.round(wx(mouse[0])), Math.round(wy(mouse[1]))];
+  if (ptDrag) { const X = Math.round(wx(mouse[0])), Y = Math.round(wy(mouse[1]));
+    if (ptDrag.kind === 'spot') { spots[ptDrag.k].x = X; spots[ptDrag.k].y = Y; }
+    else if (ptDrag.kind === 'safe') { safe.x = X; safe.y = Y; }
+    else if (ptDrag.kind === 'rail') rails[ptDrag.i][ptDrag.j] = [X, Y];
+    else unodes[ptDrag.k] = [X, Y]; }
+  if (roomDraw) roomDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
+  if (railDraw) railDraw.cursor = [wx(mouse[0]), wy(mouse[1])];
+  draw();
+});
+window.addEventListener('mouseup', () => { if (painting) { paintLast = null; infoLine(); dirty(); } pan = null; painting = false; roomDrag = null;
+  if (ptDrag) { const d = ptDrag, k = d.kind; ptDrag = null;
+    if (k === 'rail') { rails[d.i] = railSplit(rails[d.i]); regen(); }
+    else if (k === 'node') regen(); else { roomsUi(); draw(); } } });
+cv.addEventListener('mouseleave', () => { mouse = null; draw(); });
+// the wheel zoom: by how far the wheel turned (one notch = 100; a touchpad / a smooth wheel sends many small
+// steps - each a small zoom, not a whole one); one notch in x1.2, out much slower: /1.04
+const ZOOM_IN = 1.2, ZOOM_OUT = 1.04;
+cv.addEventListener('wheel', e => { e.preventDefault();
+  const dy = e.deltaY * (e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1), n = Math.min(Math.abs(dy), 300) / 100;
+  if (!n) return;
+  const k = dy < 0 ? Math.pow(ZOOM_IN, n) : Math.pow(1 / ZOOM_OUT, n);
+  ox = e.offsetX - (e.offsetX - ox) * k; oy = e.offsetY - (e.offsetY - oy) * k; scale *= k; draw(); levelsSoon(); }, { passive: false });
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('scriptBox').style.display === 'grid') { $('scriptBox').style.display = 'none'; return; }
+  if (e.key === 'Escape' && $('help').style.display === 'grid') { $('help').style.display = 'none'; return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); return; }
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName) && e.target.type !== 'checkbox') return;
+  if (cfgOpen()) { if (e.key === 'Escape') cfgShow(false); return; }   // the settings view: no map keys
+  if (e.code === 'Space') { space = true; e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') undo();
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.key === 'Enter' && roomDraw) closeRoom();
+  if (e.key === 'Escape' && roomDraw) { roomDraw = null; draw(); }
+  if (e.key === 'Backspace' && roomDraw && roomDraw.pts.length > 1) { roomDraw.pts.pop(); draw(); e.preventDefault(); }
+  if (e.key === 'Enter' && railDraw) finishRail();
+  if (e.key === 'Escape' && railDraw) { railDraw = null; draw(); }
+  if (e.key === 'Backspace' && railDraw && railDraw.pts.length > 1) { railDraw.pts.pop(); draw(); e.preventDefault(); }
+});
+window.addEventListener('keyup', e => { if (e.code === 'Space') space = false; });
+async function load(files) { let maps = 0;
+  files = [...files].sort((a, b) => /\.navgrid$/i.test(b.name) - /\.navgrid$/i.test(a.name));   // the map first: it starts the extras over
+  for (const f of files) if (/\.json$/i.test(f.name)) await loadSkills(f, null); else { parseFile(await f.text(), f.name); maps++; }
+  if (!maps) return;
+  fit(); if (grid) regen(); else draw();
+  if (cfgOpen()) cfgUi(); }
+$('file').onchange = e => { load(e.target.files); e.target.value = ''; };
+$('open').onclick = openFiles;
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => { e.preventDefault(); load(e.dataTransfer.files); });
+document.querySelectorAll('[data-tool]').forEach(b => b.onclick = () => setTool(b.dataset.tool));
+document.querySelectorAll('[data-color]').forEach(b => b.onclick = () => setColor(b.dataset.color));
+$('save').onclick = save;
+$('cfgBtn').onclick = () => cfgShow(!cfgOpen());
+$('helpBtn').onclick = () => $('help').style.display = 'grid';
+$('helpClose').onclick = () => $('help').style.display = 'none';
+for (const id of ['help', 'scriptBox']) $(id).addEventListener('mousedown', e => { if (e.target.id === id) $(id).style.display = 'none'; });
+$('scriptClose').onclick = () => $('scriptBox').style.display = 'none';
+$('scriptCopy').onclick = async () => { const t = $('scriptText'); try { await navigator.clipboard.writeText(t.value); } catch (e) { t.select(); document.execCommand('copy'); } toast('Script copied'); };
+// (no leave prompt inside the panel: an unsaved map is kept as a draft - see PvePanel below)
+// Rebuild: everything the paint needs at once - the empty margin cut off, the graph (nodes, links), the counts
+$('regen').onclick = () => { if (!grid) { regen(); return; } if (cfgDirty && gridTrim()) dirty(); regen(); };
+$('undo').onclick = undo;
+$('clearAll').onclick = clearAll;
+$('liveBtn').onclick = liveToggle;
+$('brush').oninput = () => { $('brushV').textContent = $('brush').value; draw(); };
+// a new cell size: what is painted is moved onto the new cells (each new cell takes the old cell under its centre)
+$('cell').onchange = () => {
+  const cell = Math.max(2, +$('cell').value || 4); $('cell').value = cell;
+  if (!grid || grid.cell === cell) return;
+  snapshot();
+  const o = grid, X1 = o.x0 + o.w * o.cell, Y1 = o.y0 + o.h * o.cell;
+  const g = { x0: o.x0, y0: o.y0, cell, w: Math.ceil((X1 - o.x0) / cell), h: Math.ceil((Y1 - o.y0) / cell), z: o.z };
+  g.f = new Uint8Array(g.w * g.h);
+  for (let cy = 0; cy < g.h; cy++) for (let cx = 0; cx < g.w; cx++) {
+    const ocx = Math.floor((cx * cell + cell / 2) / o.cell), ocy = Math.floor((cy * cell + cell / 2) / o.cell);
+    if (ocx < o.w && ocy < o.h) g.f[cy * g.w + cx] = o.f[ocy * o.w + ocx];
+  }
+  grid = g; gridImg = null; regen(); toast('Cell ' + cell + ': the painting was moved onto the new cells');
+};
+for (const id of ['cdx', 'cdy']) $(id).oninput = draw;
+function resize() { dpr = devicePixelRatio || 1; cv.width = W() * dpr; cv.height = H() * dpr; layoutTop(); draw(); }
+window.addEventListener('resize', resize);
+try { level = localStorage.getItem('navmeshLevel') || ''; } catch (e) {}
+document.querySelectorAll('[data-ic]').forEach(b => b.insertAdjacentHTML('afterbegin', icon(b.dataset.ic)));
+setTool('brush'); setColor('good'); resize(); ox = W() / 2 - 83000 * scale; oy = H() / 2 - 148000 * scale; draw(); levelsUi();
+
+// ===================== PvePanel: files through the panel, the live view of its bots, the run painted =====================
+// This page is PvePanel's copy of Library\Nav\nav_view.html: its maps are Library\PvePanel\Nav\*.navgrid (written through
+// the panel: PUT /api/map); maps of Library\Nav and the bot's zones are opened read only (Save puts a copy into PvePanel\Nav)
+const PVE_HDR = { 'X-Pve': '1' };
+let curSrc = '';                 // where the map on the screen came from: own / lib / zone / '' (new)
+let pveFollow = '';              // <tag>.navlive of the character the panel looks at
+let trailOn = false, trailSnap = false;
+async function pveJson(u) { const r = await fetch(u, { cache: 'no-store' }); if (!r.ok) throw new Error(r.status + ' ' + (await r.text())); return r.json(); }
+async function pveText(u) { const r = await fetch(u, { cache: 'no-store' }); if (r.status === 204) return null; if (!r.ok) throw new Error(r.status + ' ' + (await r.text())); return r.text(); }
+function postUp(m) { try { if (window.parent !== window) window.parent.postMessage(m, location.origin); } catch (e) {} }
+const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const ago = ms => { const s = (Date.now() - ms) / 1000; return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 129600 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' d ago'; };
+
+// a new empty map (the cells grow where you paint / run)
+function newMapPanel() {
+  if (cfgDirty && !confirm('The map on the screen has unsaved changes. Start a new one anyway?')) return false;
+  snapshot();
+  zone = null; strokes = []; seeds = []; grid = null; rooms = []; spots = []; safe = null; unodes = []; bans = []; rails = []; railDraw = null;
+  cfg = {}; cfgExtra = []; graph = null; gridImg = null; route = { a: null, b: null, path: null }; fname = ''; curSrc = '';
+  setClean(); $('fileName').textContent = 'new map'; roomsUi();
+  $('info').innerHTML = 'A new map: paint <b>Walk</b> cells with the brush, or turn on <b>Paint my run</b> and run round the spot by hand. Then <b>Rebuild</b> and <b>Save</b>.';
+  draw(); postUp({ ev: 'opened', name: '', src: '' }); return true;
+}
+async function openFromPanel(name, src) {
+  if (cfgDirty && !confirm('The map on the screen has unsaved changes. Open ' + name + ' anyway?')) return false;
+  let t;
+  try { t = await pveText('/api/map?src=' + src + '&name=' + encodeURIComponent(name)); } catch (e) { toast('Not opened: ' + e.message); return false; }
+  if (t === null) { toast('No ' + name); return false; }
+  const isGrid = /\.navgrid$/i.test(name);
+  if (isGrid) { grid = null; zone = null; strokes = []; }
+  await load([new File([t], name, { type: 'text/plain' })]);
+  if (isGrid) {
+    curSrc = src;
+    if (src === 'lib') { dirty(); toast(name + ' from Library\\Nav — Save puts a copy into PvePanel\\Nav (the old file stays as it is)'); }
+    else toast('Opened ' + name);
+  } else if (src === 'zone') { curSrc = curSrc || ''; dirty(); toast('Zone ' + name + ' — paint it right, Rebuild, Save'); }
+  else { dirty(); toast(name + ' added to the map'); }
+  postUp({ ev: 'opened', name: isGrid ? name : '', src: curSrc });
+  return true;
+}
+async function openPanelDialog() {
+  const box = $('openList'); box.innerHTML = '<div class="none">Loading…</div>'; $('openBox').style.display = 'grid';
+  let m; try { m = await pveJson('/api/maps'); } catch (e) { box.innerHTML = '<div class="none">The panel does not answer: ' + e.message + '</div>'; return; }
+  box.innerHTML = '';
+  const q = document.createElement('input'); q.type = 'search'; q.placeholder = 'Filter by name…'; box.append(q);
+  const sec = (title, list, src, btnText, note) => {
+    const s = document.createElement('div'); const h = document.createElement('h5'); h.textContent = title; s.append(h);
+    if (note) { const n = document.createElement('div'); n.className = 'none'; n.textContent = note; s.append(n); }
+    const rows = document.createElement('div'); s.append(rows);
+    const fill = () => { rows.innerHTML = ''; const f = q.value.trim().toLowerCase(); let n = 0;
+      for (const it of list) { if (f && !it.name.toLowerCase().includes(f)) continue; if (++n > 200) break;
+        const r = document.createElement('div'); r.className = 'mrow';
+        const b = document.createElement('b'); b.textContent = it.name; const i = document.createElement('span'); i.textContent = kb(it.size) + ' · ' + ago(it.mod);
+        const o = document.createElement('button'); o.textContent = btnText; o.className = src === 'own' ? 'primary' : '';
+        o.onclick = async () => { if (await openFromPanel(it.name, src)) $('openBox').style.display = 'none'; };
+        r.append(b, i, o); rows.append(r); }
+      if (!n) rows.innerHTML = '<div class="none">' + (list.length ? 'Nothing matches' : 'None') + '</div>'; };
+    q.addEventListener('input', fill); fill(); box.append(s);
+  };
+  const nw = document.createElement('div'); nw.className = 'mrow';
+  const nb = document.createElement('b'); nb.textContent = 'A new empty map'; const ni = document.createElement('span'); ni.textContent = 'paint it, or paint your run';
+  const no = document.createElement('button'); no.textContent = 'New'; no.onclick = () => { if (newMapPanel()) $('openBox').style.display = 'none'; };
+  nw.append(nb, ni, no); box.append(nw);
+  sec('PvePanel maps (Library\\PvePanel\\Nav)', m.own, 'own', 'Open');
+  sec('Old maps (Library\\Nav) — opened read only, Save makes a PvePanel copy', m.lib.filter(x => /\.navgrid$/i.test(x.name)), 'lib', 'Open');
+  sec('Bot zones (Library\\Zones) — the start of a new map', m.zones, 'zone', 'Open');
+  sec('Runs (.navtrace of Library\\Nav) — a guide line on the map', m.lib.filter(x => /\.navtrace$/i.test(x.name)), 'lib', 'Add');
+  q.focus();
+}
+async function savePanel() {
+  if (!grid) { toast('Nothing to save: paint the map first'); return false; }
+  let name = curSrc === 'own' ? fname : '';
+  if (!name) { name = prompt('Save the map as (into Library\\PvePanel\\Nav):', fname || 'MY_SPOT'); if (!name) return false; }
+  name = name.trim().replace(/\.navgrid$/i, '').replace(/[^A-Za-z0-9 _.-]/g, '_').slice(0, 52);
+  if (!name) return false;
+  if (curSrc !== 'own' || name !== fname) {
+    try { const m = await pveJson('/api/maps'); if (m.own.some(x => x.name.toLowerCase() === (name + '.navgrid').toLowerCase()) && !confirm(name + '.navgrid is in PvePanel\\Nav already. Replace it?')) return false; } catch (e) {}
+  }
+  if (gridTrim()) draw();   // the empty margin the painting grew is not saved
+  let r;
+  try { r = await fetch('/api/map?name=' + encodeURIComponent(name + '.navgrid'), { method: 'PUT', headers: PVE_HDR, body: gridText() }); }
+  catch (e) { toast('Not saved: ' + e.message); return false; }
+  if (!r.ok) { toast('Not saved: ' + await r.text()); return false; }
+  fname = name; curSrc = 'own'; setClean(); draftClear();
+  toast('Saved ' + name + '.navgrid (Library\\PvePanel\\Nav)');
+  postUp({ ev: 'saved', name: name + '.navgrid' });
+  return true;
+}
+// live: every bot running pve.txt writes Library\PvePanel\Nav\<nick>.navlive; the panel serves the fresh ones
+async function livePollPanel() {
+  if (!liveOn) return;
+  liveErr = '';
+  try {
+    const list = await pveJson('/api/live'), seen = new Set();
+    for (const it of list) {
+      seen.add(it.name);
+      const L = lives[it.name] || (lives[it.name] = { mod: 0, trail: [], d: null });
+      if (it.mod === L.mod) continue;
+      const d = liveParse(it.text); if (!d) continue;
+      L.mod = it.mod; L.d = d;
+      if (d.u) { const q = L.trail[L.trail.length - 1];
+        if (q && Math.hypot(q[0] - d.u.x, q[1] - d.u.y) > 1500) L.trail = [];   // a teleport: no line across the map
+        const t = L.trail;
+        if (!q || Math.hypot(q[0] - d.u.x, q[1] - d.u.y) > 6) { t.push([d.u.x, d.u.y, Date.now()]); if (t.length > 600) t.shift(); }
+        trailPaint(L, d.u); }
+    }
+    for (const k of Object.keys(lives)) if (!seen.has(k)) delete lives[k];
+  } catch (x) { liveErr = x.message; }
+  liveFollow(); liveUi(); draw();
+  livePollT = setTimeout(livePollPanel, 300);
+}
+function liveSet(on) {
+  if (on === liveOn) return;
+  liveOn = on; clearTimeout(livePollT); liveUi(); draw();
+  if (on) livePollPanel();
+}
+const liveMainAll = liveMain;
+liveMain = function () { const L = pveFollow && lives[pveFollow]; return L && L.d ? L : liveMainAll(); };
+// paint my run: the cells within trailR of the run become walkable (unknown cells only)
+function trailPaint(L, u) {
+  if (!trailOn || L !== liveMain() || u.dead) return;
+  const p = [u.x, u.y], last = L.lastPaint, r = Math.max(10, +$('trailR').value || 80);
+  if (last && Math.hypot(last[0] - p[0], last[1] - p[1]) < 6) return;
+  if (!trailSnap) { snapshot(); trailSnap = true; }
+  const pts = []; let wx0 = p[0], wy0 = p[1], wx1 = p[0], wy1 = p[1];   // the painted piece, in map units
+  if (last && Math.hypot(last[0] - p[0], last[1] - p[1]) < 800) {    // a jump (teleport): no line across it
+    const k = Math.ceil(Math.hypot(last[0] - p[0], last[1] - p[1]) / Math.max(4, r / 2));
+    for (let j = 1; j <= k; j++) pts.push([last[0] + (p[0] - last[0]) * j / k, last[1] + (p[1] - last[1]) * j / k]);
+  } else pts.push(p);
+  for (const q of pts) {
+    ensure(q[0] - r, q[1] - r); ensure(q[0] + r, q[1] + r);
+    wx0 = Math.min(wx0, q[0] - r); wy0 = Math.min(wy0, q[1] - r); wx1 = Math.max(wx1, q[0] + r); wy1 = Math.max(wy1, q[1] + r);
+    const g = grid, rc = Math.ceil(r / g.cell), cx = Math.floor((q[0] - g.x0) / g.cell), cy = Math.floor((q[1] - g.y0) / g.cell);
+    for (let dy = -rc; dy <= rc; dy++) for (let dx = -rc; dx <= rc; dx++) {
+      if ((dx * dx + dy * dy) * g.cell * g.cell > r * r) continue;
+      const ax = cx + dx, ay = cy + dy; if (ax < 0 || ay < 0 || ax >= g.w || ay >= g.h) continue;
+      if (g.f[ay * g.w + ax] === 0) g.f[ay * g.w + ax] = 1;
+    }
+  }
+  if (!grid.z) grid.z = u.z;
+  const g = grid; gridPatch(Math.floor((wx0 - g.x0) / g.cell) - 1, Math.floor((wy0 - g.y0) / g.cell) - 1, Math.floor((wx1 - g.x0) / g.cell) + 1, Math.floor((wy1 - g.y0) / g.cell) + 1);
+  L.lastPaint = p; graph = null; route.path = null;
+  dirty();
+}
+function trailUi() { const b = $('trailBtn'); b.classList.toggle('paint', trailOn); b.lastChild.textContent = trailOn ? 'Painting my run' : 'Paint my run'; }
+$('trailBtn').onclick = () => {
+  trailOn = !trailOn; trailSnap = false;
+  for (const L of Object.values(lives)) L.lastPaint = null;
+  if (trailOn) { liveSet(true); toast('Run round the spot: the cells round you become walkable. Live has to see the bot (pve.txt running)'); }
+  trailUi();
+};
+// an unsaved map is kept in the page's storage (closing the panel does not lose it)
+let draftT = 0;
+function draftClear() { clearTimeout(draftT); idb('readwrite', st => st.delete('pveDraft')); }
+function draftSoon() { clearTimeout(draftT); draftT = setTimeout(() => { if (painting) { draftSoon(); return; }   // not in the middle of a stroke
+  if (cfgDirty && grid) idb('readwrite', st => st.put({ name: fname, src: curSrc, at: Date.now(), text: gridText() }, 'pveDraft')); }, 3000); }
+setInterval(() => { if (cfgDirty && grid && !draftT) draftSoon(); }, 5000);
+const dirty0 = dirty;
+dirty = function () { dirty0(); draftT = 0; draftSoon(); };
+async function draftOffer() {
+  const d = await idb('readonly', st => st.get('pveDraft'));
+  if (!d || !d.text) return;
+  if (!confirm('There is an unsaved map' + (d.name ? ' «' + d.name + '»' : '') + ' from ' + new Date(d.at).toLocaleString() + '. Restore it?')) { draftClear(); return; }
+  grid = null; zone = null; strokes = [];
+  await load([new File([d.text], (d.name || 'draft') + '.navgrid', { type: 'text/plain' })]);
+  fname = d.name || ''; curSrc = d.src || ''; dirty();
+  postUp({ ev: 'opened', name: d.src === 'own' && d.name ? d.name + '.navgrid' : '', src: curSrc });
+}
+// the panel page (pve.html) drives it
+window.navApi = {
+  open: openFromPanel, newMap: newMapPanel, save: savePanel, dialog: openPanelDialog,
+  dirty: () => cfgDirty, name: () => fname, src: () => curSrc,
+  follow: tag => { pveFollow = tag ? tag + '.navlive' : ''; },
+  live: liveSet, fit: () => { fit(); draw(); },
+};
+save = savePanel; openFiles = openPanelDialog;
+$('save').onclick = savePanel;
+$('open').onclick = openPanelDialog;
+$('liveBtn').onclick = () => liveSet(!liveOn);
+$('openClose').onclick = () => $('openBox').style.display = 'none';
+$('openBox').addEventListener('mousedown', e => { if (e.target.id === 'openBox') $('openBox').style.display = 'none'; });
+window.addEventListener('keydown', e => { if (e.key === 'Escape') $('openBox').style.display = 'none'; });
+$('fileName').textContent = 'no map';
+liveSet(true);
+draftOffer();
+postUp({ ev: 'ready' });
+</script>
+</body>
+</html>

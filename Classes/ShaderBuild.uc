@@ -1,0 +1,1 @@
+class ShaderBuild extends UIScript;

@@ -1,0 +1,553 @@
+uses SysUtils;
+
+// =============================================================================
+// NeuroFarm recorder: records how YOU play - the spot, the way there, the waiting - for the farm model to learn it.
+//
+// Run it on the character and play by hand (no other script on it): run from the town to the spot, farm, wait
+// when the spot is taken, go back after a death... It only watches:
+//   - your actions, from the packets your client sends:
+//       1F Action (a click on a mob / an NPC / an item on the ground: target, attack, talk, pick up), 01 Attack,
+//       39 MagicSkillUse (a skill), 56 ActionUse (sit / stand...), 0F MoveBackwardToLocation (a move),
+//       19 UseItem (a potion, a scroll of escape), 48 RequestTargetCanceld (Esc),
+//       23 RequestBypassToServer (an NPC dialog: a gatekeeper's teleport...), 49 Say2 (you wrote: its type only);
+//   - what others say to you: 4A CreatureSay (the sender, the chat type; not the text);
+//   - the world every SNAP_MS: you (HP / MP / CP %, place, target, cast, combat, sitting, the last teleport), the
+//     mobs within NPC_R, the players within PC_R (ours or not, PK, at you), the items on the ground within DROP_R,
+//     your skills' reuse, your buffs.
+// Every action gets the world of that moment too. Lines (JSON, ASCII) go to Library\NeuroFarm\data\
+// <char>_<date>_<time>_<n>.jsonl, a new file every CHUNK_LINES lines (written every FLUSH_MS).
+//
+// The hooks (other threads) keep numbers only (two threads building strings crash PaxScript): a text of a packet
+// is kept as its character codes; the main loop turns them into lines.
+// =============================================================================
+
+const
+  SNAP_MS     = 250;      // the world written this often (and at every action)
+  FLUSH_MS    = 2000;     // the file written this often
+  CHUNK_LINES = 3000;     // a new file after this many lines
+  NPC_R       = 2500;     // the mobs within this range
+  PC_R        = 3000;     // the players within this range
+  DROP_R      = 1500;     // the items on the ground within this range
+  MAX_NPC     = 24;       // at most this many mobs a line (the nearest)
+  MAX_PC      = 16;
+  MAX_DROP    = 12;
+  EV_N        = 256;      // the hooks' queue
+  TXT_N       = 96;       // characters of a packet's text kept (a bypass, a sender's name)
+  DATA_DIR    = 'data\';
+
+  EV_ACTION   = 1;        // 1F: A oid, B x, C y, D z, E shift
+  EV_ATTACK   = 2;        // 01: A oid, B x, C y, D z, E shift
+  EV_SKILL    = 3;        // 39: A skill id, B ctrl, E shift
+  EV_USEACT   = 4;        // 56: A action id, B ctrl, E shift
+  EV_MOVE     = 5;        // 0F: A x, B y, C z (to), D 1 mouse / 0 keys
+  EV_ITEM     = 6;        // 19: A item oid
+  EV_CANCEL   = 7;        // 48: Esc
+  EV_BYPASS   = 8;        // 23: the text
+  EV_SAY      = 9;        // 49 (ours): A the chat type
+  EV_CHAT     = 10;       // 4A (to us): A the sender oid, B the chat type, the text = the sender's name
+
+var
+  // the hooks' queue (numbers only)
+  EvT: array[0..255] of cardinal;
+  EvK, EvA, EvB, EvC, EvD, EvE, EvTn: array[0..255] of integer;
+  EvTx: array[0..24575] of integer;                  // slot s: EvTx[s * TXT_N + k] = a character code
+  EvHead, EvTail, EvLost: integer;
+  // the chat to us (the server's hook: its own queue - the two hooks may run at once)
+  ChT: array[0..63] of cardinal;
+  ChA, ChB, ChTn: array[0..63] of integer;
+  ChTx: array[0..6143] of integer;                   // slot s: ChTx[s * TXT_N + k] = a character code of the name
+  ChHead, ChTail: integer;
+  // the file
+  Buf: TStringList;
+  ChunkN, Lines, Events: integer;
+  BasePath, CharTag: string;
+  T0: cardinal;
+  MyOIDNow, MyClanNow, MyAllyNow: integer;           // the main thread's copy (the hooks compare numbers only)
+  ClickNpcId: integer;                               // KindOf: the npc id of the clicked one
+
+function RdByte(Data: Pointer; Off: integer): integer;
+var P: Pointer;
+begin
+  P := Data;
+  Inc(Cardinal(P), Off);
+  result := PByte(P)^;
+end;
+
+function RdInt(Data: Pointer; Off: integer): integer;
+begin
+  result := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8) or
+            (RdByte(Data, Off + 2) shl 16) or (RdByte(Data, Off + 3) shl 24);
+end;
+
+// a slot of the queue taken (-1: full, the action lost)
+function EvPush(K, A, B, C, D, E: integer): integer;
+var n: integer;
+begin
+  result := -1;
+  n := (EvHead + 1) mod EV_N;
+  if n = EvTail then begin
+    EvLost := EvLost + 1;
+    exit;
+  end;
+  result := EvHead;
+  EvT[EvHead] := GetTickCount;
+  EvK[EvHead] := K;
+  EvA[EvHead] := A;
+  EvB[EvHead] := B;
+  EvC[EvHead] := C;
+  EvD[EvHead] := D;
+  EvE[EvHead] := E;
+  EvTn[EvHead] := 0;
+  EvHead := n;
+end;
+
+// a UTF-16 text of a packet (from Off, till a 0) into the slot's codes (numbers only: a hook)
+procedure EvText(Slot: integer; Data: Pointer; Size, Off: integer);
+var n, Code: integer;
+begin
+  if Slot < 0 then exit;
+  n := 0;
+  while (Off + 1 < Size) and (n < TXT_N) do begin
+    Code := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8);
+    Off := Off + 2;
+    if Code = 0 then break;
+    EvTx[Slot * TXT_N + n] := Code;
+    n := n + 1;
+  end;
+  EvTn[Slot] := n;
+end;
+
+// the client's packets (Data without the opcode)
+procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var s: integer;
+begin
+  if (ID1 = $1F) and (Size >= 17) then
+    EvPush(EV_ACTION, RdInt(Data, 0), RdInt(Data, 4), RdInt(Data, 8), RdInt(Data, 12), RdByte(Data, 16))
+  else if (ID1 = $01) and (Size >= 17) then
+    EvPush(EV_ATTACK, RdInt(Data, 0), RdInt(Data, 4), RdInt(Data, 8), RdInt(Data, 12), RdByte(Data, 16))
+  else if (ID1 = $39) and (Size >= 9) then
+    EvPush(EV_SKILL, RdInt(Data, 0), RdInt(Data, 4), 0, 0, RdByte(Data, 8))
+  else if (ID1 = $56) and (Size >= 9) then
+    EvPush(EV_USEACT, RdInt(Data, 0), RdInt(Data, 4), 0, 0, RdByte(Data, 8))
+  else if (ID1 = $0F) and (Size >= 25) then
+    EvPush(EV_MOVE, RdInt(Data, 0), RdInt(Data, 4), RdInt(Data, 8), RdByte(Data, 24), 0)
+  else if (ID1 = $19) and (Size >= 4) then
+    EvPush(EV_ITEM, RdInt(Data, 0), 0, 0, 0, 0)
+  else if ID1 = $48 then
+    EvPush(EV_CANCEL, 0, 0, 0, 0, 0)
+  else if ID1 = $23 then begin
+    s := EvPush(EV_BYPASS, 0, 0, 0, 0, 0);
+    EvText(s, Data, Size, 0);
+  end else if ID1 = $49 then begin                   // Say2: the text, 0, the type - only the type is kept
+    s := 0;
+    while (s + 1 < Size) and ((RdByte(Data, s) <> 0) or (RdByte(Data, s + 1) <> 0)) do s := s + 2;
+    if s + 6 <= Size then EvPush(EV_SAY, RdInt(Data, s + 2), 0, 0, 0, 0);
+  end;
+end;
+
+// the server's packets: what others say (CreatureSay: oid, type, the name, -1, the text - the text is not kept)
+procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
+var n, s, Off, Code: integer;
+begin
+  if (ID1 <> $4A) or (Size < 10) then exit;
+  n := (ChHead + 1) mod 64;
+  if n = ChTail then exit;                           // full: a chat line lost (rare)
+  s := ChHead;
+  ChT[s] := GetTickCount;
+  ChA[s] := RdInt(Data, 0);
+  ChB[s] := RdInt(Data, 4);
+  ChTn[s] := 0;
+  Off := 8;
+  while (Off + 1 < Size) and (ChTn[s] < TXT_N) do begin
+    Code := RdByte(Data, Off) or (RdByte(Data, Off + 1) shl 8);
+    Off := Off + 2;
+    if Code = 0 then break;
+    ChTx[s * TXT_N + ChTn[s]] := Code;
+    ChTn[s] := ChTn[s] + 1;
+  end;
+  ChHead := n;
+end;
+
+function Pick(B: boolean; A, C: string): string;
+begin
+  if B then result := A else result := C;
+end;
+
+function I2S(V: integer): string;
+begin
+  result := IntToStr(V);
+end;
+
+function B01(B: boolean): string;
+begin
+  if B then result := '1' else result := '0';
+end;
+
+// the slot's text as a JSON string (ASCII: other characters as \uXXXX)
+function TxtJson(Slot: integer): string;
+var k, Code: integer;
+begin
+  result := '"';
+  for k := 0 to EvTn[Slot] - 1 do begin
+    Code := EvTx[Slot * TXT_N + k];
+    if Code = 34 then result := result + '\"'
+    else if Code = 92 then result := result + '\\'
+    else if (Code < 32) or (Code > 126) then result := result + '\u' + IntToHex(Code, 4)
+    else result := result + Chr(Code);
+  end;
+  result := result + '"';
+end;
+
+// a chat slot's sender name as a JSON string (as TxtJson)
+function ChName(Slot: integer): string;
+var k, Code: integer;
+begin
+  result := '"';
+  for k := 0 to ChTn[Slot] - 1 do begin
+    Code := ChTx[Slot * TXT_N + k];
+    if Code = 34 then result := result + '\"'
+    else if Code = 92 then result := result + '\\'
+    else if (Code < 32) or (Code > 126) then result := result + '\u' + IntToHex(Code, 4)
+    else result := result + Chr(Code);
+  end;
+  result := result + '"';
+end;
+
+// ---------- the world now, as JSON ----------
+
+function MeJson(): string;
+var Hp, Mp, Cp, X, Y, Z, Tg, CastId, CastLeft, Tp: integer;
+  Dead, Comb, Sit, Moved: boolean;
+  T: TL2Live;
+begin
+  Hp := User.HP;
+  Mp := User.MP;
+  Cp := User.CP;
+  X := User.X;
+  Y := User.Y;
+  Z := User.Z;
+  Dead := User.Dead;
+  Comb := User.InCombat;
+  Sit := User.Sitting;
+  Moved := User.Moved;
+  Tp := User.TeleportTime;
+  Tg := 0;
+  T := User.Target;
+  if T <> nil then Tg := T.OID;
+  CastId := 0;
+  CastLeft := User.Cast.EndTime;
+  if CastLeft > 0 then CastId := User.Cast.ID else CastLeft := 0;
+  result := '{"hp": ' + I2S(Hp) + ', "mp": ' + I2S(Mp) + ', "cp": ' + I2S(Cp) + ', "x": ' + I2S(X) + ', "y": ' + I2S(Y) +
+    ', "z": ' + I2S(Z) + ', "dead": ' + B01(Dead) + ', "comb": ' + B01(Comb) + ', "sit": ' + B01(Sit) + ', "moved": ' + B01(Moved) +
+    ', "tg": ' + I2S(Tg) + ', "cast": ' + I2S(CastId) + ', "castl": ' + I2S(CastLeft) + ', "tp": ' + I2S(Tp) + '}';
+end;
+
+// the mobs within NPC_R: [oid, npc id, dx, dy, dz, hp %, dead, attacks me, attackable, dist]
+function NpcJson(MyOID, MX, MY, MZ: integer): string;
+var i, k, m, n, OID, Id, X, Y, Z, Hp, Atk, D: integer;
+  Dead, Att: boolean;
+  dx, dy: double;
+  Di: array[0..63] of integer;
+  S: array[0..63] of string;
+begin
+  n := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    if n >= 64 then break;
+    X := NpcList(i).X;
+    Y := NpcList(i).Y;
+    dx := X - MX;
+    dy := Y - MY;
+    D := Round(Sqrt(dx * dx + dy * dy));
+    if D > NPC_R then continue;
+    OID := NpcList(i).OID;
+    Id := NpcList(i).ID;
+    Z := NpcList(i).Z;
+    Hp := NpcList(i).HP;
+    Dead := NpcList(i).Dead;
+    Atk := NpcList(i).AtkOID;
+    Att := NpcList(i).Attackable;
+    Di[n] := D;
+    S[n] := '[' + I2S(OID) + ', ' + I2S(Id) + ', ' + I2S(X - MX) + ', ' + I2S(Y - MY) + ', ' + I2S(Z - MZ) + ', ' + I2S(Hp) +
+      ', ' + B01(Dead) + ', ' + B01(Atk = MyOID) + ', ' + B01(Att) + ', ' + I2S(D) + ']';
+    n := n + 1;
+  end;
+  result := '';                                      // the nearest MAX_NPC (a plain selection: n is small)
+  m := 0;
+  while (m < MAX_NPC) and (n > 0) do begin
+    k := 0;
+    for i := 1 to n - 1 do
+      if Di[i] < Di[k] then k := i;
+    if m > 0 then result := result + ', ';
+    result := result + S[k];
+    m := m + 1;
+    n := n - 1;
+    Di[k] := Di[n];
+    S[k] := S[n];
+  end;
+  result := '[' + result + ']';
+end;
+
+// the players within PC_R: [oid, dx, dy, dz, dist, ours (party / clan / ally), pk, attacks me, targets me, dead]
+function PcJson(MyOID, MX, MY, MZ: integer): string;
+var i, k, m, n, OID, X, Y, Z, D, Clan, Ally, Atk, Tg: integer;
+  Dead, Pk, Mem, Ours: boolean;
+  dx, dy: double;
+  T: TL2Live;
+  Di: array[0..63] of integer;
+  S: array[0..63] of string;
+begin
+  n := 0;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    if n >= 64 then break;
+    OID := CharList(i).OID;
+    if OID = MyOID then continue;
+    X := CharList(i).X;
+    Y := CharList(i).Y;
+    dx := X - MX;
+    dy := Y - MY;
+    D := Round(Sqrt(dx * dx + dy * dy));
+    if D > PC_R then continue;
+    Z := CharList(i).Z;
+    Clan := CharList(i).ClanID;
+    Ally := CharList(i).AllyID;
+    Mem := CharList(i).IsMember;
+    Pk := CharList(i).PK;
+    Dead := CharList(i).Dead;
+    Atk := CharList(i).AtkOID;
+    Tg := 0;
+    T := CharList(i).Target;
+    if T <> nil then Tg := T.OID;
+    Ours := Mem or ((Clan <> 0) and (Clan = MyClanNow)) or ((Ally <> 0) and (Ally = MyAllyNow));
+    Di[n] := D;
+    S[n] := '[' + I2S(OID) + ', ' + I2S(X - MX) + ', ' + I2S(Y - MY) + ', ' + I2S(Z - MZ) + ', ' + I2S(D) + ', ' + B01(Ours) +
+      ', ' + B01(Pk) + ', ' + B01(Atk = MyOID) + ', ' + B01(Tg = MyOID) + ', ' + B01(Dead) + ']';
+    n := n + 1;
+  end;
+  result := '';                                      // the nearest MAX_PC
+  m := 0;
+  while (m < MAX_PC) and (n > 0) do begin
+    k := 0;
+    for i := 1 to n - 1 do
+      if Di[i] < Di[k] then k := i;
+    if m > 0 then result := result + ', ';
+    result := result + S[k];
+    m := m + 1;
+    n := n - 1;
+    Di[k] := Di[n];
+    S[k] := S[n];
+  end;
+  result := '[' + result + ']';
+end;
+
+// the items on the ground within DROP_R: [oid, item id, dx, dy, dist]
+function DropJson(MX, MY: integer): string;
+var i, n, OID, Id, X, Y, D: integer;
+  dx, dy: double;
+begin
+  result := '';
+  n := 0;
+  for i := 0 to DropList.Count - 1 do if i < DropList.Count then begin
+    if n >= MAX_DROP then break;
+    X := DropList(i).X;
+    Y := DropList(i).Y;
+    dx := X - MX;
+    dy := Y - MY;
+    D := Round(Sqrt(dx * dx + dy * dy));
+    if D > DROP_R then continue;
+    OID := DropList(i).OID;
+    Id := DropList(i).ID;
+    if n > 0 then result := result + ', ';
+    result := result + '[' + I2S(OID) + ', ' + I2S(Id) + ', ' + I2S(X - MX) + ', ' + I2S(Y - MY) + ', ' + I2S(D) + ']';
+    n := n + 1;
+  end;
+  result := '[' + result + ']';
+end;
+
+// the skills: [id, reuse left ms]
+function SkillJson(): string;
+var i, n, Id, Left: integer;
+begin
+  result := '';
+  n := 0;
+  for i := 0 to SkillList.Count - 1 do if i < SkillList.Count then begin
+    Id := SkillList.Items(i).ID;
+    Left := SkillList.Items(i).EndTime;
+    if Left < 0 then Left := 0;
+    if n > 0 then result := result + ', ';
+    result := result + '[' + I2S(Id) + ', ' + I2S(Left) + ']';
+    n := n + 1;
+  end;
+  result := '[' + result + ']';
+end;
+
+function BuffJson(): string;
+var i, n, Id: integer;
+begin
+  result := '';
+  n := 0;
+  for i := 0 to User.Buffs.Count - 1 do if i < User.Buffs.Count then begin
+    Id := User.Buffs.Items(i).ID;
+    if n > 0 then result := result + ', ';
+    result := result + I2S(Id);
+    n := n + 1;
+  end;
+  result := '[' + result + ']';
+end;
+
+// an item of the bag by its OID: its item id (a potion used: which one), 0 none
+function ItemIdOf(OID: integer): integer;
+var i, O: integer;
+begin
+  result := 0;
+  for i := 0 to Inventory.User.Count - 1 do if i < Inventory.User.Count then begin
+    O := Inventory.User.Items(i).OID;
+    if O = OID then begin
+      result := Inventory.User.Items(i).ID;
+      exit;
+    end;
+  end;
+end;
+
+// what a clicked object is: 1 an npc / a mob (ClickNpcId: its npc id), 2 an item on the ground, 3 a player, 0 not known
+function KindOf(OID: integer): integer;
+var i, O: integer;
+begin
+  result := 0;
+  ClickNpcId := 0;
+  for i := 0 to NpcList.Count - 1 do if i < NpcList.Count then begin
+    O := NpcList(i).OID;
+    if O = OID then begin
+      ClickNpcId := NpcList(i).ID;
+      result := 1;
+      exit;
+    end;
+  end;
+  for i := 0 to DropList.Count - 1 do if i < DropList.Count then begin
+    O := DropList(i).OID;
+    if O = OID then begin
+      result := 2;
+      exit;
+    end;
+  end;
+  for i := 0 to CharList.Count - 1 do if i < CharList.Count then begin
+    O := CharList(i).OID;
+    if O = OID then begin
+      result := 3;
+      exit;
+    end;
+  end;
+end;
+
+// one line: the time, the action (or none: a plain look), the world
+procedure WriteLine(Ev: string; When: cardinal);
+var MX, MY, MZ: integer;
+begin
+  MX := User.X;
+  MY := User.Y;
+  MZ := User.Z;
+  Buf.Add('{"t": ' + I2S(When - T0) + ', "ev": ' + Ev + ', "me": ' + MeJson() + ', "npc": ' + NpcJson(MyOIDNow, MX, MY, MZ) +
+    ', "pc": ' + PcJson(MyOIDNow, MX, MY, MZ) + ', "drop": ' + DropJson(MX, MY) + ', "sk": ' + SkillJson() + ', "buf": ' + BuffJson() + '}');
+  Lines := Lines + 1;
+end;
+
+// the hooks' actions -> lines (each with the world now)
+procedure DrainEvents();
+var i, K, W: integer;
+  Ev: string;
+begin
+  while EvTail <> EvHead do begin
+    i := EvTail;
+    K := EvK[i];
+    if (K = EV_ACTION) or (K = EV_ATTACK) then begin
+      W := KindOf(EvA[i]);
+      Ev := '{"k": "' + Pick(K = EV_ACTION, 'action', 'attack') + '", "oid": ' + I2S(EvA[i]) + ', "what": ' + I2S(W) +
+        ', "npc": ' + I2S(ClickNpcId) + ', "shift": ' + I2S(EvE[i]) + '}';
+    end else if K = EV_SKILL then
+      Ev := '{"k": "skill", "id": ' + I2S(EvA[i]) + ', "ctrl": ' + I2S(EvB[i]) + ', "shift": ' + I2S(EvE[i]) + '}'
+    else if K = EV_USEACT then
+      Ev := '{"k": "useact", "id": ' + I2S(EvA[i]) + ', "ctrl": ' + I2S(EvB[i]) + '}'
+    else if K = EV_MOVE then
+      Ev := '{"k": "move", "x": ' + I2S(EvA[i]) + ', "y": ' + I2S(EvB[i]) + ', "z": ' + I2S(EvC[i]) + ', "mouse": ' + I2S(EvD[i]) + '}'
+    else if K = EV_ITEM then
+      Ev := '{"k": "item", "oid": ' + I2S(EvA[i]) + ', "id": ' + I2S(ItemIdOf(EvA[i])) + '}'
+    else if K = EV_BYPASS then
+      Ev := '{"k": "bypass", "txt": ' + TxtJson(i) + '}'
+    else if K = EV_SAY then
+      Ev := '{"k": "say", "type": ' + I2S(EvA[i]) + '}'
+    else
+      Ev := '{"k": "cancel"}';
+    WriteLine(Ev, EvT[i]);
+    Events := Events + 1;
+    EvTail := (EvTail + 1) mod EV_N;
+  end;
+  while ChTail <> ChHead do begin                    // what others said (the sender, the type; not the text)
+    i := ChTail;
+    Ev := '{"k": "chat", "oid": ' + I2S(ChA[i]) + ', "type": ' + I2S(ChB[i]) + ', "mine": ' + B01(ChA[i] = MyOIDNow) +
+      ', "name": ' + ChName(i) + '}';
+    WriteLine(Ev, ChT[i]);
+    ChTail := (ChTail + 1) mod 64;
+  end;
+end;
+
+procedure Flush();
+var P: string;
+begin
+  P := BasePath + '_' + I2S(ChunkN) + '.jsonl';
+  try
+    Buf.SaveToFile(P);
+  except
+    Engine.Msg('[NeuroRec]', 'cannot write ' + P + ' - is there a data folder next to the script?', 255);
+  end;
+  if Buf.Count >= CHUNK_LINES then begin   // this file is full: the next one
+    ChunkN := ChunkN + 1;
+    Buf.Clear;
+  end;
+end;
+
+procedure RefreshMe();
+begin
+  MyOIDNow := User.OID;
+  MyClanNow := User.ClanID;
+  MyAllyNow := User.AllyID;
+end;
+
+var
+  SnapAt, FlushAt, SayAt: cardinal;
+
+begin
+  EvHead := 0;
+  EvTail := 0;
+  EvLost := 0;
+  ChHead := 0;
+  ChTail := 0;
+  Buf := TStringList.Create;
+  ChunkN := 1;
+  Lines := 0;
+  Events := 0;
+  while User.Name = '' do Delay(500);
+  CharTag := User.Name;
+  RefreshMe();
+  BasePath := Script.Path + DATA_DIR + CharTag + '_' + FormatDateTime('yymmdd_hhnnss', Now);
+  T0 := GetTickCount;
+  Engine.Msg('[NeuroRec]', 'recording ' + CharTag + ' to ' + BasePath + '_N.jsonl - play by hand; stop the script to end', 0);
+  SnapAt := 0;
+  FlushAt := GetTickCount;
+  SayAt := GetTickCount;
+  while Delay(20) do begin
+    DrainEvents();
+    if GetTickCount - SnapAt >= SNAP_MS then begin
+      SnapAt := GetTickCount;
+      RefreshMe();
+      WriteLine('null', SnapAt);
+    end;
+    if GetTickCount - FlushAt >= FLUSH_MS then begin
+      FlushAt := GetTickCount;
+      Flush();
+    end;
+    if GetTickCount - SayAt >= 60000 then begin
+      SayAt := GetTickCount;
+      Engine.Msg('[NeuroRec]', IntToStr(Events) + ' actions, ' + IntToStr(Lines) + ' lines, ' + IntToStr((GetTickCount - T0) div 60000) +
+        ' min' + Pick(EvLost > 0, ', lost ' + IntToStr(EvLost), ''), 0);
+    end;
+  end;
+end.

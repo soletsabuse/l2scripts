@@ -99,6 +99,9 @@ begin
     '_bbs_buffer_show',
     'book_use?name=s&pre=0&target=Player'
   ]);
+  // rebuff only after the buff looked low (less than 10 min left / gone) this many seconds IN A ROW:
+  // a moment without it in the buff list is no rebuff (no line = 30)
+  SetRebuffHold(30);
   // extra bypasses for the summon, sent right after ours (no line = the summon gets buffed with us)
   // SetSummonBuff(1204, ['book_use?...']);   // buff watched on the summon (0 = same as ours) + extra bypasses
 

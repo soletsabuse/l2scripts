@@ -23,6 +23,7 @@ namespace PvpPanel
     ///       server -> bot:  RELOAD   PING   WATCH|1 / WATCH|0 (a page watches / none: the bot builds its STATE only
     ///                       while 1)   STATRESET   K (read: the bot's next line is not held back by Nagle)
     ///       assist via the server (Relay.cs): bot -> N|T|&lt;oid&gt;|&lt;name&gt;; server -> N|LINK, N|ROOM, N|T, N|RTT
+    ///       a team command (Relay.cs): bot -> N|X|&lt;payload&gt; (G|x|y|z|range: gather); server -> N|X|&lt;char&gt;|&lt;payload&gt;
     ///       the overlay (Overlay.cs): bot -> WIN|&lt;its game window&gt;; server -> KEY|&lt;group name&gt; (PUT /api/cmd?c=key&amp;char=&amp;g=)
     /// Page API (a change needs the header X-PvP: 1, the Host must be 127.0.0.1 / localhost):
     ///   GET /api/state  {"active", "profiles": {id: text}, "bots": {name: state}, "equip": {char: text}}
@@ -254,6 +255,11 @@ namespace PvpPanel
                     {
                         _ = SendTo(me, "K");
                         if (_relay != null) await _relay.TargetAsync(me.Name, line.Substring(4));   // its target: to the room
+                    }
+                    else if (line.StartsWith("N|X|", StringComparison.Ordinal) && me != null)
+                    {
+                        _ = SendTo(me, "K");
+                        if (_relay != null) await _relay.ExtraAsync(me.Name, line.Substring(4));   // a team command: to everyone
                     }
                     else if (line == "PONG" && me != null)
                         lock (_lock) me.At = DateTime.UtcNow;

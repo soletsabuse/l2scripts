@@ -1,0 +1,4 @@
+# the voice engines and models (gigabytes, downloaded by hand / by the panel): never committed
+engine/
+models/
+dl/
