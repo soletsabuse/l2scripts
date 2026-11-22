@@ -98,6 +98,14 @@
   .dchart .dtrack { fill: var(--panel3); }
   .dchart .dfill { fill: rgba(90, 169, 255, .55); }
   .dchart .dlabel { fill: var(--text); font-size: 11px; font-weight: 600; }
+  /* human: the self-check table */
+  table.hc { width: 100%; border-collapse: collapse; margin-top: 4px; }
+  table.hc th { text-align: left; font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em;
+    padding: 4px 8px; border-bottom: 1px solid var(--line2); }
+  table.hc td { padding: 4px 8px; border-bottom: 1px solid #1a1f29; }
+  table.hc td.v { font-family: Consolas, monospace; white-space: nowrap; }
+  table.hc td.hand { color: var(--muted); }
+  .hcnote { color: var(--dim); font-size: 11.5px; margin-top: 6px; }
   .pair { width: 64px; }
   #what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); max-width: 420px; }
   .bars { display: grid; grid-template-columns: auto 90px; gap: 2px 6px; align-items: center; font-size: 10.5px; color: var(--dim); }
@@ -386,16 +394,25 @@
           <h3>Runs <span class="sub">drag the edges, the peak and its width; Uniform / Normal</span></h3>
           <div class="f"><label>Mouse clicks</label><label class="ck"><input type="checkbox" data-k="h_clicks"> run by clicks a piece ahead, not one click to the goal</label></div>
           <div class="dist" data-dist="h_piece" data-label="A click ahead" data-unit="units" data-axis="100 1500" data-step="10" data-lo="100" data-hi="3000" data-hint="the next click before the character gets there, or after a second or two"></div>
-          <div class="chance" data-chance="h_multi" data-label="Double / triple" data-max="100" data-text="of the clicks sent 2–3 times to the same point"></div>
+          <div class="chance" data-chance="h_multi" data-label="Double / triple" data-max="100" data-text="of the clicks sent 2–3 times to the same point (by hand: 4 in a whole session)"></div>
           <div class="chance" data-chance="h_side" data-label="To the side" data-max="45" data-text="of a click at most (the way is not a straight line)"></div>
           <div class="dist" data-dist="h_stop" data-label="Melee: stop at" data-unit="from the mob" data-axis="0 600" data-step="10" data-lo="0" data-hi="1000" data-hint="then the attack / the skill runs the rest itself, as a player clicks the mob from close by"></div>
           <div class="dist" data-dist="h_closer" data-label="Ranged: run in" data-unit="%" data-axis="80 170" data-step="1" data-lo="80" data-hi="170" data-ref="100" data-reflabel="the reach" data-hint="100 % = just into the skill's reach (cast from its edge); more = that share of the reach closer than needed; less = the skill clicked a bit early, the character runs in itself (rules with «Run closer»)"></div>
         </div>
         <div class="card">
           <h3>Reactions</h3>
-          <div class="dist" data-dist="h_pick" data-label="A new target" data-unit="s" data-mul="1000" data-axis="0 4" data-step="0.05" data-lo="0" data-hi="10000" data-hint="before a mob that does not hit me is taken (after a kill too); a mob on me - at once"></div>
+          <div class="dist" data-dist="h_pick" data-label="A new target" data-unit="s" data-mul="1000" data-axis="0 4" data-step="0.05" data-lo="0" data-hi="10000" data-hint="before a mob that does not hit me is taken (after a kill: «After a kill» instead); a mob on me - at once"></div>
           <div class="dist" data-dist="h_spawn" data-label="A new mob" data-unit="s" data-mul="1000" data-axis="0 15" data-step="0.1" data-lo="0" data-hi="60000" data-hint="a mob that just showed up (a respawn, came into sight) is not taken this long"></div>
           <div class="dist" data-dist="h_press" data-label="Key presses: + " data-unit="ms" data-axis="0 400" data-step="5" data-lo="0" data-hi="1000" data-hint="a random bit more between the presses: no clockwork spam"></div>
+        </div>
+        <div class="card">
+          <h3>Fight timing <span class="sub">the hints: a hand session of the research</span></h3>
+          <div class="dist" data-dist="h_aim" data-label="Mob clicked → first press" data-unit="s" data-mul="1000" data-axis="0 1.5" data-step="0.01" data-lo="0" data-hi="5000" data-hint="nothing at a new target before this (by hand: the fastest tenth 0.19 s)"></div>
+          <div class="dist" data-dist="h_next" data-label="Next press after a cast" data-unit="ms" data-axis="-800 1500" data-step="10" data-lo="-1500" data-hi="3000" data-ref="0" data-reflabel="the cast ends" data-hint="below 0 = pressed during the cast, the game queues it (by hand: 246 ± 307 ms, 22 % during the cast); into a mob the cast may kill only now and then"></div>
+          <div class="dist" data-dist="h_after" data-label="After a kill" data-unit="s" data-mul="1000" data-axis="0 2" data-step="0.01" data-lo="0" data-hi="10000" data-hint="a look at the dead mob before anything else; a mob on me cuts it to 0.25–0.6 s"></div>
+          <div class="chance" data-chance="h_after_pct" data-label="Now and then longer" data-max="100" data-text="of the kills (by hand: median 0.68 s, 1 in 10 over 3.4 s)"></div>
+          <div class="dist" data-dist="h_after_long" data-label="The longer one" data-unit="s" data-mul="1000" data-axis="0 8" data-step="0.1" data-lo="0" data-hi="30000"></div>
+          <div class="chance" data-chance="h_ahead" data-label="Next mob early" data-max="100" data-text="of the casts that may kill: the next mob clicked while the last spell flies (by hand: 34 % of kills)"></div>
         </div>
         <div class="card">
           <h3>Buffs</h3>
@@ -410,6 +427,11 @@
           <div class="dist" data-dist="afk_every" data-label="Every" data-unit="min" data-hint="of farming" data-axis="5 180" data-step="1" data-lo="1" data-hi="1440"></div>
           <div class="dist" data-dist="afk_for" data-label="For" data-unit="min" data-axis="1 40" data-step="1" data-lo="1" data-hi="600"></div>
           <div class="f"><label>Sit down</label><label class="ck"><input type="checkbox" data-k="afk_sit"> sit during the break</label><div class="h">the break starts after the fight; a mob that hits me is still fought; no buffs and no runs meanwhile</div></div>
+        </div>
+        <div class="card">
+          <h3>Self-check <span class="sub">this run, counted the way the research counted</span></h3>
+          <table class="hc"><thead><tr><th>Measure</th><th>By hand</th><th>Now</th></tr></thead><tbody id="hcBody"></tbody></table>
+          <div class="hcnote" id="hcNote"></div>
         </div>
       </div>
     </section>
@@ -484,7 +506,9 @@ const DEF = { run: '0', run_id: '', grid: '', grid_ver: '', spam_ms: 100, target
   profile: '', weapon: 0, death: 'wait', debug: 0,
   human: 0, h_clicks: 1, h_piece: '350 800', h_side: 15, h_stop: '120 300', h_closer: '100 120', h_press: '0 120', h_pick: '400 1200', h_spawn: '2000 5000',
   afk: 1, afk_sit: 1, afk_every: '40 80', afk_for: '3 10',
-  h_multi: 25, h_rebuff: '0 40', h_selfbuff: '500 4000', h_forget: 10, h_forget_s: '20 120', teleport: '' };
+  h_multi: 3, h_rebuff: '0 40', h_selfbuff: '500 4000', h_forget: 10, h_forget_s: '20 120',
+  h_aim: '120 900 n 300 150', h_next: '-500 1500 n 230 300', h_after: '250 1500 n 600 250', h_after_pct: 18, h_after_long: '1500 5500', h_ahead: 40,
+  teleport: '' };
 const KEYS = Object.keys(DEF);
 function defaultCfg() { return { ...DEF, rebuff_bypass: [], noalert: [], supply: [], rules: [], mobs: [] }; }
 function newRule(p) {
@@ -651,6 +675,7 @@ async function pollState() {
     if (page === 'mobs') renderMobs(true);
     if (page === 'log') renderLog();
     if (page === 'map') renderMapSide();
+    if (page === 'human') renderHumCheck();
   }
 }
 // the settings changed outside (another window): taken when nothing waits to be saved here
@@ -1242,9 +1267,36 @@ window.addEventListener('pointerup', () => {
   else { distPut(d.box.dataset.dist, +(d.box.dataset.mul || 1), d.o); distEd(d.box); }
 });
 window.addEventListener('resize', () => { if (page === 'human') renderHuman(); });
+// the self-check: the research's measures of a hand session next to this run's (the bot counts them: state "hum")
+const HC = [
+  ['Kill → next action, median', '675 ms', x => x.kill_n ? x.kill_med + ' ms' : '—'],
+  ['Kill → next action, p90', '3446 ms', x => x.kill_n ? x.kill_p90 + ' ms' : '—'],
+  ['Message 144 (incorrect target)', '13', x => x.wrong],
+  ['«Not ready» messages (a key mashed in its reuse)', '—', x => x.reuse != null ? x.reuse : '—'],
+  ['Presses at a dead mob, held back', '—', x => x.guard],
+  ['Mob clicked → first press, p10', '186 ms', x => x.aim_n ? x.aim_p10 + ' ms' : '—'],
+  ['Cast end → next press', '246 ± 307 ms', x => x.press && x.press.length === 2 ? x.press[0] + ' ± ' + x.press[1] + ' ms' : '—'],
+  ['Pressed during a cast', '22 %', x => { const b = x.chained != null ? x.chained : x.presses; return b ? Math.round(x.during * 100 / b) + ' %' : '—'; }],
+  ['Next mob clicked before the kill', '34 %', x => x.kills ? Math.round(x.ahead * 100 / x.kills) + ' %' : '—'],
+  ['Double / triple clicks', '4', x => x.dbl],
+  ['ActionFailed per kill', '2.99', x => x.kills ? (x.fail / x.kills).toFixed(2) : '—'],
+  ['Position corrections D4', '0', x => x.fly],
+  ['Last byte of 59', 'always 00', x => x.pos_byte < 0 ? '—' : x.pos_byte.toString(16).toUpperCase().padStart(2, '0') + (x.pos_changes ? ' · changed ' + x.pos_changes + '×' : '')],
+  ['«Forbidden.» from the buffer', '0', x => x.forbid]];
+function renderHumCheck() {
+  const body = $('hcBody'); if (!body) return;
+  const s = ST(), x = s && s.hum; body.textContent = '';
+  for (const [name, hand, f] of HC) body.append(el('tr', null, el('td', { text: name }), el('td', { class: 'v hand', text: hand }), el('td', { class: 'v', text: x ? String(f(x)) : '—' })));
+  const n = $('hcNote'), noCast = !!(x && x.kills > 2 && !x.casts_seen);
+  n.classList.toggle('warn', noCast);
+  n.textContent = !x ? 'No numbers yet: they come from the bot (pve.txt) while it farms'
+    : noCast ? 'No cast of mine seen in the packets: the press timing during / after a cast needs them (pve.txt turns the packet hooks on)'
+    : x.kills + ' kills, ' + x.presses + ' presses this run; «By hand» is the hand session of the research';
+}
 function renderHuman() {
   bindAll($('pgHuman'));
   if (!distDrag) { document.querySelectorAll('#pgHuman .dist').forEach(distEd); document.querySelectorAll('#pgHuman .chance').forEach(chanceEd); }
+  renderHumCheck();
   const on = !!num(cfg.human, 0);
   $('humanCards').classList.toggle('human-off', !on);
   // the master switch redraws the dimming at once

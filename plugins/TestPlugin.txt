@@ -1,0 +1,14 @@
+uses sysutils;
+
+function PluginProc(Code: Cardinal; p1, p2, p3: WideString): WideString; stdcall;
+begin
+  case code of
+    0: result := user.name;
+    1: Engine.DMoveTo(StrToInt(p1), StrToInt(p2), user.z);
+  end;  
+end; 
+
+begin
+  Script.StartPlugin(Script.Path + 'plugin.dll', @PluginProc, False);  
+  Delay(-1);
+end.
