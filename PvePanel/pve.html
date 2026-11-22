@@ -70,6 +70,10 @@
   .phase.afk { background: rgba(160, 170, 190, .14); color: var(--muted); }
   .phase.return { background: rgba(177, 140, 255, .15); color: var(--pur); }
   .human-off { opacity: .45; }
+  .focusbox { display: inline-flex; align-items: center; gap: 8px; padding: 3px 10px; border-radius: 9px; background: var(--panel2); border: 1px solid var(--line2); }
+  .focusbox input[type=range] { width: 170px; accent-color: var(--pur); }
+  .focusbox #hFocusV { min-width: 22px; text-align: right; }
+  .focusbox #hFocusTxt { min-width: 230px; font-size: 12px; }
   /* human: distribution / chance editors */
   .dist, .chance { padding: 7px 0 8px; border-top: 1px solid var(--line); }
   .dh { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -98,14 +102,6 @@
   .dchart .dtrack { fill: var(--panel3); }
   .dchart .dfill { fill: rgba(90, 169, 255, .55); }
   .dchart .dlabel { fill: var(--text); font-size: 11px; font-weight: 600; }
-  /* human: the self-check table */
-  table.hc { width: 100%; border-collapse: collapse; margin-top: 4px; }
-  table.hc th { text-align: left; font-size: 10.5px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em;
-    padding: 4px 8px; border-bottom: 1px solid var(--line2); }
-  table.hc td { padding: 4px 8px; border-bottom: 1px solid #1a1f29; }
-  table.hc td.v { font-family: Consolas, monospace; white-space: nowrap; }
-  table.hc td.hand { color: var(--muted); }
-  .hcnote { color: var(--dim); font-size: 11.5px; margin-top: 6px; }
   .pair { width: 64px; }
   #what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); max-width: 420px; }
   .bars { display: grid; grid-template-columns: auto 90px; gap: 2px 6px; align-items: center; font-size: 10.5px; color: var(--dim); }
@@ -230,7 +226,16 @@
   .mrow b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mrow small { color: var(--dim); font-size: 11px; grid-column: 1; }
   .mrow .acts { grid-row: 1 / 3; grid-column: 2; display: flex; gap: 4px; align-items: center; }
-  #mapFrame { flex: 1; border: 0; min-width: 0; background: #0a0d12; }
+  #mapMain { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  #mapFrame { flex: 1; border: 0; min-width: 0; min-height: 0; background: #0a0d12; }
+  /* the active map: which one, in the bot, in the editor */
+  #mapBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 7px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12.5px; }
+  #mapBar .mname { font-size: 13.5px; }
+  #mapBar .chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 99px; border: 1px solid var(--line2); background: var(--panel2); color: var(--muted); }
+  #mapBar .chip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  #mapBar .chip.ok { color: var(--ok); border-color: rgba(77, 212, 172, .35); }
+  #mapBar .chip.warn { color: var(--warn); border-color: rgba(255, 191, 90, .35); }
+  #mapBar .chip.bad { color: var(--bad); border-color: rgba(255, 107, 122, .35); }
   .mapstat { font-size: 12px; padding: 6px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line); }
 
   /* ===== log ===== */
@@ -352,7 +357,7 @@
         <div class="sec" style="border-bottom:0; padding-bottom:4px"><h4>Maps <span class="sp"></span><button id="mapNew" class="ghost" title="A new empty map in the editor">+ New</button><button id="mapOpenOld" class="ghost" title="Open an old map (Library\Nav), a bot zone or a run in the editor">Open…</button></h4></div>
         <div id="mapList"></div>
       </div>
-      <iframe id="mapFrame" title="Map editor"></iframe>
+      <div id="mapMain"><div id="mapBar"></div><iframe id="mapFrame" title="Map editor"></iframe></div>
     </section>
 
     <!-- ===== buffs & shop ===== -->
@@ -388,13 +393,26 @@
     <!-- ===== human: runs by the mouse, reaction times, AFK breaks ===== -->
     <section class="page" id="pgHuman" data-page="human" hidden>
       <div class="ph"><h2>Human</h2><span class="sub">play like a player: mouse runs, reaction times, breaks</span>
-        <span class="sp"></span><label class="ck"><input type="checkbox" data-k="human"> <b>Human mode</b></label></div>
+        <span class="sp"></span>
+        <span class="focusbox" title="One knob over every pause below: tired = slower and more slips (a longer look after a kill, a forgotten buff), sharp = quicker and fewer slips; 50 = exactly as set">
+          <b>Focus</b><span class="dim">sleepy</span><input type="range" id="hFocus" min="0" max="100" step="1"><span class="dim">sharp</span>
+          <b id="hFocusV" class="mono"></b><span id="hFocusTxt" class="muted"></span></span>
+        <label class="ck"><input type="checkbox" data-k="human"> <b>Human mode</b></label></div>
       <div class="grid2 scroll" id="humanCards">
+        <div class="card">
+          <h3>Pace <span class="sub">no action at once: target, skill, run</span></h3>
+          <div class="dist" data-dist="h_after" data-label="After a kill" data-unit="s" data-mul="1000" data-axis="0 2" data-step="0.01" data-lo="0" data-hi="10000" data-hint="a look at the dead mob before the next target, run or buff; a mob that hits me cuts it to 0.25–0.6 s"></div>
+          <div class="chance" data-chance="h_after_pct" data-label="Now and then longer" data-max="100" data-text="of the kills - then:"></div>
+          <div class="dist" data-dist="h_after_long" data-label="The longer look" data-unit="s" data-mul="1000" data-axis="0 8" data-step="0.1" data-lo="0" data-hi="30000"></div>
+          <div class="dist" data-dist="h_aim" data-label="Mob clicked → first skill" data-unit="s" data-mul="1000" data-axis="0 1.5" data-step="0.01" data-lo="0" data-hi="5000" data-hint="the first skill / the run at a new target not at once"></div>
+          <div class="dist" data-dist="h_gap" data-label="Between skills" data-unit="s" data-mul="1000" data-axis="0 1.5" data-step="0.01" data-lo="0" data-hi="5000" data-hint="after my cast ends the next skill a while later (not pressed during the cast - the bot would send it the same 0.1 s after every cast)"></div>
+          <div class="dist" data-dist="h_run" data-label="Before a run" data-unit="s" data-mul="1000" data-axis="0 1.5" data-step="0.01" data-lo="0" data-hi="5000" data-hint="a run to a mob or to the next point starts a moment later, not at once"></div>
+        </div>
         <div class="card">
           <h3>Runs <span class="sub">drag the edges, the peak and its width; Uniform / Normal</span></h3>
           <div class="f"><label>Mouse clicks</label><label class="ck"><input type="checkbox" data-k="h_clicks"> run by clicks a piece ahead, not one click to the goal</label></div>
           <div class="dist" data-dist="h_piece" data-label="A click ahead" data-unit="units" data-axis="100 1500" data-step="10" data-lo="100" data-hi="3000" data-hint="the next click before the character gets there, or after a second or two"></div>
-          <div class="chance" data-chance="h_multi" data-label="Double / triple" data-max="100" data-text="of the clicks sent 2–3 times to the same point (by hand: 4 in a whole session)"></div>
+          <div class="chance" data-chance="h_multi" data-label="Double / triple" data-max="100" data-text="of the clicks sent 2–3 times to the same point"></div>
           <div class="chance" data-chance="h_side" data-label="To the side" data-max="45" data-text="of a click at most (the way is not a straight line)"></div>
           <div class="dist" data-dist="h_stop" data-label="Melee: stop at" data-unit="from the mob" data-axis="0 600" data-step="10" data-lo="0" data-hi="1000" data-hint="then the attack / the skill runs the rest itself, as a player clicks the mob from close by"></div>
           <div class="dist" data-dist="h_closer" data-label="Ranged: run in" data-unit="%" data-axis="80 170" data-step="1" data-lo="80" data-hi="170" data-ref="100" data-reflabel="the reach" data-hint="100 % = just into the skill's reach (cast from its edge); more = that share of the reach closer than needed; less = the skill clicked a bit early, the character runs in itself (rules with «Run closer»)"></div>
@@ -404,15 +422,6 @@
           <div class="dist" data-dist="h_pick" data-label="A new target" data-unit="s" data-mul="1000" data-axis="0 4" data-step="0.05" data-lo="0" data-hi="10000" data-hint="before a mob that does not hit me is taken (after a kill: «After a kill» instead); a mob on me - at once"></div>
           <div class="dist" data-dist="h_spawn" data-label="A new mob" data-unit="s" data-mul="1000" data-axis="0 15" data-step="0.1" data-lo="0" data-hi="60000" data-hint="a mob that just showed up (a respawn, came into sight) is not taken this long"></div>
           <div class="dist" data-dist="h_press" data-label="Key presses: + " data-unit="ms" data-axis="0 400" data-step="5" data-lo="0" data-hi="1000" data-hint="a random bit more between the presses: no clockwork spam"></div>
-        </div>
-        <div class="card">
-          <h3>Fight timing <span class="sub">the hints: a hand session of the research</span></h3>
-          <div class="dist" data-dist="h_aim" data-label="Mob clicked → first press" data-unit="s" data-mul="1000" data-axis="0 1.5" data-step="0.01" data-lo="0" data-hi="5000" data-hint="nothing at a new target before this (by hand: the fastest tenth 0.19 s)"></div>
-          <div class="dist" data-dist="h_next" data-label="Next press after a cast" data-unit="ms" data-axis="-800 1500" data-step="10" data-lo="-1500" data-hi="3000" data-ref="0" data-reflabel="the cast ends" data-hint="below 0 = pressed during the cast, the game queues it (by hand: 246 ± 307 ms, 22 % during the cast); into a mob the cast may kill only now and then"></div>
-          <div class="dist" data-dist="h_after" data-label="After a kill" data-unit="s" data-mul="1000" data-axis="0 2" data-step="0.01" data-lo="0" data-hi="10000" data-hint="a look at the dead mob before anything else; a mob on me cuts it to 0.25–0.6 s"></div>
-          <div class="chance" data-chance="h_after_pct" data-label="Now and then longer" data-max="100" data-text="of the kills (by hand: median 0.68 s, 1 in 10 over 3.4 s)"></div>
-          <div class="dist" data-dist="h_after_long" data-label="The longer one" data-unit="s" data-mul="1000" data-axis="0 8" data-step="0.1" data-lo="0" data-hi="30000"></div>
-          <div class="chance" data-chance="h_ahead" data-label="Next mob early" data-max="100" data-text="of the casts that may kill: the next mob clicked while the last spell flies (by hand: 34 % of kills)"></div>
         </div>
         <div class="card">
           <h3>Buffs</h3>
@@ -427,11 +436,6 @@
           <div class="dist" data-dist="afk_every" data-label="Every" data-unit="min" data-hint="of farming" data-axis="5 180" data-step="1" data-lo="1" data-hi="1440"></div>
           <div class="dist" data-dist="afk_for" data-label="For" data-unit="min" data-axis="1 40" data-step="1" data-lo="1" data-hi="600"></div>
           <div class="f"><label>Sit down</label><label class="ck"><input type="checkbox" data-k="afk_sit"> sit during the break</label><div class="h">the break starts after the fight; a mob that hits me is still fought; no buffs and no runs meanwhile</div></div>
-        </div>
-        <div class="card">
-          <h3>Self-check <span class="sub">this run, counted the way the research counted</span></h3>
-          <table class="hc"><thead><tr><th>Measure</th><th>By hand</th><th>Now</th></tr></thead><tbody id="hcBody"></tbody></table>
-          <div class="hcnote" id="hcNote"></div>
         </div>
       </div>
     </section>
@@ -504,11 +508,11 @@ const DEF = { run: '0', run_id: '', grid: '', grid_ver: '', spam_ms: 100, target
   pick: 'hp', onus_first: 1, switch: 1, skip_champ: 1, champ_hp: 100000, roam: 1, roam_wait: '3000 5000', auto_attack: 1,
   rebuff_id: 0, rebuff_left: 600, rebuff_hold: 30, player_alert: 0, champ_alert: 1, pvp: 0, pvp_delay: '700 1500',
   profile: '', weapon: 0, death: 'wait', debug: 0,
-  human: 0, h_clicks: 1, h_piece: '350 800', h_side: 15, h_stop: '120 300', h_closer: '100 120', h_press: '0 120', h_pick: '400 1200', h_spawn: '2000 5000',
+  human: 1, h_clicks: 1, h_piece: '350 800', h_side: 15, h_stop: '120 300', h_closer: '100 120', h_press: '0 120', h_pick: '400 1200', h_spawn: '2000 5000',
   afk: 1, afk_sit: 1, afk_every: '40 80', afk_for: '3 10',
   h_multi: 3, h_rebuff: '0 40', h_selfbuff: '500 4000', h_forget: 10, h_forget_s: '20 120',
-  h_aim: '120 900 n 300 150', h_next: '-500 1500 n 230 300', h_after: '250 1500 n 600 250', h_after_pct: 18, h_after_long: '1500 5500', h_ahead: 40,
-  teleport: '' };
+  h_after: '250 1500 n 600 250', h_after_pct: 18, h_after_long: '1500 5500', h_aim: '120 900 n 300 150', h_gap: '40 1200 n 260 180',
+  h_run: '50 700 n 220 120', h_focus: 50, teleport: '' };
 const KEYS = Object.keys(DEF);
 function defaultCfg() { return { ...DEF, rebuff_bypass: [], noalert: [], supply: [], rules: [], mobs: [] }; }
 function newRule(p) {
@@ -675,7 +679,6 @@ async function pollState() {
     if (page === 'mobs') renderMobs(true);
     if (page === 'log') renderLog();
     if (page === 'map') renderMapSide();
-    if (page === 'human') renderHumCheck();
   }
 }
 // the settings changed outside (another window): taken when nothing waits to be saved here
@@ -1032,7 +1035,7 @@ function mapFollow() { const n = nav(); if (n && cur) n.follow(cur); }
 window.addEventListener('message', e => {
   if (e.origin !== location.origin || !e.data) return;
   const d = e.data;
-  if (d.ev === 'ready') { mapFollow(); const n = nav(); if (n && cfg.grid && !n.name() && !n.dirty()) n.open(cfg.grid, 'own'); }
+  if (d.ev === 'ready') { mapFollow(); mapAutoOpen(); renderMapSide(); }
   if (d.ev === 'saved') { loadMaps(true); if (d.name && d.name.toLowerCase() === (cfg.grid || '').toLowerCase()) { cfg.grid_ver = String(Date.now()); scheduleSave(); toast('Saved - the bot loads the new ' + d.name); }
     else if (!cfg.grid && confirm('Farm ' + charLabel(cur) + ' on ' + d.name + '?')) useMap(d.name); }
   if (d.ev === 'opened') renderMapSide();
@@ -1042,6 +1045,41 @@ async function loadMaps(force) {
   mapsAt = Date.now();
   try { maps = await apiJson('/api/maps'); } catch (e) {}
   renderMapSide();
+}
+// the character's map opened in the editor by itself: after F5 (the editor is often ready before the settings are
+// read), on a character / map change. Once per character + map, never over unsaved changes
+let mapAuto = '';
+function mapAutoOpen() {
+  const n = nav(); if (!n || !cur || !cfg.grid) return;
+  const key = cur + '|' + cfg.grid.toLowerCase(); if (mapAuto === key || n.dirty()) return;
+  mapAuto = key;
+  if (n.src() === 'own' && (n.name() + '.navgrid').toLowerCase() === cfg.grid.toLowerCase()) return;   // on the screen already
+  n.open(cfg.grid, 'own').then(() => renderMapSide());
+}
+// the bar over the editor: the active map, whether the bot has it loaded, whether the editor shows it
+function renderMapBar() {
+  const bar = $('mapBar'); if (!bar) return; bar.textContent = '';
+  const n = nav(), s = ST(), mp = s && s.map, g = cfg.grid || '';
+  const chip = (cls, text) => el('span', { class: 'chip ' + cls }, el('span', { class: 'dot' }), text);
+  if (!g) {
+    bar.append(el('span', { class: 'muted', text: 'Active map' }), chip('warn', 'none - the bot farms in a circle round its start'),
+      el('span', { class: 'dim', text: 'pick one on the left (Map of this character, or Use)' }));
+    return;
+  }
+  bar.append(el('span', { class: 'muted', text: 'Active map' }), el('b', { class: 'mname', text: g }));
+  if (!live()) bar.append(chip('', 'bot off - it loads the map when pve.txt runs'));
+  else if (mp && (mp.file || '').toLowerCase() === g.toLowerCase() && mp.ver === cfg.grid_ver)
+    bar.append(mp.ok ? chip('ok', 'loaded in the bot · ' + (mp.spots || 0) + ' farm spots' + (mp.safe ? ' · a safe point' : ''))
+      : chip('bad', 'the bot could not load it: ' + (mp.msg || '?')));
+  else bar.append(chip('warn', 'the bot is loading it…'));
+  const on = n && n.name() ? n.name() + '.navgrid' : '';
+  if (!n) bar.append(chip('', 'the editor is loading…'));
+  else if (n.src() === 'own' && on.toLowerCase() === g.toLowerCase())
+    bar.append(n.dirty() ? chip('warn', 'in the editor · unsaved changes (Save)') : chip('ok', 'in the editor'));
+  else {
+    bar.append(chip('warn', n.dirty() ? 'the editor shows unsaved changes of ' + (on || 'a new map') : on ? 'the editor shows ' + on + ', not the active map' : 'the editor shows no map'));
+    bar.append(el('button', { class: 'ghost', text: 'Show the active map', onclick: () => editMap(g) }));
+  }
 }
 function useMap(name) { cfg.grid = name; cfg.grid_ver = String(Date.now()); scheduleSave(); renderMapSide(); renderTop(); toast(name ? charLabel(cur) + ' farms on ' + name : 'No map: farming in a circle round the start'); }
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
@@ -1082,6 +1120,8 @@ function renderMapSide() {
         use ? null : el('button', { text: 'Use', onclick: () => useMap(m.name) }),
         el('button', { class: 'icon ghost danger', text: '✕', title: 'Delete this map', onclick: () => delMap(m.name) }))));
   }
+  mapAutoOpen();
+  renderMapBar();
 }
 async function editMap(name) { const n = nav(); if (!n) { toast('The editor is loading…'); return; } await n.open(name, 'own'); renderMapSide(); }
 async function delMap(name) {
@@ -1267,36 +1307,19 @@ window.addEventListener('pointerup', () => {
   else { distPut(d.box.dataset.dist, +(d.box.dataset.mul || 1), d.o); distEd(d.box); }
 });
 window.addEventListener('resize', () => { if (page === 'human') renderHuman(); });
-// the self-check: the research's measures of a hand session next to this run's (the bot counts them: state "hum")
-const HC = [
-  ['Kill → next action, median', '675 ms', x => x.kill_n ? x.kill_med + ' ms' : '—'],
-  ['Kill → next action, p90', '3446 ms', x => x.kill_n ? x.kill_p90 + ' ms' : '—'],
-  ['Message 144 (incorrect target)', '13', x => x.wrong],
-  ['«Not ready» messages (a key mashed in its reuse)', '—', x => x.reuse != null ? x.reuse : '—'],
-  ['Presses at a dead mob, held back', '—', x => x.guard],
-  ['Mob clicked → first press, p10', '186 ms', x => x.aim_n ? x.aim_p10 + ' ms' : '—'],
-  ['Cast end → next press', '246 ± 307 ms', x => x.press && x.press.length === 2 ? x.press[0] + ' ± ' + x.press[1] + ' ms' : '—'],
-  ['Pressed during a cast', '22 %', x => { const b = x.chained != null ? x.chained : x.presses; return b ? Math.round(x.during * 100 / b) + ' %' : '—'; }],
-  ['Next mob clicked before the kill', '34 %', x => x.kills ? Math.round(x.ahead * 100 / x.kills) + ' %' : '—'],
-  ['Double / triple clicks', '4', x => x.dbl],
-  ['ActionFailed per kill', '2.99', x => x.kills ? (x.fail / x.kills).toFixed(2) : '—'],
-  ['Position corrections D4', '0', x => x.fly],
-  ['Last byte of 59', 'always 00', x => x.pos_byte < 0 ? '—' : x.pos_byte.toString(16).toUpperCase().padStart(2, '0') + (x.pos_changes ? ' · changed ' + x.pos_changes + '×' : '')],
-  ['«Forbidden.» from the buffer', '0', x => x.forbid]];
-function renderHumCheck() {
-  const body = $('hcBody'); if (!body) return;
-  const s = ST(), x = s && s.hum; body.textContent = '';
-  for (const [name, hand, f] of HC) body.append(el('tr', null, el('td', { text: name }), el('td', { class: 'v hand', text: hand }), el('td', { class: 'v', text: x ? String(f(x)) : '—' })));
-  const n = $('hcNote'), noCast = !!(x && x.kills > 2 && !x.casts_seen);
-  n.classList.toggle('warn', noCast);
-  n.textContent = !x ? 'No numbers yet: they come from the bot (pve.txt) while it farms'
-    : noCast ? 'No cast of mine seen in the packets: the press timing during / after a cast needs them (pve.txt turns the packet hooks on)'
-    : x.kills + ' kills, ' + x.presses + ' presses this run; «By hand» is the hand session of the research';
+// the focus: one knob over every human pause (the bot: FocusMul) - 0 = x2.5 slower, 50 = as set, 100 = x0.4
+const focusMul = v => v <= 50 ? 1 + (50 - v) * 0.03 : 1 - (v - 50) * 0.012;
+function renderFocus() {
+  const r = $('hFocus'), v = Math.min(100, Math.max(0, Math.round(num(cfg.h_focus, 50)))), m = focusMul(v);
+  if (document.activeElement !== r) r.value = v;
+  $('hFocusV').textContent = v;
+  $('hFocusTxt').textContent = v < 50 ? 'tired: pauses ×' + m.toFixed(2) + ', more slips' : v > 50 ? 'sharp: pauses ×' + m.toFixed(2) + ', fewer slips' : 'as set below';
+  r.oninput = () => { cfg.h_focus = Math.round(num(r.value, 50)); scheduleSave(); renderFocus(); };
 }
 function renderHuman() {
   bindAll($('pgHuman'));
+  renderFocus();
   if (!distDrag) { document.querySelectorAll('#pgHuman .dist').forEach(distEd); document.querySelectorAll('#pgHuman .chance').forEach(chanceEd); }
-  renderHumCheck();
   const on = !!num(cfg.human, 0);
   $('humanCards').classList.toggle('human-off', !on);
   // the master switch redraws the dimming at once

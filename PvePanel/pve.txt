@@ -47,10 +47,11 @@ const
   DS_FORGET         = 8;         // a self buff forgotten for (s)
   DS_AFKEVERY       = 9;         // AFK every (min)
   DS_AFKFOR         = 10;        // AFK for (min)
-  DS_NEXT           = 11;        // the next press after our cast's end (ms; below 0 = during the cast)
-  DS_AIM            = 12;        // a mob clicked -> the first press at it (ms)
-  DS_AFTER          = 13;        // a kill -> the next action (ms)
-  DS_AFTERLONG      = 14;        // ... the longer one, now and then (ms)
+  DS_AFTER          = 11;        // a kill -> the next action (ms)
+  DS_AFTERLONG      = 12;        // ... the longer one, now and then (ms)
+  DS_AIM            = 13;        // a mob clicked -> the first skill / run at it (ms)
+  DS_GAP            = 14;        // our cast over -> the next skill (ms)
+  DS_RUN            = 15;        // a run to a new place: it starts after (ms)
   MODE_PVP          = 2;
 
   // the conditions of a rule (the page writes them as kind:value)
@@ -94,26 +95,7 @@ const
   REBUFF_HERE_MS    = 20000;     // rebuff: out of combat within this (fighting what hits us) = the buffer right here
   IDLE_MS           = 20000;     // a target / a run and no step, no cast this long = stuck: start over ([Stuck])
   VIS_MS            = 400;       // a mob seen / not seen by the map from us: kept this long
-  // our casts by the packets (48 started / 54 launched / 49 canceled) and the human timing round them
-  CAST_MAX_MS       = 15000;     // a cast longer than this is not believed (its end was lost)
-  CAST_MIN_MS       = 100;       // ... shorter: an instant one (shots, potions) - no cast to wait for
-  SETTLE_MS         = 250;       // a cast at a mob it may have killed just ended: its death waited this long before a press
-  RAW_WAIT_MS       = 800;       // a press queued during a cast: its start waited this long after that cast's end (never sent again)
-  TGT_RECLICK_MS    = 1000;      // the game's target is not our mob: clicked again this often (sooner: a lagging answer
-                                 // would make it a second click = attack, a run at the mob) ...
-  TGT_GIVEUP_MS     = 4000;      // ... another object that long: the mob left for a while (one that hits us: fought anyway)
-  ITEM_MIN_MS       = 1000;      // an item / action rule: not again sooner (no packet every tick while its condition holds)
-  EARLY_MIN_MS      = 150;       // human: a press during our cast not before this much of it went
-  EARLY_LETHAL_PCT  = 35;        // ... when the cast may kill the mob: still pressed this % of the times (a player does)
-  AHEAD_WAIT_MS     = 900;       // the next mob clicked during the killing cast: the old one waited this long to die
-  TGT_CONFIRM_MS    = 700;       // a mob clicked: the game's target waited at most this long before a press at it
-  PRESS_REF_MS      = 3000;      // the press timing counts from our cast's end / a reuse's end this long after it
-  BUFF_WAIT_MS      = 8000;      // the buffer clicked: the buff waited this long before the next try (no click again)
-  FORBID_WINDOW_MS  = 4000;      // a "Forbidden" this soon after our bypass is its answer
-  FORBID_SCAN       = 16384;     // ... looked for in this many first bytes of a text packet
-  FORBID_PAUSE_MS   = 15000;     // ... then the next try only after this
-  HS_N              = 128;       // the self-check: the last samples kept of each measure
-  SHORT_WAIT_MS     = 150;       // a human wait this short is waited out at once (not a loop tick later)
+  CAST_TRUST_MS     = 15000;     // human: User.Cast saying "casting" longer than this is not believed (not used then)
   // the way back to the spot (death = return): as the old farm scripts of this server
   TRAVEL_FAR        = 6000;      // off the map and farther than this from the spot = the way back
   RAIL_NEAR         = 800;       // after the teleport: a rail of the map with an end this close = the way from the landing
@@ -181,11 +163,13 @@ var
   CfAfkEveryMin, CfAfkEveryMax, CfAfkForMin, CfAfkForMax: integer;
   // human: 2-3 clicks share; the rebuff moment spread %; a self buff late (ms), forgotten (% of the times, s)
   CfHMulti, CfHRebuff, CfHBufMin, CfHBufMax, CfHForget, CfHForgetMin, CfHForgetMax: integer;
-  CfHAhead, CfHAfterLong: integer;         // human: the next mob clicked early (% of the killing casts); a longer look after a kill (%)
+  CfHAfterLong: integer;                   // human: % of the kills followed by the longer look (h_after_long)
   CfTeleport: string;                       // the teleport bypass to the spot ('' = the map's K teleport)
   // human distributions: min, max; normal (mean, sigma) cut to min..max, else uniform
   DsMin, DsMax, DsMean, DsSig: array[0..15] of integer;
   DsNorm: array[0..15] of boolean;
+  DsPace: array[0..15] of boolean;          // a pause (ms / s): the focus stretches / shrinks it
+  CfFocus: integer;                         // h_focus 0 (tired, slow) .. 100 (sharp, quick); 50 = as set
   CfRoamWaitMin, CfRoamWaitMax, CfPlayerAlert, CfPvpMin, CfPvpMax: integer;
   CfRebuffID, CfRebuffLeft, CfRebuffHold: integer;
   CfRebuffBp: array[0..15] of string;
@@ -288,47 +272,14 @@ var
   CantSeeOID, CantSeeDist: integer;
   CantSeeAt, LastSysOID: cardinal;
 
-  // ---------- packets: our casts, the server's answers (the hooks write numbers only, the main thread reads) ----------
-  HkMe: integer;                            // our OID for the hooks
-  HkCastSeq, HkCastSkill, HkCastTgt: integer;   // our last cast start (48): its number, skill, target ...
-  HkCastAt, HkCastEnd: cardinal;            // ... when, its end (hitTime on; 54 launched / 49 canceled end it then)
-  HkLaunchAt: cardinal;                     // our last 54
-  HkFailN, HkWrongN, HkFlyN, HkForbidN, HkCli39N: integer;   // ActionFailed, sysmsg 144, D4 at us, "Forbidden", the client's 39
-  HkReuseN: integer;                        // sysmsg 48 / 2303-2305: a skill pressed in its reuse (a mashed key)
-  HkBpAt: cardinal;                         // our last bypass: the "Forbidden" window (0 = closed)
-  HkPosByte, HkPosChanges, HkPosSize: integer;   // the client's 59: its last byte (-1 = none yet), how often it changed, its size
-  HkDieOID: array[0..7] of integer;         // the last deaths (00 Die): who, when
-  HkDieAt: array[0..7] of cardinal;
-  HkDieHead: integer;
-  HkFlyDX, HkFlyDY, HkFlyDZ, HkFlyOX, HkFlyOY, HkFlyOZ, HkFlyType: integer;   // the last D4 at us: where to, from where, its kind
-
-  // ---------- human timing ----------
-  PrSeq, PrOff: integer;                    // the cast whose next press is planned, its drawn offset from the cast's end
-  PrEarly: boolean;                         // ... pressed during that cast
-  ReuseRefAt: cardinal;                     // the skill waited for is ready then (the press counts from it)
-  AimAt, TgtSetAt: cardinal;                // a mob clicked: nothing at it before AimAt; our first click on it
-  TgtWrongSince: cardinal;                  // the game's target is another one since (0 = it is ours)
-  TgtApiOk: boolean;                        // the game's target was seen = our mob once (User.Target works)
-  HsPosSayAt: cardinal;                     // the last 59 change said in the log (once a minute at most)
-  PendRaw: boolean;                         // the Pend press went during a cast (queued by the game): never sent again
-  FarmFight: boolean;                       // FightTick runs from FarmTick (not from a blocking fight loop)
-  KillAt, KillPauseUntil: cardinal;         // the last kill; nothing new before KillPauseUntil (human)
-  KillCutDone: boolean;                     // ... cut short once for a mob on us
-  AheadOID, AheadSeq: integer;              // the next mob clicked during the killing cast; the cast it was decided in
-  AheadAtT: cardinal;                       // ... when to click it (0 = not planned)
-  FtHpPrev, FtDrop, LastDrop: integer;      // the fight target's HP % a look ago, its biggest drop; the last mob's
-
-  // ---------- the self-check (page Human): this run, counted as the research counted ----------
-  HsV: array[0..383] of integer;            // 3 rings of HS_N: 0 kill -> next action, 1 a mob clicked -> first press, 2 cast end -> press
-  HsCnt, HsHead: array[0..2] of integer;
-  HsVer, HsDone: integer;                   // samples added / the numbers below counted at
-  HsKillMed, HsKillP90, HsAimP10: integer;
-  HsPressTxt: string;
-  HsKillAt, HsTgtAt: cardinal;
-  HsTgtOID, HsKills, HsAheadN, HsPresses, HsDuring, HsGuard, HsChained: integer;
-  HsFlySeen, HsPosSeen: integer;            // the D4 / 59 changes logged so far
-  HsSampSeq, HsBaseReuse: integer;          // the cast already sampled (cast end -> press); the reuse messages at the start
-  HsBaseFail, HsBaseWrong, HsBaseFly, HsBaseForbid, HsBasePos, HsBaseDbl: integer;
+  // ---------- human pace ----------
+  KillAt, KillPauseUntil: cardinal;         // the last kill; nothing new before KillPauseUntil
+  KillCutDone: boolean;                     // ... cut short once for a mob that hits us
+  AimAt: cardinal;                          // a mob clicked: nothing at it before this
+  NextPressAt: cardinal;                    // the next skill not before this
+  RunAt: cardinal;                          // a new run: its first click not before this
+  CastSince: cardinal;                      // User.Cast says we cast since (0 = not)
+  CastBroken: boolean;                      // User.Cast said "casting" too long: not used this run
 
   // ---------- roam (no target) ----------
   RoamOn: boolean;
@@ -542,7 +493,7 @@ begin
 end;
 
 // a random value of the distribution k: uniform on min..max, or normal (mean, sigma) cut to it (12 uniforms - no Ln)
-function DrawDist(k: integer): integer;
+function DrawRaw(k: integer): integer;
 var i, Tries: integer;
   Z, X: double;
 begin
@@ -557,6 +508,28 @@ begin
       exit;
     end;
   end;
+end;
+
+// the focus (h_focus 0..100, 50 = as set): how much slower (tired) or quicker (sharp) every human pause is -
+// 0 = x2.5, 25 = x1.75, 50 = x1, 75 = x0.7, 100 = x0.4. The slips (the longer look, a forgotten buff) go up / down the same
+function FocusMul(): double;
+begin
+  if CfFocus <= 50 then result := 1.0 + (50 - CfFocus) * 0.03
+  else result := 1.0 - (CfFocus - 50) * 0.012;
+end;
+
+// a slip chance (%) after the focus
+function FocusPct(P: integer): integer;
+begin
+  result := Round(P * FocusMul());
+  if result > 100 then result := 100;
+end;
+
+// a human value of the distribution k; a pause (DsPace) stretched / shrunk by the focus
+function DrawDist(k: integer): integer;
+begin
+  result := DrawRaw(k);
+  if DsPace[k] then result := Round(result * FocusMul());
 end;
 
 // the rebuff moment of this cycle: with a human somewhere between the time left set and h_rebuff % less (never
@@ -616,6 +589,7 @@ begin
 end;
 
 procedure SetDefaults();
+var i: integer;
 begin
   CfRun := false;
   CfRunId := '';
@@ -635,7 +609,7 @@ begin
   CfSwitch := true;
   CfMapHunt := true;
   CfSeeFirst := true;
-  CfHuman := false;
+  CfHuman := true;
   CfHClicks := true;
   CfHPieceMin := 350;
   CfHPieceMax := 800;
@@ -654,15 +628,26 @@ begin
   CfAfkEveryMax := 80;
   CfAfkForMin := 3;
   CfAfkForMax := 10;
-  CfHMulti := 3;                           // a hand session: 4 double clicks in all
+  CfHMulti := 3;
   CfHRebuff := 40;
   CfHBufMin := 500;
   CfHBufMax := 4000;
   CfHForget := 10;
   CfHForgetMin := 20;
   CfHForgetMax := 120;
-  CfHAhead := 40;                          // ~34 % of the kills by hand: not every killing cast is guessed
   CfHAfterLong := 18;
+  CfFocus := 50;
+  for i := 0 to 15 do DsPace[i] := false;
+  DsPace[DS_PRESS] := true;
+  DsPace[DS_PICK] := true;
+  DsPace[DS_SPAWN] := true;
+  DsPace[DS_SELFBUF] := true;
+  DsPace[DS_FORGET] := true;
+  DsPace[DS_AFTER] := true;
+  DsPace[DS_AFTERLONG] := true;
+  DsPace[DS_AIM] := true;
+  DsPace[DS_GAP] := true;
+  DsPace[DS_RUN] := true;
   CfTeleport := '';
   DsSet(DS_PIECE, 350, 800);
   DsSet(DS_STOP, 120, 300);
@@ -675,21 +660,23 @@ begin
   DsSet(DS_FORGET, 20, 120);
   DsSet(DS_AFKEVERY, 40, 80);
   DsSet(DS_AFKFOR, 3, 10);
-  // the fight timing of a hand session: the next press 246 +- 307 ms after a cast (22 % during it), the first press
-  // at a clicked mob 186 ms at the fastest tenth, a kill -> the next action 675 ms (median), 3446 ms (p90)
-  DsSet(DS_NEXT, -500, 1500);
-  DsNorm[DS_NEXT] := true;
-  DsMean[DS_NEXT] := 230;
-  DsSig[DS_NEXT] := 300;
-  DsSet(DS_AIM, 120, 900);
-  DsNorm[DS_AIM] := true;
-  DsMean[DS_AIM] := 300;
-  DsSig[DS_AIM] := 150;
   DsSet(DS_AFTER, 250, 1500);
   DsNorm[DS_AFTER] := true;
   DsMean[DS_AFTER] := 600;
   DsSig[DS_AFTER] := 250;
   DsSet(DS_AFTERLONG, 1500, 5500);
+  DsSet(DS_AIM, 120, 900);
+  DsNorm[DS_AIM] := true;
+  DsMean[DS_AIM] := 300;
+  DsSig[DS_AIM] := 150;
+  DsSet(DS_GAP, 40, 1200);
+  DsNorm[DS_GAP] := true;
+  DsMean[DS_GAP] := 260;
+  DsSig[DS_GAP] := 180;
+  DsSet(DS_RUN, 50, 700);
+  DsNorm[DS_RUN] := true;
+  DsMean[DS_RUN] := 220;
+  DsSig[DS_RUN] := 120;
   CfSkipChamp := true;
   CfRoam := true;
   CfAutoAttack := true;
@@ -960,6 +947,13 @@ begin
     end
     else if K = 'afk' then CfAfk := V = '1'
     else if K = 'h_multi' then CfHMulti := Clamp(StrToIntDef(V, 3), 0, 100)
+    else if K = 'h_after' then ParseDist(DS_AFTER, V, 250, 1500, 0, 10000, false)          // "min max [n mean sigma]" ms
+    else if K = 'h_after_long' then ParseDist(DS_AFTERLONG, V, 1500, 5500, 0, 30000, false)
+    else if K = 'h_after_pct' then CfHAfterLong := Clamp(StrToIntDef(V, 18), 0, 100)
+    else if K = 'h_focus' then CfFocus := Clamp(StrToIntDef(V, 50), 0, 100)
+    else if K = 'h_aim' then ParseDist(DS_AIM, V, 120, 900, 0, 5000, false)
+    else if K = 'h_gap' then ParseDist(DS_GAP, V, 40, 1200, 0, 5000, false)
+    else if K = 'h_run' then ParseDist(DS_RUN, V, 50, 700, 0, 5000, false)
     else if K = 'h_rebuff' then begin                  // "min max [n mean sigma]" % later (one number: the max)
       ParseDist(DS_REBUFF, V, 0, 40, 0, 90, true);
       CfHRebuff := DsMax[DS_REBUFF];
@@ -975,12 +969,6 @@ begin
       CfHForgetMin := DsMin[DS_FORGET];
       CfHForgetMax := DsMax[DS_FORGET];
     end
-    else if K = 'h_next' then ParseDist(DS_NEXT, V, -500, 1500, -1500, 3000, false)          // "min max [n mean sigma]" ms
-    else if K = 'h_aim' then ParseDist(DS_AIM, V, 120, 900, 0, 5000, false)
-    else if K = 'h_after' then ParseDist(DS_AFTER, V, 250, 1500, 0, 10000, false)
-    else if K = 'h_after_long' then ParseDist(DS_AFTERLONG, V, 1500, 5500, 0, 30000, false)
-    else if K = 'h_after_pct' then CfHAfterLong := Clamp(StrToIntDef(V, 18), 0, 100)
-    else if K = 'h_ahead' then CfHAhead := Clamp(StrToIntDef(V, 40), 0, 100)
     else if K = 'teleport' then CfTeleport := V
     else if K = 'afk_sit' then CfAfkSit := V = '1'
     else if K = 'afk_every' then begin                 // "min max [n mean sigma]" minutes of farming
@@ -1347,268 +1335,6 @@ procedure RefreshInventory();
 begin
   Engine.SendToServer(INVENTORY_PACKET);
   Delay(INVENTORY_WAIT);
-end;
-
-// ===================== packets: our casts, the server's answers =====================
-// The hooks run in the packet threads: numbers only there - no strings, no lists of the bot (two threads at those
-// crash PaxScript); the main thread reads what they keep. This server (sniffed 2026-11-20): 48 MagicSkillUse =
-// castType, caster, target, skill, level, hitTime ...; 54 MagicSkillLaunched = castType, caster, skill ...; 62
-// SystemMessage = its id in the first 2 bytes. From the server code of these clients: 49 MagicSkillCanceled = the
-// caster; 1F ActionFailed; D4 FlyToLocation = the object first. The client: 59 ValidatePosition, 39 a skill press.
-
-function PkByte(Data: Pointer; Off: integer): integer;
-var P: Pointer;
-begin
-  P := Data;
-  Inc(Cardinal(P), Off);
-  result := PByte(P)^;
-end;
-
-function PkInt(Data: Pointer; Off: integer): integer;
-begin
-  result := PkByte(Data, Off) or (PkByte(Data, Off + 1) shl 8) or (PkByte(Data, Off + 2) shl 16) or
-    (PkByte(Data, Off + 3) shl 24);
-end;
-
-// "Forbidden." in UTF-16 at byte k of a packet (the caller keeps k + 19 inside it)
-function PkForbidAt(Data: Pointer; k: integer): boolean;
-begin
-  result := false;
-  if PkByte(Data, k) <> 70 then exit;              // F
-  if PkByte(Data, k + 1) <> 0 then exit;
-  if PkByte(Data, k + 2) <> 111 then exit;         // o
-  if PkByte(Data, k + 4) <> 114 then exit;         // r
-  if PkByte(Data, k + 6) <> 98 then exit;          // b
-  if PkByte(Data, k + 8) <> 105 then exit;         // i
-  if PkByte(Data, k + 10) <> 100 then exit;        // d
-  if PkByte(Data, k + 12) <> 100 then exit;        // d
-  if PkByte(Data, k + 14) <> 101 then exit;        // e
-  if PkByte(Data, k + 16) <> 110 then exit;        // n
-  result := PkByte(Data, k + 18) = 46;             // .
-end;
-
-procedure OnPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
-var T: cardinal;
-  Hit, k, n: integer;
-begin
-  T := GetTickCount;
-  if ID1 = $48 then begin
-    // a real cast only (hitTime CAST_MIN_MS+): the shots' glow, potions and other instant ones of ours come as 48 with
-    // hitTime 0 - often in the middle of a cast; they must not end it
-    if (Size >= 24) and (HkMe <> 0) then
-      if PkInt(Data, 4) = HkMe then begin
-        Hit := PkInt(Data, 20);
-        if (Hit >= CAST_MIN_MS) and (Hit <= CAST_MAX_MS) then begin
-          HkCastSkill := PkInt(Data, 12);
-          HkCastTgt := PkInt(Data, 8);
-          HkCastAt := T;
-          HkCastEnd := T + cardinal(Hit);
-          HkCastSeq := HkCastSeq + 1;
-        end;
-      end;
-  end else if ID1 = $54 then begin
-    // launched: the hit lands only at the end of the shown cast time (hitTime of 48) - the cast is not over yet
-    if (Size >= 12) and (HkMe <> 0) then
-      if PkInt(Data, 4) = HkMe then HkLaunchAt := T;
-  end else if ID1 = $49 then begin
-    if (Size >= 4) and (HkMe <> 0) then
-      if PkInt(Data, 0) = HkMe then
-        if HkCastEnd > T then HkCastEnd := T;
-  end else if ID1 = $62 then begin
-    if Size >= 2 then
-    begin
-      k := PkByte(Data, 0) + PkByte(Data, 1) * 256;
-      if k = 144 then HkWrongN := HkWrongN + 1
-      else if (k = 48) or ((k >= 2303) and (k <= 2305)) then HkReuseN := HkReuseN + 1;
-    end;
-  end else if ID1 = $1F then HkFailN := HkFailN + 1
-  else if ID1 = $00 then begin                    // Die: the object first (the kill's real moment)
-    if Size >= 4 then begin
-      HkDieOID[HkDieHead] := PkInt(Data, 0);
-      HkDieAt[HkDieHead] := T;
-      HkDieHead := (HkDieHead + 1) mod 8;
-    end;
-  end else if ID1 = $D4 then begin                // FlyToLocation: object, to xyz, from xyz, its kind
-    if (Size >= 4) and (HkMe <> 0) then
-      if PkInt(Data, 0) = HkMe then begin
-        if Size >= 28 then begin
-          HkFlyDX := PkInt(Data, 4);
-          HkFlyDY := PkInt(Data, 8);
-          HkFlyDZ := PkInt(Data, 12);
-          HkFlyOX := PkInt(Data, 16);
-          HkFlyOY := PkInt(Data, 20);
-          HkFlyOZ := PkInt(Data, 24);
-        end;
-        HkFlyType := -1;
-        if Size >= 32 then HkFlyType := PkInt(Data, 28);
-        HkFlyN := HkFlyN + 1;
-      end;
-  end;
-  // our bypass a moment ago: "Forbidden" in an answer that carries text - 19 NpcHtmlMessage, 7B ShowBoard (the Community
-  // Board), 4A CreatureSay, 62 SystemMessage, FE (a screen message) - once a bypass
-  if (HkBpAt <> 0) and (T - HkBpAt < FORBID_WINDOW_MS) and (Size >= 20) then
-    if (ID1 = $19) or (ID1 = $7B) or (ID1 = $4A) or (ID1 = $62) or ((ID1 = $FE) and (Size <= 1024)) then begin
-      n := Size - 20;
-      if n > FORBID_SCAN then n := FORBID_SCAN;
-      for k := 0 to n do
-        if PkByte(Data, k) = 70 then
-          if PkForbidAt(Data, k) then begin
-            HkForbidN := HkForbidN + 1;
-            HkBpAt := 0;
-            exit;
-          end;
-    end;
-end;
-
-procedure OnCliPacket(ID1, ID2: Cardinal; Data: Pointer; Size: Word);
-var B: integer;
-begin
-  if ID1 = $59 then begin
-    if Size >= 1 then begin
-      B := PkByte(Data, Size - 1);
-      if (HkPosByte >= 0) and (B <> HkPosByte) then HkPosChanges := HkPosChanges + 1;
-      HkPosByte := B;
-      HkPosSize := Size;
-    end;
-  end else if ID1 = $39 then HkCli39N := HkCli39N + 1;
-end;
-
-// our cast goes on: started (48), not launched / canceled, its hitTime not over
-function Casting(): boolean;
-var T: cardinal;
-begin
-  T := GetTickCount;
-  result := (HkCastAt <> 0) and (HkCastEnd > T) and (T - HkCastAt < CAST_MAX_MS);
-end;
-
-// the game's target now (0 = none)
-function GameTarget(): integer;
-var T: TL2Live;
-begin
-  result := 0;
-  T := User.Target;
-  if T <> nil then result := T.OID;
-end;
-
-// the mob is dead / gone: nothing is pressed at it any more
-function MobGone(OID: integer): boolean;
-var i: integer;
-begin
-  result := true;
-  i := NpcIdx(OID);
-  if i < 0 then exit;
-  if NpcList(i).Dead then exit;
-  result := false;
-end;
-
-// ---------- the self-check (page Human): rings of the last HS_N samples ----------
-procedure HsAdd(k, V: integer);
-begin
-  HsV[k * HS_N + HsHead[k]] := V;
-  HsHead[k] := (HsHead[k] + 1) mod HS_N;
-  if HsCnt[k] < HS_N then HsCnt[k] := HsCnt[k] + 1;
-  HsVer := HsVer + 1;
-end;
-
-// the P-th percentile of ring k (-1 = no sample)
-function HsPct(k, P: integer): integer;
-var i, j, n, Base, Tv: integer;
-  A: array[0..127] of integer;
-begin
-  result := -1;
-  n := HsCnt[k];
-  if n <= 0 then exit;
-  Base := k * HS_N;
-  for i := 0 to n - 1 do A[i] := HsV[Base + i];
-  for i := 1 to n - 1 do begin
-    Tv := A[i];
-    j := i - 1;
-    while j >= 0 do begin
-      if A[j] <= Tv then break;
-      A[j + 1] := A[j];
-      j := j - 1;
-    end;
-    A[j + 1] := Tv;
-  end;
-  result := A[(n - 1) * P div 100];
-end;
-
-// the mean and the spread (sd) of ring k as "mean, sd" ('' = no sample)
-function HsMeanSd(k: integer): string;
-var i, n, Base: integer;
-  S, S2, M, V: double;
-begin
-  result := '';
-  n := HsCnt[k];
-  if n <= 0 then exit;
-  Base := k * HS_N;
-  S := 0;
-  S2 := 0;
-  for i := 0 to n - 1 do begin
-    V := HsV[Base + i];
-    S := S + V;
-    S2 := S2 + V * V;
-  end;
-  M := S / n;
-  V := S2 / n - M * M;
-  if V < 0 then V := 0;
-  result := IntToStr(Round(M)) + ', ' + IntToStr(Round(Sqrt(V)));
-end;
-
-// an action of ours (a click on a mob, a press, a bypass): the first one after a kill is the self-check's "kill -> next"
-procedure NoteAct();
-begin
-  if HsKillAt = 0 then exit;
-  HsAdd(0, integer(GetTickCount - HsKillAt));
-  HsKillAt := 0;
-end;
-
-// a mob clicked by us: the self-check; human: a moment before anything at it (h_aim)
-procedure NoteTarget(OID: integer);
-begin
-  NoteAct();
-  HsTgtOID := OID;
-  HsTgtAt := GetTickCount;
-  if CfHuman then AimAt := GetTickCount + cardinal(DrawDist(DS_AIM));
-end;
-
-// a skill pressed by us: the first one at a clicked mob (target -> first press); the first one after each cast of ours
-// at the same mob (cast end -> press, minus = during it) - one sample a cast, as the research counted
-procedure NotePress(OID: integer);
-var First: boolean;
-begin
-  NoteAct();
-  ReuseRefAt := 0;
-  First := false;
-  if (HsTgtAt <> 0) and (OID <> 0) and (OID = HsTgtOID) then begin
-    HsAdd(1, integer(GetTickCount - HsTgtAt));
-    HsTgtAt := 0;
-    First := true;
-  end;
-  HsPresses := HsPresses + 1;
-  if (HkCastSeq = 0) or (HsSampSeq = HkCastSeq) then exit;
-  if First or (OID = 0) or (OID <> HkCastTgt) then begin
-    HsSampSeq := HkCastSeq;                     // a new mob / not at this cast's: no press after this cast
-    exit;
-  end;
-  if Casting() then begin
-    HsSampSeq := HkCastSeq;
-    HsDuring := HsDuring + 1;
-    HsChained := HsChained + 1;
-    HsAdd(2, 0 - integer(HkCastEnd - GetTickCount));
-  end else if (GetTickCount >= HkCastEnd) and (GetTickCount - HkCastEnd < PRESS_REF_MS) then begin
-    HsSampSeq := HkCastSeq;
-    HsChained := HsChained + 1;
-    HsAdd(2, integer(GetTickCount - HkCastEnd));
-  end;
-end;
-
-// a bypass of ours (the buffer, the shop, the gatekeeper): its answer is looked through for "Forbidden" a moment
-procedure BpSend(Bp: string);
-begin
-  NoteAct();
-  HkBpAt := GetTickCount;
-  Engine.BypassToServer(Bp);
 end;
 
 // ===================== memory of the fight =====================
@@ -2010,29 +1736,6 @@ begin
   result := result + ']';
 end;
 
-// the self-check of this run (page Human): the research's measures, from our own presses and the server's answers
-function HumJson(): string;
-begin
-  if HsDone <> HsVer then begin             // the sorted numbers only when a sample came
-    HsDone := HsVer;
-    HsKillMed := HsPct(0, 50);
-    HsKillP90 := HsPct(0, 90);
-    HsAimP10 := HsPct(1, 10);
-    HsPressTxt := HsMeanSd(2);
-  end;
-  result := '{"kills": ' + IntToStr(HsKills) + ', "kill_med": ' + IntToStr(HsKillMed) + ', "kill_p90": ' + IntToStr(HsKillP90) +
-    ', "kill_n": ' + IntToStr(HsCnt[0]) + ', "aim_p10": ' + IntToStr(HsAimP10) + ', "aim_n": ' + IntToStr(HsCnt[1]) +
-    ', "press": [' + HsPressTxt + '], "press_n": ' + IntToStr(HsCnt[2]) + ', "presses": ' + IntToStr(HsPresses) +
-    ', "chained": ' + IntToStr(HsChained) +
-    ', "during": ' + IntToStr(HsDuring) + ', "ahead": ' + IntToStr(HsAheadN) + ', "guard": ' + IntToStr(HsGuard) +
-    ', "wrong": ' + IntToStr(HkWrongN - HsBaseWrong) + ', "reuse": ' + IntToStr(HkReuseN - HsBaseReuse) +
-    ', "fail": ' + IntToStr(HkFailN - HsBaseFail) +
-    ', "fly": ' + IntToStr(HkFlyN - HsBaseFly) + ', "forbid": ' + IntToStr(HkForbidN - HsBaseForbid) +
-    ', "pos_byte": ' + IntToStr(HkPosByte) + ', "pos_changes": ' + IntToStr(HkPosChanges - HsBasePos) +
-    ', "dbl": ' + IntToStr(NavRepeatClicks() - HsBaseDbl) + ', "casts_seen": ' + IntToStr(HkCastSeq) +
-    ', "cli39": ' + IntToStr(HkCli39N) + '}';
-end;
-
 procedure DumpState();
 var L: TStringList;
   S, T: string;
@@ -2064,7 +1767,6 @@ begin
     IntToStr(SpotN) + ', "safe": ' + JBool(HasSafe) + ', "ver": ' + JStr(MapVer) + ', "teleport": ' + JStr(MapTeleport) +
     ', "rails": ' + IntToStr(NavRailCount()) + '},');
   L.Add(' "cfg": {"read": ' + JStr(CfgReadAt) + ', "rules": ' + IntToStr(RuN) + ', "errors": [' + CfgErr + ']},');
-  L.Add(' "hum": ' + HumJson() + ',');
   L.Add(' "rules": ' + RulesJson() + ',');
   L.Add(' "skills": ' + SkillsJson() + ',');
   L.Add(' "items": ' + ItemsJson() + ',');
@@ -2108,44 +1810,12 @@ begin
   AfkWakeUntil := 0;
   HumStop := DrawDist(DS_STOP);
   HumPct := DrawDist(DS_RANGE);
-  AheadOID := 0;
-  AheadAtT := 0;
   KillPauseUntil := 0;
   AimAt := 0;
-  ReuseRefAt := 0;
-  FtHpPrev := -1;
-  FtDrop := 0;
-  PrSeq := HkCastSeq;                       // a cast before the start plans no press
-  PrEarly := true;
-  // the self-check counts this run only
-  HsCnt[0] := 0;
-  HsCnt[1] := 0;
-  HsCnt[2] := 0;
-  HsHead[0] := 0;
-  HsHead[1] := 0;
-  HsHead[2] := 0;
-  HsVer := 0;
-  HsDone := -1;
-  HsKillAt := 0;
-  HsTgtAt := 0;
-  HsKills := 0;
-  HsAheadN := 0;
-  HsPresses := 0;
-  HsDuring := 0;
-  HsGuard := 0;
-  HsChained := 0;
-  HsSampSeq := HkCastSeq;
-  HsBaseReuse := HkReuseN;
-  HsFlySeen := HkFlyN;
-  HsPosSeen := HkPosChanges;
-  TgtWrongSince := 0;
-  PendRaw := false;
-  HsBaseFail := HkFailN;
-  HsBaseWrong := HkWrongN;
-  HsBaseFly := HkFlyN;
-  HsBaseForbid := HkForbidN;
-  HsBasePos := HkPosChanges;
-  HsBaseDbl := NavRepeatClicks();
+  NextPressAt := 0;
+  RunAt := 0;
+  CastSince := 0;
+  CastBroken := false;
   Phase := 'farm';
   What := 'started';
   ApplyProfile();
@@ -2170,8 +1840,6 @@ begin
   Pend := -1;
   RoamOn := false;
   ApprOID := 0;
-  AheadOID := 0;
-  AheadAtT := 0;
   if not User.Dead then StopMoving();
   Say('[PvE]', 'Paused: ' + Why, 128);
 end;
@@ -2521,21 +2189,38 @@ begin
   end;
 end;
 
-// the target now: the mobs on us first, the current one while it still is one, the best new one. Skip <> 0: that mob
-// and the current one are left out (the next one picked during the killing cast). A kill is KillCheck's
-function ChooseTarget(Skip: integer): integer;
+function ChooseTarget(): integer;
 var i, k, BestI, CurI, CurP, NearP: integer;
   Sc, BestSc: double;
   CurOk, Fresh: boolean;
 begin
   result := 0;
+  // the mob we fought died: a kill
+  if FightOID <> 0 then begin
+    i := NpcIdx(FightOID);
+    if i < 0 then FightOID := 0
+    else if NpcList(i).Dead then begin
+      if FightHit then begin
+        Inc(Kills);
+        // human: a look at the dead mob before anything else (h_after; h_after_pct % of the kills the longer one)
+        if CfHuman then begin
+          KillAt := GetTickCount;
+          KillCutDone := false;
+          if (CfHAfterLong > 0) and (Random(100) < FocusPct(CfHAfterLong)) then
+            KillPauseUntil := KillAt + cardinal(DrawDist(DS_AFTERLONG))
+          else KillPauseUntil := KillAt + cardinal(DrawDist(DS_AFTER));
+          PickAt := KillPauseUntil;            // the next mob then: no "noticed" wait on top
+        end;
+      end;
+      FightOID := 0;
+    end;
+  end;
   // 1) the mobs on us (an AFK break: only they)
   if CfOnUsFirst or AfkOn then begin
     BestI := -1;
     BestSc := 0;
     for i := 0 to NpcList.Count - 1 do begin
       if i >= NpcList.Count then break;
-      if (Skip <> 0) and (NpcList(i).OID = Skip) then continue;
       if not IsOnUs(i) then continue;
       Sc := MobScore(i);
       if (BestI < 0) or (Sc < BestSc) then begin
@@ -2553,7 +2238,6 @@ begin
   CurOk := false;
   CurP := 9;
   CurI := NpcIdx(CurTarget);
-  if Skip <> 0 then CurI := -1;
   if CurI >= 0 then begin
     if IsOnUs(CurI) then CurOk := true
     else CurOk := Takeable(CurI);
@@ -2566,7 +2250,6 @@ begin
   FcN := 0;
   for i := 0 to NpcList.Count - 1 do begin
     if i >= NpcList.Count then break;
-    if (Skip <> 0) and (NpcList(i).OID = Skip) then continue;
     if not (Takeable(i) or ((not CfOnUsFirst) and IsOnUs(i))) then continue;
     if CfMapHunt and MapOk and MobFar(i) and (not IsOnUs(i)) then begin
       Sc := FarScore(i);
@@ -2789,7 +2472,7 @@ begin
   result := false;
   if not (CfHuman and SelfBuffRule(r)) then exit;
   if RuLateAt[r] = 0 then begin
-    if (CfHForget > 0) and (Random(100) < CfHForget) then begin
+    if (CfHForget > 0) and (Random(100) < FocusPct(CfHForget)) then begin
       RuLateAt[r] := GetTickCount + cardinal(DrawDist(DS_FORGET)) * 1000;
       Dbg('[Human]', RuName[r] + ': forgotten for ' + IntToStr((RuLateAt[r] - GetTickCount) div 1000) + ' s');
     end else RuLateAt[r] := GetTickCount + cardinal(DrawDist(DS_SELFBUF));
@@ -2885,34 +2568,13 @@ begin
   result := false;
   if Pend < 0 then exit;
   r := Pend;
-  // its cast started (the packet): done
-  if (HkCastAt <> 0) and (HkCastSkill = RuID[r]) and (HkCastAt >= PendAt) then begin
-    Pend := -1;
-    exit;
-  end;
-  // our cast goes on: the press waits in the game's queue - nothing sent again now, the fight tick goes on
-  if Casting() then exit;
-  // pressed during a cast (queued by the game): never sent again - its start waited RAW_WAIT_MS after that cast's end
-  if PendRaw then begin
-    if (PendOID <> 0) and (ModeOf(PendOID) = MODE_MOB) and MobGone(PendOID) then begin
-      Pend := -1;
-      exit;
-    end;
-    if (GetTickCount >= HkCastEnd) and (GetTickCount - HkCastEnd >= RAW_WAIT_MS) then begin
-      Pend := -1;
-      Dbg('[Cast]', RuName[r] + ' pressed during the cast did not go');
-      exit;
-    end;
-    result := true;
-    exit;
-  end;
   if GetTickCount - PendAt > CONFIRM_MS then begin
     Pend := -1;                       // did not start (no MP, a wall, out of range): If fail -> again at once
     Dbg('[Cast]', RuName[r] + ' did not go in ' + IntToStr(CONFIRM_MS) + ' ms');
     exit;
   end;
   if GetTickCount - PendAt >= LOCK_MS then exit;
-  if (PendOID <> 0) and ((TgtHp(PendOID) <= 0) or ((ModeOf(PendOID) = MODE_MOB) and MobGone(PendOID))) then begin
+  if (PendOID <> 0) and (TgtHp(PendOID) <= 0) then begin
     Pend := -1;
     exit;
   end;
@@ -2922,8 +2584,7 @@ begin
     Pend := -1;
     exit;
   end;
-  // again only a while after our last cast's end (a press queued during it starts right then)
-  if (GetTickCount - PendResent >= RESEND_MS) and (GetTickCount - HkCastEnd >= RESEND_MS) then begin
+  if GetTickCount - PendResent >= RESEND_MS then begin
     Engine.DUseSkill(RuID[r], false, false);
     PendResent := GetTickCount;
   end;
@@ -2933,17 +2594,9 @@ end;
 procedure Fire(r, OID: integer);
 var POID: integer;
 begin
-  // never at a dead mob: the press would go into the corpse ("That is an incorrect target.")
-  if (RuTgt[r] = TG_MOB) and (OID <> 0) and MobGone(OID) then begin
-    HsGuard := HsGuard + 1;
-    exit;
-  end;
-  // an item / action not again within ITEM_MIN_MS (ItemTick and the rule pick may both want it in one tick)
-  if (RuType[r] <> RT_SKILL) and (RuLast[r] <> 0) and (GetTickCount - RuLast[r] < ITEM_MIN_MS) then exit;
   LastRule := r;
   LastRuleAt := GetTickCount;
   if RuType[r] = RT_ITEM then begin
-    NoteAct();
     Engine.UseItem(RuID[r]);
     RuLast[r] := GetTickCount;
     Inc(RuCasts[r]);
@@ -2951,7 +2604,6 @@ begin
     exit;
   end;
   if RuType[r] = RT_ACTION then begin
-    NoteAct();
     UseActionPkt(RuID[r]);
     RuLast[r] := GetTickCount;
     Inc(RuCasts[r]);
@@ -2966,8 +2618,8 @@ begin
   end;
   // the reuse it has now (cast by the client / another rule): only a NEW reuse after this send is its cast
   if (RuSent[r] = 0) or (GetTickCount - RuSent[r] > CAST_SEEN_MS) then RuPrevL[r] := SkillLeft(RuID[r]);
-  NotePress(OID);
   Engine.DUseSkill(RuID[r], false, false);
+  if CfHuman then NextPressAt := GetTickCount + cardinal(DrawDist(DS_GAP));
   RuSent[r] := GetTickCount;
   RuSentOID[r] := OID;
   if (not RuIfFail[r]) and (not RuRepeat[r]) then RuLast[r] := GetTickCount;   // its Reuse counts from the press
@@ -2977,267 +2629,7 @@ begin
       PendOID := OID;
       PendAt := GetTickCount;
     end;
-    PendRaw := false;
     PendResent := GetTickCount;
-  end;
-end;
-
-// ===================== human: the press timing, the next mob early, the kill =====================
-
-// the mob may die of the cast going on: its HP % is no more than the biggest drop seen between two looks (this
-// mob's, else the last mob's, else 15 %)
-function LethalGuess(OID: integer): boolean;
-var H, D: integer;
-begin
-  H := TgtHp(OID);
-  D := FtDrop;
-  if D <= 0 then D := LastDrop;
-  if D <= 0 then D := 15;
-  result := H <= D;
-end;
-
-// the next press after our cast HkCastSeq: drawn once a cast (h_next ms after its end; below 0 = during it)
-procedure PressPlan();
-begin
-  if PrSeq = HkCastSeq then exit;
-  PrSeq := HkCastSeq;
-  PrOff := DrawDist(DS_NEXT);
-  PrEarly := false;
-end;
-
-// the press waits for the cast's end after all: h_next drawn again, its plus side
-function PressAfter(): integer;
-var k: integer;
-begin
-  for k := 1 to 8 do begin
-    result := DrawDist(DS_NEXT);
-    if result >= 0 then exit;
-  end;
-  result := RandIn(40, 300);
-end;
-
-// the moment Due is near (SHORT_WAIT_MS or less): waited for right here (the loop tick would make every wait a step of
-// it); true = still far off
-function WaitFor(Due: cardinal): boolean;
-var T: cardinal;
-begin
-  result := false;
-  T := GetTickCount;
-  if T >= Due then exit;
-  if Due - T <= SHORT_WAIT_MS then begin
-    Delay(Due - T);
-    exit;
-  end;
-  result := true;
-end;
-
-// human, no cast of ours going on: the next press waits for the end of the last one (or of the reuse waited for) +
-// the drawn delay; none when it went during the cast. True = wait
-function PressWait(): boolean;
-var Ref: cardinal;
-begin
-  result := false;
-  Ref := HkCastEnd;
-  if (ReuseRefAt <> 0) and (GetTickCount >= ReuseRefAt) and (ReuseRefAt > Ref) then Ref := ReuseRefAt;
-  if Ref = 0 then exit;
-  if Ref > GetTickCount then begin              // a cast started a moment ago (its packet after the check): wait
-    result := true;
-    exit;
-  end;
-  PressPlan();
-  if PrEarly then exit;
-  if PrOff < 0 then PrOff := PressAfter();
-  if GetTickCount - Ref > PRESS_REF_MS then exit;
-  result := WaitFor(Ref + cardinal(PrOff));
-end;
-
-// a skill press straight to the server (RequestMagicSkillUse 39: the skill, ctrl 0, shift 0): during our cast the
-// game queues it (and answers ActionFailed) and casts it right after, as a key pressed early. Queue: a ready skill,
-// waited for as a sent one (Pend, never sent again); else only the key mashed (the game will say "not ready")
-procedure SendSkillRaw(r, OID: integer; Queue: boolean);
-begin
-  NotePress(OID);
-  if not Queue then begin
-    Engine.SendToServer('39' + HexLE32(RuID[r]) + '00000000' + '00');
-    exit;
-  end;
-  if (RuSent[r] = 0) or (GetTickCount - RuSent[r] > CAST_SEEN_MS) then RuPrevL[r] := SkillLeft(RuID[r]);
-  Engine.SendToServer('39' + HexLE32(RuID[r]) + '00000000' + '00');
-  PrEarly := true;
-  PendRaw := true;
-  LastRule := r;
-  LastRuleAt := GetTickCount;
-  LastActAt := GetTickCount;
-  RuSent[r] := GetTickCount;
-  RuSentOID[r] := OID;
-  if (not RuIfFail[r]) and (not RuRepeat[r]) then RuLast[r] := GetTickCount;
-  Pend := r;
-  PendOID := OID;
-  PendAt := GetTickCount;
-  PendResent := GetTickCount;
-end;
-
-// human, our cast goes on: the next press during it now and then (h_next drew a minus: that long before its end).
-// The next rule's skill, ready now; not when this cast may kill the mob (the queued one would go into the corpse) -
-// but EARLY_LETHAL_PCT % of those times all the same, as a player does
-procedure EarlyPress(OID: integer);
-var r: integer;
-  Back, At2, CA, CE: cardinal;
-  Lethal: boolean;
-begin
-  PressPlan();
-  if PrEarly or (PrOff >= 0) then exit;
-  CA := HkCastAt;
-  CE := HkCastEnd;
-  if CE <= CA then exit;
-  Back := cardinal(0 - PrOff);
-  if CE > CA + Back then At2 := CE - Back else At2 := CA;
-  if At2 < CA + EARLY_MIN_MS then At2 := CA + EARLY_MIN_MS;
-  if WaitFor(At2) then exit;
-  if not Casting() then exit;                   // it ended meanwhile: the press after it (PressWait)
-  Lethal := (HkCastTgt = OID) and LethalGuess(OID);
-  if Lethal and (Random(100) >= EARLY_LETHAL_PCT) then begin
-    PrOff := PressAfter();
-    exit;
-  end;
-  r := PickRule(MODE_MOB, OID);
-  if r < 0 then begin
-    PrOff := PressAfter();
-    exit;
-  end;
-  if (RuType[r] <> RT_SKILL) or (RuTgt[r] = TG_PET) then begin
-    PrOff := PressAfter();
-    exit;
-  end;
-  // a ready skill (not this cast's): the game queues it and casts it right after this one
-  if (SkillLeft(RuID[r]) = 0) and (RuID[r] <> HkCastSkill) then begin
-    SendSkillRaw(r, OID, true);
-    What := RuName[r] + ' -> ' + TgtName(OID) + ' (pressed during the cast)';
-    exit;
-  end;
-  // only this cast's skill / one in its reuse is wanted: the key mashed anyway, as a player does - only when its reuse
-  // surely outlasts this cast (the game queues a press during a cast: a reuse ending sooner would make it a real cast,
-  // into the corpse if this one kills) and never at a mob this cast may kill; the real press after the cast, drawn again
-  if (not Lethal) and (CE > GetTickCount) then
-    if SkillLeft(RuID[r]) > (CE - GetTickCount) + 1000 then SendSkillRaw(r, OID, false);
-  PrOff := PressAfter();
-end;
-
-// human, our cast at the mob goes on and may kill it: now and then (h_ahead % of such casts) the next mob is clicked
-// during it, as a player picks the next one while the last spell flies (a new target does not stop the cast)
-procedure AheadTick(OID: integer);
-var NOID: integer;
-  CA, CE: cardinal;
-begin
-  if (CfHAhead <= 0) or (AheadOID <> 0) or (HkCastTgt <> OID) then exit;
-  if AheadSeq <> HkCastSeq then begin            // a new cast: decided once
-    AheadSeq := HkCastSeq;
-    AheadAtT := 0;
-    CA := HkCastAt;
-    CE := HkCastEnd;
-    if CE <= CA then exit;
-    if not LethalGuess(OID) then exit;
-    if Random(100) >= CfHAhead then exit;
-    AheadAtT := CA + (CE - CA) * cardinal(RandIn(35, 90)) div 100;
-  end;
-  if (AheadAtT = 0) or (GetTickCount < AheadAtT) then exit;
-  AheadAtT := 0;
-  NOID := ChooseTarget(OID);
-  if (NOID = 0) or (NOID = OID) then exit;
-  Engine.SetTarget(NOID);
-  LastSetTarget := GetTickCount;
-  AheadOID := NOID;
-  NoteTarget(NOID);
-  Dbg('[Target]', 'the next one clicked early: ' + TgtName(NOID) + ' (' + TgtName(OID) + ' at ' + IntToStr(TgtHp(OID)) + ' %)');
-end;
-
-// the mob we fought died: a kill (counted when we hit it). Human: a look at it first (h_after; h_after_pct % of the
-// times the longer h_after_long), as a player sees it die - the next mob is taken then with no "noticed" wait. The
-// next mob clicked during the killing cast is the target now
-procedure KillCheck();
-var i, k, P: integer;
-begin
-  if FightOID = 0 then exit;
-  i := NpcIdx(FightOID);
-  if i >= 0 then
-    if not NpcList(i).Dead then exit;
-  if (Pend >= 0) and (PendOID = FightOID) then Pend := -1;
-  if (i >= 0) and FightHit then begin
-    Inc(Kills);
-    HsKills := HsKills + 1;
-    if AheadOID <> 0 then HsAheadN := HsAheadN + 1;
-    KillAt := GetTickCount;
-    for k := 0 to 7 do                          // the Die packet's moment (the tick saw it later)
-      if (HkDieOID[k] = FightOID) and (KillAt >= HkDieAt[k]) and (KillAt - HkDieAt[k] < 3000) then KillAt := HkDieAt[k];
-    HsKillAt := KillAt;
-    KillCutDone := false;
-    if FtDrop > 0 then LastDrop := FtDrop;
-    if CfHuman then begin
-      if (CfHAfterLong > 0) and (Random(100) < CfHAfterLong) then P := DrawDist(DS_AFTERLONG)
-      else P := DrawDist(DS_AFTER);
-      KillPauseUntil := KillAt + cardinal(P);
-      PickAt := KillPauseUntil;
-    end;
-  end;
-  FightOID := 0;
-  FightHit := false;
-  if AheadOID <> 0 then CurTarget := AheadOID else CurTarget := 0;
-  AheadOID := 0;
-  AheadAtT := 0;
-end;
-
-// items (potions, elixirs) and actions at us / the summon: every tick, past every wait of the fight (our cast, the
-// human pauses) - they may go during a cast; one at most a tick, each not again within ITEM_MIN_MS. The tick goes on
-// after it (the fight is not held up by a potion). True = one went
-function ItemTick(): boolean;
-var o, r, OID, Md: integer;
-begin
-  result := false;
-  OID := FightOID;
-  Md := MODE_MOB;
-  if OID = 0 then Md := MODE_NONE;
-  for o := 0 to RuN - 1 do begin
-    r := RuOrd[o];
-    if RuType[r] = RT_SKILL then continue;
-    if (RuTgt[r] = TG_MOB) or (RuTgt[r] = TG_PLAYER) then continue;
-    if (RuLast[r] <> 0) and (GetTickCount - RuLast[r] < ITEM_MIN_MS) then continue;
-    if not RuleOk(r, OID, Md) then begin
-      RuLateAt[r] := 0;
-      continue;
-    end;
-    if BuffLate(r) then continue;
-    Fire(r, OID);
-    LastActAt := GetTickCount;
-    What := RuName[r];
-    result := true;
-    exit;
-  end;
-end;
-
-// the self-check's odd events, logged with what we did just before: D4 (the server moved us) and a change of the
-// client's last byte of 59 - the research saw both on the bot only, never by hand
-procedure OddTick();
-var C: cardinal;
-  S: string;
-begin
-  if HkFlyN <> HsFlySeen then begin
-    HsFlySeen := HkFlyN;
-    C := NavLastClickAt();
-    S := 'none';
-    if C <> 0 then S := IntToStr(NavLastClickX()) + ',' + IntToStr(NavLastClickY()) + ' ' + IntToStr(GetTickCount - C) + ' ms ago';
-    Say('[Check]', 'D4: the server moved me to ' + IntToStr(HkFlyDX) + ',' + IntToStr(HkFlyDY) + ',' + IntToStr(HkFlyDZ) +
-      ' from ' + IntToStr(HkFlyOX) + ',' + IntToStr(HkFlyOY) + ',' + IntToStr(HkFlyOZ) + ' (kind ' + IntToStr(HkFlyType) +
-      '); my last click ' + S + '; my last cast ' + IntToStr(HkCastSkill), 128);
-  end;
-  // the 59 byte: in the log once a minute at most (it may change often), the debug log every time
-  if HkPosChanges <> HsPosSeen then begin
-    S := 'The client''s 59 ends with ' + IntToHex(HkPosByte, 2) + ' now (' + IntToStr(HkPosSize) + ' bytes, ' +
-      IntToStr(HkPosChanges - HsPosSeen) + ' change(s)); D4 so far: ' + IntToStr(HkFlyN);
-    HsPosSeen := HkPosChanges;
-    if (HsPosSayAt = 0) or (GetTickCount - HsPosSayAt >= 60000) then begin
-      HsPosSayAt := GetTickCount;
-      Say('[Check]', S, 128);
-    end else Dbg('[Check]', S);
   end;
 end;
 
@@ -3255,6 +2647,7 @@ begin
     DD := TgtDist(OID) - CfTargetRange;
     if DD > 0 then ApprLimit := APPROACH_MAX_MS + cardinal(DD) * FAR_MS_PER_UNIT;
     NavStepReset();
+    if CfHuman then RunAt := GetTickCount + cardinal(DrawDist(DS_RUN));
   end;
   if GetTickCount - ApprStart > ApprLimit then begin
     Say('[Target]', 'Cannot get to ' + TgtName(OID) + ' in ' + IntToStr(ApprLimit div 1000) + ' s - left for a while', 0);
@@ -3284,6 +2677,7 @@ begin
     end;
   end;
   What := 'closer to ' + TgtName(OID) + ' (' + IntToStr(TgtDist(OID)) + ' -> ' + IntToStr(R) + ')';
+  if GetTickCount < RunAt then exit;            // human: not off at once
   NavStep(GX, GY, Z, MapOk);
 end;
 
@@ -3341,6 +2735,7 @@ begin
     RoamOn := true;
     RoamStart := GetTickCount;
     NavStepReset();
+    if CfHuman then RunAt := GetTickCount + cardinal(DrawDist(DS_RUN));
   end;
   D := Sqrt(1.0 * (RoamX - UX) * (RoamX - UX) + 1.0 * (RoamY - UY) * (RoamY - UY));
   if D <= ROAM_REACH then begin
@@ -3359,80 +2754,57 @@ begin
     exit;
   end;
   What := 'running to the next point (' + IntToStr(Round(D)) + ')';
+  if GetTickCount < RunAt then exit;            // human: not off at once
   NavStep(RoamX, RoamY, RoamZ, MapOk);
 end;
 
 // ===================== one fight step =====================
 
-// one fight step at the mob OID. The game's target first (clicked when it is another; a press only once the game took
-// it). While our cast goes on nothing new is pressed: the bot would keep the press and send it right after the cast -
-// into the corpse when the cast kills ("That is an incorrect target."). Human: a moment after the click (h_aim), the
-// next press a drawn while after the cast (h_next; now and then during it - the game queues it), the next mob clicked
-// during the killing cast now and then (h_ahead)
-procedure FightTick(OID: integer);
-var r, W, GT, H: integer;
-  Lft: cardinal;
+// human: our cast goes on (the bot's User.Cast) - nothing pressed: the bot would send it the moment the cast ends, the
+// same 0.1 s every time. When it ends, the next skill waits a drawn while (h_gap). User.Cast saying "casting" for
+// CAST_TRUST_MS is not believed: not used this run. True = casting
+function HumanCasting(): boolean;
+var E: integer;
 begin
-  // a new fight target: what is drawn for it; its HP watched (the biggest drop between two looks: LethalGuess)
-  if OID <> FightOID then begin
-    FightOID := OID;
-    FightHit := false;
-    HumStop := DrawDist(DS_STOP);
-    HumPct := DrawDist(DS_RANGE);
-    FtHpPrev := -1;
-    FtDrop := 0;
-    Dbg('[Target]', TgtName(OID) + ' ' + IntToStr(OID) + ' d=' + IntToStr(TgtDist(OID)));
-  end;
-  if AheadOID = OID then AheadOID := 0;
-  // potions / items at us first: they go past every wait below (in FarmTick they went already)
-  if not FarmFight then ItemTick();
-  // the game's target: clicked when it is another one. No target (knocked off): again every RETARGET_MS, a press
-  // after TGT_CONFIRM_MS anyway. Another one (the corpse of the last mob, a mob clicked early): again every
-  // TGT_RECLICK_MS and nothing pressed - a press would go at it; TGT_GIVEUP_MS of that: this mob left for a while
-  GT := GameTarget();
-  if GT = OID then begin
-    TgtWrongSince := 0;
-    TgtApiOk := true;                           // the game's target is read right: its waits below are trusted
-  end else begin
-    if CurTarget <> OID then begin
-      Engine.SetTarget(OID);
-      TgtSetAt := GetTickCount;
-      LastSetTarget := GetTickCount;
-      NoteTarget(OID);
-    end else if GetTickCount - LastSetTarget >= TGT_RECLICK_MS then begin
-      Engine.SetTarget(OID);
-      LastSetTarget := GetTickCount;
-      if TgtApiOk then TgtSetAt := GetTickCount;
+  result := false;
+  if CastBroken then exit;
+  E := User.Cast.EndTime;                       // as pvp_focus.txt reads it (works in the game)
+  if E > 0 then begin
+    if CastSince = 0 then CastSince := GetTickCount
+    else if GetTickCount - CastSince > CAST_TRUST_MS then begin
+      CastBroken := true;
+      CastSince := 0;
+      Dbg('[Human]', 'User.Cast says "casting" for ' + IntToStr(CAST_TRUST_MS div 1000) + ' s - not used');
+      exit;
     end;
+    result := true;
+    exit;
+  end;
+  if CastSince <> 0 then begin                  // it ended just now
+    CastSince := 0;
+    NextPressAt := GetTickCount + cardinal(DrawDist(DS_GAP));
+  end;
+end;
+
+procedure FightTick(OID: integer);
+var r, W: integer;
+begin
+  if OID <> CurTarget then begin
+    Engine.SetTarget(OID);
     CurTarget := OID;
-    if GT = 0 then begin
-      TgtWrongSince := 0;                       // only the time with ANOTHER target counts to the give-up
-      if GetTickCount - TgtSetAt < TGT_CONFIRM_MS then begin
-        What := 'clicking ' + TgtName(OID);
-        LastActAt := GetTickCount;
-        exit;
-      end;
-    end else begin
-      if TgtWrongSince = 0 then TgtWrongSince := GetTickCount;
-      if GetTickCount - TgtWrongSince < TGT_GIVEUP_MS then begin
-        What := 'clicking ' + TgtName(OID);
-        LastActAt := GetTickCount;
-        exit;
-      end;
-      // the click does not take: a mob that hits us is fought anyway (as before), another one is left for a while
-      if not TgtOnUs(OID) then begin
-        Say('[Target]', 'The game keeps another target, not ' + TgtName(OID) + ' - left for a while', 0);
-        MarkUnreach(OID);
-        CurTarget := 0;
-        TgtWrongSince := 0;
-        exit;
-      end;
+    LastSetTarget := GetTickCount;
+    if CfHuman then AimAt := GetTickCount + cardinal(DrawDist(DS_AIM));
+    if OID <> FightOID then begin
+      FightOID := OID;
+      FightHit := false;
+      HumStop := DrawDist(DS_STOP);
+      HumPct := DrawDist(DS_RANGE);
+      Dbg('[Target]', TgtName(OID) + ' ' + IntToStr(OID) + ' d=' + IntToStr(TgtDist(OID)));
     end;
+  end else if GetTickCount - LastSetTarget >= RETARGET_MS then begin
+    Engine.SetTarget(OID);
+    LastSetTarget := GetTickCount;
   end;
-  CurTarget := OID;
-  H := TgtHp(OID);
-  if (FtHpPrev >= 0) and (H < FtHpPrev) and (FtHpPrev - H > FtDrop) then FtDrop := FtHpPrev - H;
-  FtHpPrev := H;
   if CantSeeTarget() then begin
     CantSeeOID := OID;
     CantSeeAt := GetTickCount;
@@ -3440,54 +2812,27 @@ begin
     if CantSeeDist < 60 then CantSeeDist := 60;
     Dbg('[Target]', 'Can''t see ' + TgtName(OID) + ' - closer than ' + IntToStr(CantSeeDist));
   end;
-  // our cast goes on: nothing new is pressed (the bot would send it right after the cast, into the corpse when the
-  // cast kills); no run click either (it would stop the cast)
-  if Casting() then begin
-    What := 'casting -> ' + TgtName(OID);
-    LastActAt := GetTickCount;
-    if CfHuman and FarmFight then AheadTick(OID);
-    if CfHuman and (AheadOID = 0) and ((AheadAtT = 0) or (AheadSeq <> HkCastSeq)) then EarlyPress(OID);
-    exit;
-  end;
-  // human: a moment after the click (h_aim); the next press a drawn while after our cast (h_next)
+  // human: a moment after the click (h_aim); no press while our cast goes on; the next skill a drawn while after it (h_gap)
   if CfHuman then begin
-    if WaitFor(AimAt) then begin
+    if GetTickCount < AimAt then begin
       What := 'about to hit ' + TgtName(OID);
       LastActAt := GetTickCount;
       exit;
     end;
-    if PressWait() then begin
-      What := 'the next press -> ' + TgtName(OID);
+    if HumanCasting() then begin
+      What := 'casting -> ' + TgtName(OID);
+      LastActAt := GetTickCount;
+      exit;
+    end;
+    if GetTickCount < NextPressAt then begin
+      What := 'the next skill -> ' + TgtName(OID);
       LastActAt := GetTickCount;
       exit;
     end;
   end;
-  // a cast started during the waits above: nothing pressed now
-  if Casting() then exit;
-  // our cast at this mob just ended and may have killed it: its death waited a moment (a press now would go into the
-  // corpse; the Die packet comes right after the hit)
-  if (HkCastTgt = OID) and (HkCastEnd <> 0) and (GetTickCount >= HkCastEnd) and (GetTickCount - HkCastEnd < SETTLE_MS) then
-    if LethalGuess(OID) then
-      if WaitFor(HkCastEnd + SETTLE_MS) then begin
-        What := 'did it die? ' + TgtName(OID);
-        LastActAt := GetTickCount;
-        exit;
-      end;
-  if Casting() then exit;
   r := PickRule(MODE_MOB, OID);
   W := WantRange;
   if r >= 0 then begin
-    // a "repeat" skill still in its reuse: the bot would keep the press and send it when the reuse ends - into the
-    // corpse if the mob died meanwhile. Human / a mob about to die: waited for, pressed when it is ready
-    if (RuType[r] = RT_SKILL) and (RuTgt[r] = TG_MOB) and (CfHuman or LethalGuess(OID)) then begin
-      Lft := SkillLeft(RuID[r]);
-      if Lft > 0 then begin
-        ReuseRefAt := GetTickCount + Lft;
-        What := 'waiting for ' + RuName[r] + ' -> ' + TgtName(OID);
-        LastActAt := GetTickCount;
-        exit;
-      end;
-    end;
     Fire(r, OID);
     LastActAt := GetTickCount;
     if RuTgt[r] = TG_MOB then ApprOID := 0;
@@ -3505,7 +2850,6 @@ begin
       ApproachTick(OID, HumStop + 50);
       exit;
     end;
-    NoteAct();
     Engine.Attack(300);
     LastActAt := GetTickCount;
     FightHit := true;
@@ -3557,44 +2901,20 @@ begin
   end;
 end;
 
-// human, a kill a moment ago: a look at it before anything else (a mob hitting us: a short one, 0.25-0.6 s). The last
-// bit is waited out here. True = still looking
-function KillPauseHold(): boolean;
-var Cut: cardinal;
-begin
-  result := false;
-  if GetTickCount >= KillPauseUntil then exit;
-  if (not KillCutDone) and (PickHitter() <> 0) then begin
-    KillCutDone := true;
-    Cut := KillAt + cardinal(RandIn(250, 600));
-    if Cut < KillPauseUntil then KillPauseUntil := Cut;
-  end;
-  result := WaitFor(KillPauseUntil);
-  if result then begin
-    What := 'a kill - a look round';
-    LastActAt := GetTickCount;
-  end;
-end;
-
 // kill whoever hits us now (no wait for the combat stance to drop)
 procedure KillHitters();
 var OID: integer;
 begin
   while KeepOn() do begin
     CheckCasts();
-    KillCheck();
-    if KillPauseHold() then begin
-      Delay(50);
-      continue;
-    end;
     if PendHold() then begin
-      Delay(LoopMs());
+      Delay(CfSpamMs);
       continue;
     end;
     OID := PickHitter();
     if OID = 0 then exit;
     FightTick(OID);
-    Delay(LoopMs());
+    Delay(CfSpamMs);
   end;
 end;
 
@@ -3605,19 +2925,14 @@ begin
   while KeepOn() do begin
     CheckCasts();
     CheckWeapon();
-    KillCheck();
-    if KillPauseHold() then begin
-      Delay(50);
-      continue;
-    end;
     if PendHold() then begin
-      Delay(LoopMs());
+      Delay(CfSpamMs);
       continue;
     end;
     OID := PickHitter();
     if OID <> 0 then begin
       FightTick(OID);
-      Delay(LoopMs());
+      Delay(CfSpamMs);
       continue;
     end;
     if not User.InCombat then exit;
@@ -3652,96 +2967,11 @@ begin
   end;
 end;
 
-// before the buffer: out of combat, no cast of ours, a moment more (human 0.8-2.5 s) - a player looks round first
-procedure BuffCalm();
-var T, Started: cardinal;
-  Ms: integer;
+procedure SendBuffs();
+var i: integer;
 begin
-  Ms := 300;
-  if CfHuman then Ms := RandIn(800, 2500);
-  T := GetTickCount;
-  Started := GetTickCount;
-  while KeepOn() and (GetTickCount - Started < 30000) do begin
-    if PickHitter() <> 0 then begin
-      KillHitters();
-      T := GetTickCount;
-      continue;
-    end;
-    if User.InCombat or Casting() then T := GetTickCount
-    else if GetTickCount - T >= cardinal(Ms) then exit;
-    What := 'a moment before the buffer';
-    Delay(150);
-  end;
-end;
-
-// the buffer's bypasses as a player clicks them: the page first, a look at it (human 0.9-2.6 s, else 0.7 s), the next.
-// False = the server answered "Forbidden." (the rest not sent)
-function SendBuffs(): boolean;
-var i, Was, Again: integer;
-begin
-  result := false;
-  Was := HkForbidN;
-  Again := 0;
-  i := 0;
-  while i < CfRebuffBpN do begin
-    if i > 0 then begin
-      if CfHuman then Delay(RandIn(900, 2600)) else Delay(700);
-      if HkForbidN <> Was then exit;
-      if not KeepOn() then begin                // paused / dead: no "Forbidden" to report
-        result := true;
-        exit;
-      end;
-      // a mob came meanwhile: fought, a calm moment, then the page again (no click straight out of a fight)
-      if (PickHitter() <> 0) and (Again < 3) then begin
-        KillHitters();
-        BuffCalm();
-        if not KeepOn() then begin
-          result := true;
-          exit;
-        end;
-        Again := Again + 1;
-        i := 0;
-        continue;
-      end;
-    end;
-    BpSend(CfRebuffBp[i]);
-    i := i + 1;
-  end;
-  Delay(400);
-  result := HkForbidN = Was;
-end;
-
-// the buff after the buffer's click: waited up to BUFF_WAIT_MS with no click again (a second click at once is what
-// the server answers "Forbidden." to). False = "Forbidden." came meanwhile
-function BuffWait(): boolean;
-var T: cardinal;
-  Was: integer;
-begin
-  result := true;
-  Was := HkForbidN;
-  T := GetTickCount;
-  while KeepOn() and BuffLow() and (GetTickCount - T < BUFF_WAIT_MS) do begin
-    if HkForbidN <> Was then begin
-      result := false;
-      exit;
-    end;
-    if PickHitter() <> 0 then KillHitters();
-    What := 'waiting for the buff';
-    Delay(250);
-  end;
-end;
-
-// the server said "Forbidden." to the buffer: a while before the next try (what hits us is fought meanwhile)
-procedure ForbidWait();
-var T: cardinal;
-begin
-  Say('[Rebuff]', 'The buffer answered "Forbidden." - the next try in ' + IntToStr(FORBID_PAUSE_MS div 1000) + ' s', 128);
-  T := GetTickCount;
-  while KeepOn() and (GetTickCount - T < FORBID_PAUSE_MS) do begin
-    if PickHitter() <> 0 then KillHitters();
-    What := 'the buffer said Forbidden - waiting';
-    Delay(250);
-  end;
+  for i := 0 to CfRebuffBpN - 1 do
+    if Engine.BypassToServer(CfRebuffBp[i]) then Delay(555);
 end;
 
 function SupplyCatalog(ItemID: integer; var EntryID: integer; var Price: integer; var Nm: string): boolean;
@@ -3819,15 +3049,15 @@ begin
   end;
   if Length(BuyIdx) = 0 then exit;
   What := 'buying supplies';
-  BpSend(SHOP_OPEN);
-  if CfHuman then Delay(RandIn(900, 2000)) else Delay(SHOP_WAIT);
-  BpSend(MULTISELL_OPEN);
-  if CfHuman then Delay(RandIn(900, 2000)) else Delay(SHOP_WAIT);
+  Engine.BypassToServer(SHOP_OPEN);
+  Delay(SHOP_WAIT);
+  Engine.BypassToServer(MULTISELL_OPEN);
+  Delay(SHOP_WAIT);
   for n := 0 to Length(BuyIdx) - 1 do begin
     if User.Dead then exit;
     Say('[Supplies]', BuyName[n] + ': ' + IntToStr(BuyHave[n]) + ' -> buying ' + IntToStr(BuyNeed[n]), 0);
     MultisellBuy(BuyEntry[n], BuyNeed[n]);
-    if CfHuman then Delay(RandIn(600, 1500)) else Delay(BUY_GAP);
+    Delay(BUY_GAP);
   end;
   Delay(BUY_WAIT);
   RefreshInventory();
@@ -3880,8 +3110,6 @@ begin
   while BuffLow() do begin
     FightUntilOutOfCombat();
     if not KeepOn() then exit;
-    BuffCalm();
-    if not KeepOn() then exit;
     Inc(Tries);
     if Tries > REBUFF_TRIES then begin
       Say('[Rebuff]', 'No buff ' + IntToStr(CfRebuffID) + ' after ' + IntToStr(REBUFF_TRIES) + ' tries - check the bypasses', 255);
@@ -3889,8 +3117,8 @@ begin
       exit;
     end;
     What := 'buffing (try ' + IntToStr(Tries) + ')';
-    if not SendBuffs() then ForbidWait()
-    else if not BuffWait() then ForbidWait();
+    SendBuffs();
+    Delay(2000);
   end;
   Say('[Rebuff]', 'Buff received', 0);
   FightUntilOutOfCombat();
@@ -3989,15 +3217,13 @@ begin
     exit;
   end;
   if GetTickCount < PvpAt then exit;
-  // a rule at him first: none in reach -> the mobs meanwhile, and he is not clicked (a click on him every tick and
-  // one on the mob would take turns - nothing would be pressed at all)
-  r := PickRule(MODE_PVP, PvpOID);
-  if r < 0 then exit;
   if (CurTarget <> PvpOID) or (GetTickCount - LastSetTarget >= RETARGET_MS) then begin
     Engine.SetTarget(PvpOID);
     CurTarget := PvpOID;
     LastSetTarget := GetTickCount;
   end;
+  r := PickRule(MODE_PVP, PvpOID);
+  if r < 0 then exit;                 // no rule at him in reach: the mobs meanwhile
   Fire(r, PvpOID);
   LastActAt := GetTickCount;
   What := RuName[r] + ' -> ' + TgtName(PvpOID) + ' (PvP)';
@@ -4233,7 +3459,7 @@ begin
       Delay(RandIn(1200, 2000));
       Engine.DlgSel(0);
       Delay(RandIn(1500, 2500));
-      BpSend(Bp);
+      Engine.BypassToServer(Bp);
       Delay(1500);
       Engine.ConfirmDialog(true);
       Delay(4000);
@@ -4257,9 +3483,8 @@ begin
   while BuffLow() and KeepOn() and (Tries < 10) do begin
     Inc(Tries);
     What := 'buffing in town (try ' + IntToStr(Tries) + ')';
-    BuffCalm();
-    if not SendBuffs() then ForbidWait()
-    else if not BuffWait() then ForbidWait();
+    SendBuffs();
+    Delay(2000);
   end;
   if BuffLow() then Say('[Return]', 'No buff ' + IntToStr(CfRebuffID) + ' after ' + IntToStr(Tries) + ' tries - on anyway', 128);
 end;
@@ -4361,8 +3586,6 @@ begin
   PickAt := 0;
   Pend := -1;
   IdleSince := 0;
-  AheadOID := 0;
-  AheadAtT := 0;
   KillPauseUntil := 0;
   NavStepReset();
 end;
@@ -4461,7 +3684,7 @@ end;
 
 procedure FarmTick();
 var OID, r, RS, RU, RD, UX, UY: integer;
-  C: cardinal;
+  Cut: cardinal;
 begin
   Phase := 'farm';
   // the start / up again: the watched buff missing and nothing hits us - the buffer's bypasses right here, before the
@@ -4491,14 +3714,6 @@ begin
     exit;
   end;
   CheckCasts();
-  KillCheck();
-  OddTick();
-  // the self-check: a run click is an action too (the first one after a kill)
-  C := NavLastClickAt();
-  if (HsKillAt <> 0) and (C >= HsKillAt) then begin
-    HsAdd(0, integer(C - HsKillAt));
-    HsKillAt := 0;
-  end;
   CheckWeapon();
   ChampionTick();
   PlayerTick();
@@ -4517,36 +3732,31 @@ begin
   if PvpStep() then exit;
   if AfkTick() then exit;
   if IdleCheck() then exit;
-  // potions / items at us: past every wait of the fight
-  ItemTick();
-  // human, a kill: a look at it before anything else (a mob on us: a short one)
-  if KillPauseHold() then exit;
-  // the next mob clicked during the killing cast: the old one dies of it a moment later
-  if AheadOID <> 0 then begin
-    if Casting() or (GetTickCount - HkCastEnd < AHEAD_WAIT_MS) then begin
-      What := TgtName(FightOID) + ' dying, next ' + TgtName(AheadOID);
-      LastActAt := GetTickCount;
-      exit;
-    end;
-    Dbg('[Target]', TgtName(FightOID) + ' did not die of it - back to it');
-    AheadOID := 0;
-    CurTarget := 0;
-  end;
   if LowOn and (not AfkOn) and (GetTickCount - LowSince >= cardinal(LowHoldMs)) then begin
     LowOn := false;
     Rebuff();
     exit;
   end;
   if PendHold() then exit;
-  OID := ChooseTarget(0);
+  OID := ChooseTarget();
+  // human, a kill a moment ago: a look at it before the next target, run or buff (a mob that hits us: a short one)
+  if GetTickCount < KillPauseUntil then begin
+    if (not KillCutDone) and AnyOnUs() then begin
+      KillCutDone := true;
+      Cut := KillAt + cardinal(RandIn(250, 600));
+      if Cut < KillPauseUntil then KillPauseUntil := Cut;
+    end;
+    if GetTickCount < KillPauseUntil then begin
+      What := 'a kill - a look round';
+      LastActAt := GetTickCount;
+      exit;
+    end;
+  end;
   if OID = 0 then begin
     CurTarget := 0;
     ApprOID := 0;
     PickAt := 0;
     if AfkOn then exit;                // the break: no buffs, no runs
-    // our cast goes on / the next press not due yet: nothing pressed, no run (a run click would stop the cast)
-    if Casting() then exit;
-    if CfHuman and PressWait() then exit;
     r := PickRule(MODE_NONE, 0);       // no target: buffs, the summon, potions
     if r >= 0 then begin
       Fire(r, 0);
@@ -4566,9 +3776,7 @@ begin
   PickAt := 0;
   RoamOn := false;
   OffMapSince := 0;
-  FarmFight := true;
   FightTick(OID);
-  FarmFight := false;
 end;
 
 // "Can't see target." comes as a system message event
@@ -4592,15 +3800,11 @@ begin
   What := 'paused - start it on the panel';
   FirstCfg := true;
   Randomize;
-  HkPosByte := -1;
-  HkMe := User.OID;
-  Engine.SendActID(2);                      // packet hooks on: our casts (OnPacket), the self-check
   Say('[PvE]', 'PvePanel farm for ' + User.Name + ': paused. Start / pause / settings: Library\PvePanel\PvePanel.exe', 128);
   CheckCfg();
   InitSysMessages();
   DumpState();
   while Delay(LoopMs()) do begin
-    HkMe := User.OID;
     Service();
     if MapWanted then LoadMap();
     if User.Dead then begin
@@ -4613,8 +3817,6 @@ begin
         AfkNextAt := 0;
         Pend := -1;
         RoamOn := false;
-        AheadOID := 0;
-        KillPauseUntil := 0;
         Alert('[Death]', 'The character died', DEATH_SOUND);
         if RunOn and (CfDeath = 'pause') then PauseRun('died');
       end;

@@ -118,7 +118,6 @@ function NavLastGoalX(): integer;
 function NavLastGoalY(): integer;
 function NavLastGoalAt(): cardinal;
 function NavLastRoute(): string;
-function NavRepeatClicks(): integer;          // human double / triple clicks (2-3 to the same point) so far
 function NavMoveTo(X, Y, Z, Radius: integer): boolean;   // the whole run; true = within Radius
 // a spot round a corner: walkable, the mobs at MX, MY do not see it, it sees the corner - they run
 // round the corner and bunch up there. Nearest to FromX, FromY, corners within MaxDist; false = none
@@ -260,7 +259,6 @@ var
   NmHmGX, NmHmGY, NmHmPX, NmHmPY, NmHmLeft: integer;
   NmHmNext: cardinal;
   NmHmMulti, NmHmRep: integer;          // ... the share of 2-3 clicks; clicks still to send to the same point
-  NmHmRepN: integer;                    // ... the double / triple clicks so far (the self-check of pve.txt)
   NmHmNorm: boolean;                    // ... the piece length: normal (mean, sigma) cut to min..max, else uniform
   NmHmMean, NmHmSig: integer;
   NmHmRepAt: cardinal;                  // ... the next of them then
@@ -3143,14 +3141,8 @@ begin
   NmHmNext := GetTickCount + cardinal(HM_AGAIN_MIN + Random(HM_AGAIN_RANGE + 1));
   if (NmHmMulti > 0) and (Random(100) < NmHmMulti) then begin   // 2-3 clicks on the same point
     NmHmRep := 1 + Random(2);
-    Inc(NmHmRepN);
     NmHmRepAt := GetTickCount + cardinal(70 + Random(180));
   end;
-end;
-
-function NavRepeatClicks(): integer;
-begin
-  result := NmHmRepN;
 end;
 
 // one tick of a tick run; a blocking run of another thread drives now -> nothing
